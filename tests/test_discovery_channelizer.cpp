@@ -96,6 +96,35 @@ void coverage_checks() {
     }
 }
 
+void rtl_rate_checks() {
+    for(double hz : {-750000., -625000., -250000., 0., 250000., 625000., 750000.}) {
+        const auto input=tone(2000000,hz,16000);
+        Bank whole(2000000,center,center-750000,center+750000);
+        Bank chunks(2000000,center,center-750000,center+750000);
+        require(whole.subbands().size()==1&&whole.subbands()[0].center_hz==center,
+            "RTL rate advertises exactly one guarded discovery subband");
+        const auto a=receive(whole,input,input.size(),70000);
+        const auto b=receive(chunks,input,31,70000);
+        require(a.first==b.first&&a.channels==b.channels,"RTL discovery chunk boundaries alter time or samples");
+        require(std::abs(amplitude(a.channels[0])/.5-1)<.002,"RTL discovery attenuates its declared guarded passband");
+        require(std::abs(frequency(a.channels[0])-hz)<8,"RTL discovery changes the received frequency");
+        whole.reset();
+        const auto c=receive(whole,input,509,70000);
+        require(c.channels==a.channels&&c.first==a.first,"RTL discovery reset preserves stale history");
+    }
+    for(const auto width : {125000.,250000.,500000.}) {
+        Bank bank(2000000,center,center-750000,center+750000);
+        const auto& channel=bank.subbands().front();
+        for(double hz=center-750000+width/2;hz<=center+750000-width/2;hz+=12345.25)
+            require(hz-width/2>=channel.passband_lower_hz&&hz+width/2<=channel.passband_upper_hz,
+                "RTL discovery lost a full-width chirp inside its supplied guarded range");
+    }
+    bool rejected=false;
+    try { Bank unsupported(2000000,center,center-800000,center+800000); }
+    catch(const std::invalid_argument&) { rejected=true; }
+    require(rejected,"RTL discovery must not advertise unsupported 1.6 MHz coverage");
+}
+
 void stream_checks() {
     const auto input = tone(16000000, 1123456, 17000);
     Bank whole(16000000, center, center - 2000000, center + 2000000);
@@ -156,7 +185,7 @@ void benchmark() {
 int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--benchmark") { benchmark(); return 0; }
-        tone_checks(); coverage_checks(); stream_checks();
+        tone_checks(); coverage_checks(); stream_checks(); rtl_rate_checks();
         std::cout << "Discovery channelizer tone, passband, alias, coverage and stream tests passed\n";
         return 0;
     } catch (const std::exception& error) {

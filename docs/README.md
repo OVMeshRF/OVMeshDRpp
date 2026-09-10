@@ -5,6 +5,8 @@ OVMeshDR++ is an experimental receive-only RF survey application. Start with the
 ## Using the application
 
 - [User guide](user-guide.md): fresh sessions, receiver setup, GPS, recording, analysis and exports.
+- [Receiver and platform compatibility](operations/hardware-compatibility.md): HackRF One and RTL-SDR capabilities, limits and validation status.
+- [RTL-SDR setup](operations/rtl-sdr.md): source selection, sample rates, tuner gain and USB troubleshooting.
 - [Build and packaging](operations/deployment.md): local builds, dependencies, storage locations and platform limits.
 - [Screenshot gallery](screenshots/README.md): current interface examples and separately labeled sample reports.
 - [Support playbook](operations/support-playbook.md): troubleshooting and useful diagnostic information.
@@ -31,3 +33,5 @@ Join the [OVMesh Discord](https://discord.gg/kwKhFamfaU) for community questions
 Use [Contributing](../CONTRIBUTING.md), [Support](../SUPPORT.md), [Security](../SECURITY.md) and [Community conduct](../CODE_OF_CONDUCT.md) for participation and reporting.
 
 Implemented behavior, synthetic correctness checks and field qualification are separate. A report or screenshot is not proof of calibrated measurements, exhaustive traffic detection, transmitter identity or regulatory compliance.
+
+RTL-SDR [driver intake and license provenance](security/rtlsdr-intake.md) documents the reviewed source and local changes.

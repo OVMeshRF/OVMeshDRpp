@@ -4,6 +4,11 @@
       "path": "third_party/glfw/src/CMakeLists.txt",
       "reason": "Remove optional network-backed gamepad mapping update target",
       "sha256": "a16eea2f9f944debf8e8b2ab031e3d975abc320adbeca93186c6417c8e3f6d06"
+    },
+    {
+      "path": "third_party/rtlsdr/src/librtlsdr.c",
+      "reason": "Check async allocations and transfer length; clean partial resources and restore inactive state on allocation failure; null freed zero-copy fallback pointers; reject R820T/R828D tuning success without PLL lock",
+      "sha256": "e22fb140dabe18c613bbf4307b149c61337c51e12191bbcd513ed4fbeb3590bc"
     }
   ]
 }

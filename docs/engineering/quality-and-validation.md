@@ -46,3 +46,9 @@ Follow the [build guide](../operations/deployment.md), run the relevant configur
 Hardware tests require permission from the relevant equipment operator and a defined receive-only collection scope. Synthetic tests must not silently open hardware. Ordinary desktop GPS auto-connection is a documented product behavior, so hardware-free tests use isolated passive/demo/test modes rather than ordinary startup.
 
 A supported release requires evidence for each support claim, current privacy/dependency review and explicit remaining limits. No single passing suite establishes regulatory compliance, exhaustive detection or absence of security defects.
+
+## RTL-SDR integration coverage
+
+The RTL adapter has hardware-free checks for offset-binary IQ conversion, supported gain selection, explicit-access guards, bounded rate/span validation, reader cancellation/restart, and 125/250/500 kHz waveform discovery through the 2 MS/s path. Driver tests inject allocation failures and locked/unlocked tuner responses; sanitizer runs cover those failure paths. Preferences, desktop source/rate/gain controls, old-session compatibility, RTL recording metadata and CSV/GeoJSON/HTML provenance are tested. Builds with both hardware backends disabled remain supported.
+
+A macOS R820T receiver has also delivered live samples and LoRa waveform observations to the desktop and local recording. This validates an initial integration, not all RTL tuner models, calibrated gain/passband, end-to-end packet decoding, sustained mobile operation, or Windows/Linux device behavior. Clipping and loss indicators remain meaningful limitations; receiver power levels are uncalibrated. Exact local hardware/session evidence is not part of the public source distribution.

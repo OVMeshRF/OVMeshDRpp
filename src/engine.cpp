@@ -9,6 +9,7 @@
 #include "bursts.hpp"
 #include "discovery_worker.hpp"
 #include "discovery_observations.hpp"
+#include "rtl_input.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -30,8 +31,15 @@
 #include <hackrf.h>
 #endif
 #endif
+#ifdef OVMESH_HAVE_RTLSDR
+#include <rtl-sdr.h>
+#endif
 
 namespace ovmesh {
+const char* receiver_source_name(const ReceiverConfig& config) noexcept {
+    return config.synthetic ? "Synthetic RF" :
+        config.hardware_receiver == HardwareReceiver::RtlSdr ? "RTL-SDR" : "HackRF";
+}
 uint64_t tuned_center_hz(const ReceiverConfig& config) {
     if(config.center_hz<1000000 || config.center_hz>6000000000ULL)
         throw std::runtime_error("Center frequency must be between 1 MHz and 6 GHz");
@@ -40,6 +48,9 @@ uint64_t tuned_center_hz(const ReceiverConfig& config) {
     const auto command=static_cast<int64_t>(config.center_hz)+config.tuning_offset_hz;
     if(command<1000000 || command>6000000000LL)
         throw std::runtime_error("Corrected tuner frequency must be between 1 MHz and 6 GHz");
+    if(!config.synthetic&&config.hardware_receiver==HardwareReceiver::RtlSdr&&
+       (config.center_hz<24000000||config.center_hz>1766000000ULL||command<24000000||command>1766000000LL))
+        throw std::runtime_error("RTL-SDR center and corrected tuner frequency must be between 24 and 1766 MHz; tuning also depends on the attached tuner");
     return static_cast<uint64_t>(command);
 }
 namespace {
@@ -51,11 +62,27 @@ struct RawBlock {std::array<int8_t,block_bytes> data{};size_t size=0;uint64_t fi
 
 void validate(const ReceiverConfig& c) {
     (void)tuned_center_hz(c);
+    const bool rtl=!c.synthetic&&c.hardware_receiver==HardwareReceiver::RtlSdr;
+    if(!c.synthetic&&c.hardware_receiver!=HardwareReceiver::HackRf&&c.hardware_receiver!=HardwareReceiver::RtlSdr)
+        throw std::runtime_error("Unknown hardware receiver");
     const std::array<uint32_t,5> rates{8000000,10000000,12000000,16000000,20000000};
-    if(std::find(rates.begin(),rates.end(),c.sample_rate)==rates.end())throw std::runtime_error("Choose an 8, 10, 12, 16 or 20 MS/s sample rate");
+    if(rtl) {
+        if(c.sample_rate!=1000000&&c.sample_rate!=2000000)
+            throw std::runtime_error("RTL-SDR supports a 1 or 2 MS/s sample rate in this build");
+        if(c.rtl_gain_tenths_db< -100||c.rtl_gain_tenths_db>600)
+            throw std::runtime_error("RTL-SDR manual gain must be between -10 and 60 dB; the nearest supported tuner gain is applied");
+        if(c.amplifier)throw std::runtime_error("The HackRF RF amplifier control is unavailable for RTL-SDR; disable it before starting");
+        if(c.discover_lora&&(c.sample_rate!=2000000||c.survey_span_hz>1500000))
+            throw std::runtime_error("RTL-SDR LoRa discovery requires 2 MS/s and a survey span of at most 1.5 MHz; other supported settings can measure spectrum with discovery disabled");
+    } else if(std::find(rates.begin(),rates.end(),c.sample_rate)==rates.end())
+        throw std::runtime_error("Choose an 8, 10, 12, 16 or 20 MS/s sample rate");
     if(c.survey_span_hz<500000 || c.survey_span_hz>c.sample_rate*4/5)throw std::runtime_error("Survey span must be 0.5 MHz through 80% of sample rate; passband remains uncalibrated");
     if(c.center_hz<c.survey_span_hz/2 || c.center_hz+c.survey_span_hz/2>6000000000ULL)throw std::runtime_error("Survey edges exceed receiver range");
-    if(c.lna_gain>40||c.lna_gain%8||c.vga_gain>62||c.vga_gain%2)throw std::runtime_error("LNA must be 0–40 dB in 8 dB steps; VGA 0–62 dB in 2 dB steps");
+    if(rtl&&(c.center_hz-c.survey_span_hz/2<24000000||c.center_hz+c.survey_span_hz/2>1766000000ULL))
+        throw std::runtime_error("Survey edges exceed the supported RTL-SDR 24–1766 MHz range");
+    if(!rtl&&(c.lna_gain>40||c.lna_gain%8||c.vga_gain>62||c.vga_gain%2))throw std::runtime_error("LNA must be 0–40 dB in 8 dB steps; VGA 0–62 dB in 2 dB steps");
+    if(c.device_serial.size()>256||c.device_serial.find('\0')!=std::string::npos)
+        throw std::runtime_error("Receiver serial is invalid or too long");
     if(!std::isfinite(c.activity_threshold_dbfs)||c.activity_threshold_dbfs>0||c.activity_threshold_dbfs< -140)throw std::runtime_error("Activity threshold must be -140 through 0 dBFS/bin");
     if(c.antenna_description.size()>240||c.receiver_description.size()>240||c.survey_notes.size()>2000)
         throw std::runtime_error("Survey provenance text is too long");
@@ -63,7 +90,7 @@ void validate(const ReceiverConfig& c) {
     for(const auto& l:c.lanes){if(l.label.size()>80||l.channel_name.size()>80)throw std::runtime_error("Profile labels are too long");if(!l.enabled)continue;
         if(l.bandwidth_hz!=125000&&l.bandwidth_hz!=250000&&l.bandwidth_hz!=500000)throw std::runtime_error("Supported LoRa bandwidths are 125, 250 and 500 kHz");
         if(l.spreading_factor<7||l.spreading_factor>12||l.coding_rate<5||l.coding_rate>8)throw std::runtime_error("Supported LoRa profiles use SF7–12 and CR4/5–4/8");
-        if(c.sample_rate%(l.bandwidth_hz*4)!=0)throw std::runtime_error("Sample rate must support integer decoder decimation");
+        if(c.sample_rate%(l.bandwidth_hz*4)!=0)throw std::runtime_error("Sample rate must support integer decoder decimation; 500 kHz legacy profiles need RTL-SDR at 2 MS/s");
         if(l.frequency_hz>6000000000ULL)throw std::runtime_error("Decoder frequency exceeds receiver range");
         auto offset=std::abs(static_cast<int64_t>(l.frequency_hz)-static_cast<int64_t>(c.center_hz));
         if(offset+l.bandwidth_hz/2>c.survey_span_hz/2)throw std::runtime_error("Each decoder's entire bandwidth must be inside the survey span");
@@ -102,6 +129,10 @@ struct Engine::Impl {
     hackrf_device* device=nullptr;
     bool hackrf_initialized=false;
 #endif
+#ifdef OVMESH_HAVE_RTLSDR
+    rtlsdr_dev_t* rtl_device=nullptr;
+    RtlAsyncPump rtl_pump;
+#endif
     Impl() {
         for(size_t i=0;i<profiles.size();++i) {
             profiles[i].id="key-"+std::to_string(i);
@@ -109,6 +140,9 @@ struct Engine::Impl {
         }
 #ifdef OVMESH_HAVE_HACKRF
         view.hardware_available=true;
+#endif
+#ifdef OVMESH_HAVE_RTLSDR
+        view.rtl_sdr_available=true;
 #endif
     }
     void fail(const std::string& message) {std::lock_guard lock(mutex);view.error=message;view.state="Failed";view.incomplete=true;view.running=false;run=false;wake.notify_all();save_finished.notify_all();}
@@ -125,12 +159,92 @@ struct Engine::Impl {
         if(transfer->valid_length<=0||transfer->buffer==nullptr)return 0;
         self->deliver(reinterpret_cast<int8_t*>(transfer->buffer),static_cast<size_t>(transfer->valid_length),monotonic_now());return 0;
     }
-    void close_hardware() {
-        // Input has already stopped and the worker has joined before this method.
-        if(device){hackrf_close(device);device=nullptr;}
-        if(hackrf_initialized){hackrf_exit();hackrf_initialized=false;}
+#endif
+#ifdef OVMESH_HAVE_RTLSDR
+    static void receive_rtl(unsigned char* bytes,uint32_t length,void* context) noexcept {
+        auto* self=static_cast<Impl*>(context);
+        if(!self->run) { rtlsdr_cancel_async(self->rtl_device);return; }
+        if(!bytes||!length)return;
+        // Same bounded SPSC queue as HackRF. Preserve the original unsigned
+        // bytes until the consumer performs the correct offset-binary conversion.
+        self->deliver(reinterpret_cast<const int8_t*>(bytes),length,monotonic_now());
+    }
+    void configure_rtl(ReceiverConfig& config) {
+        const auto require=[](int result,const char* operation) {
+            if(result<0)throw std::runtime_error(std::string("RTL-SDR ")+operation+" failed (driver code "+std::to_string(result)+")");
+        };
+        uint32_t index=0;
+        if(config.device_serial.empty()) {
+            const auto count=rtlsdr_get_device_count();
+            if(!count)throw std::runtime_error("No RTL-SDR receiver found. Check the USB connection and operating-system driver");
+            if(count!=1)throw std::runtime_error("More than one RTL-SDR receiver is connected; select its exact device serial before starting");
+        } else {
+            const auto selected=rtlsdr_get_index_by_serial(config.device_serial.c_str());
+            if(selected<0)throw std::runtime_error("The configured RTL-SDR serial was not found");
+            index=static_cast<uint32_t>(selected);
+        }
+        require(rtlsdr_open(&rtl_device,index),"open");
+        if(rtlsdr_get_tuner_type(rtl_device)==RTLSDR_TUNER_UNKNOWN)
+            throw std::runtime_error("RTL-SDR tuner was not identified; direct-sampling operation is not supported");
+        require(rtlsdr_set_bias_tee(rtl_device,0),"bias tee disable");
+        // A newly opened supported tuner is already in ordinary IQ mode.
+        // Redundantly disabling direct sampling reinitializes its tuner and
+        // retunes the initial cached zero frequency. Refuse an unexpected mode.
+        if(rtlsdr_get_direct_sampling(rtl_device)!=0)
+            throw std::runtime_error("RTL-SDR opened in an unexpected direct-sampling mode; ordinary tuner IQ is required");
+        require(rtlsdr_set_testmode(rtl_device,0),"test mode disable");
+        require(rtlsdr_set_agc_mode(rtl_device,0),"digital AGC disable");
+        // Rate/bandwidth setters may retune the cached center. Establish a real
+        // frequency first; the reviewed R82xx wrapper fails if its PLL is unlocked.
+        require(rtlsdr_set_center_freq(rtl_device,static_cast<uint32_t>(tuned_center_hz(config))),"initial frequency setup / tuner lock");
+        if(rtlsdr_get_freq_correction(rtl_device)!=0)
+            require(rtlsdr_set_freq_correction(rtl_device,0),"PPM correction reset");
+        require(rtlsdr_set_sample_rate(rtl_device,config.sample_rate),"sample rate setup");
+        if(rtlsdr_get_sample_rate(rtl_device)!=config.sample_rate)
+            throw std::runtime_error("RTL-SDR driver did not apply the requested sample rate; measurement timing is not accepted");
+        require(rtlsdr_set_tuner_bandwidth(rtl_device,0),"automatic tuner filter setup");
+        require(rtlsdr_set_center_freq(rtl_device,static_cast<uint32_t>(tuned_center_hz(config))),"final frequency setup / tuner lock");
+        if(rtlsdr_get_center_freq(rtl_device)!=tuned_center_hz(config))
+            throw std::runtime_error("RTL-SDR driver did not apply the requested tuner frequency");
+        require(rtlsdr_set_tuner_gain_mode(rtl_device,config.rtl_auto_gain?0:1),"tuner gain mode setup");
+        if(!config.rtl_auto_gain) {
+            const auto count=rtlsdr_get_tuner_gains(rtl_device,nullptr);
+            if(count<=0||count>256)throw std::runtime_error("RTL-SDR tuner returned an invalid manual gain table");
+            std::vector<int> gains(static_cast<size_t>(count));
+            if(rtlsdr_get_tuner_gains(rtl_device,gains.data())!=count)
+                throw std::runtime_error("RTL-SDR tuner gain table changed during setup");
+            const auto selected=nearest_rtl_gain(gains,config.rtl_gain_tenths_db);
+            require(rtlsdr_set_tuner_gain(rtl_device,selected),"manual tuner gain setup");
+            if(rtlsdr_get_tuner_gain(rtl_device)!=selected)
+                throw std::runtime_error("RTL-SDR driver did not apply the selected manual tuner gain");
+            config.rtl_gain_tenths_db=selected;
+        }
+        // RTL has no separately controlled HackRF LNA/VGA or RF amplifier.
+        // Do not retain dormant HackRF gains as this session's acquisition setup.
+        config.lna_gain=0;config.vga_gain=0;config.amplifier=false;
+        require(rtlsdr_reset_buffer(rtl_device),"input buffer reset");
+    }
+    void start_rtl() {
+        rtl_pump.start([this] {
+            try {
+                const auto result=rtlsdr_read_async(rtl_device,&Impl::receive_rtl,this,15,static_cast<uint32_t>(block_bytes));
+                if(run)fail("RTL-SDR receive stream stopped unexpectedly (driver code "+std::to_string(result)+")");
+            } catch(const std::exception& e) { fail(e.what()); }
+              catch(...) { fail("RTL-SDR receive thread failed"); }
+            input_finished=true;wake.notify_all();
+        },[this] { if(rtl_device)rtlsdr_cancel_async(rtl_device); });
     }
 #endif
+    void close_hardware() {
+        // Input has already stopped and the worker has joined before this method.
+#ifdef OVMESH_HAVE_HACKRF
+        if(device){hackrf_close(device);device=nullptr;}
+        if(hackrf_initialized){hackrf_exit();hackrf_initialized=false;}
+#endif
+#ifdef OVMESH_HAVE_RTLSDR
+        if(rtl_device){rtlsdr_close(rtl_device);rtl_device=nullptr;}
+#endif
+    }
     void position(PositionFix f) {
         std::lock_guard lock(mutex);current_fix=f;
         fix_history.push_back(f);if(fix_history.size()>24000)fix_history.erase(fix_history.begin(),fix_history.begin()+2000);
@@ -416,7 +530,7 @@ struct Engine::Impl {
                             g.elapsed_end_seconds=std::max(g.elapsed_start_seconds,monotonic_now()-started);
                             g.utc_start_seconds=started_utc+g.elapsed_start_seconds;g.utc_end_seconds=started_utc+g.elapsed_end_seconds;
                             if(g.elapsed_end_seconds>g.elapsed_start_seconds)store->append(g);}
-                        fail("HackRF delivered no sample blocks for two seconds; stream may have stopped or disconnected");break;}
+                        fail(std::string(receiver_source_name(c))+" delivered no sample blocks for two seconds; stream may have stopped or disconnected");break;}
                     continue;}
                 const auto begin=monotonic_now();auto& block=pool[t%pool_blocks];size_t count=block.size/2;bool gap=block.first!=expected;
                 if(!time_anchored){input_epoch=std::max(0.0,block.arrival-started-static_cast<double>(block.first+count)/c.sample_rate);time_anchored=true;}
@@ -426,7 +540,9 @@ struct Engine::Impl {
                     record_gap(expected,block.first,"application_drop");
                     for(auto& lane:lanes){lane.convert->reset();lane.receive->reset();lane.delivered=0;lane.segment_start=static_cast<double>(block.first)/c.sample_rate;}std::lock_guard lock(mutex);for(auto& h:view.lane_health)++h.resets;}
                 expected=block.first+count;
-                for(size_t i=0;i<count;++i)samples[i]={block.data[2*i]/128.0f,block.data[2*i+1]/128.0f};
+                if(!c.synthetic&&c.hardware_receiver==HardwareReceiver::RtlSdr) {
+                    for(size_t i=0;i<count;++i)samples[i]=rtl_iq_sample(static_cast<uint8_t>(block.data[2*i]),static_cast<uint8_t>(block.data[2*i+1]));
+                } else for(size_t i=0;i<count;++i)samples[i]={block.data[2*i]/128.0f,block.data[2*i+1]/128.0f};
                 const uint64_t first=block.first;std::fill_n(block.data.begin(),block.size,int8_t{});tail.store(t+1,std::memory_order_release);
                 // Publish accepted input before a tile callback publishes its
                 // measured subset, so a live snapshot cannot exceed 100% duty.
@@ -445,7 +561,7 @@ struct Engine::Impl {
                 std::fill_n(samples.begin(),count,Complex{});
                 double now=monotonic_now();
                 if(now-last_discovery_poll>=.1){poll_discovery();last_discovery_poll=now;}
-                {std::lock_guard lock(mutex);if(view.error.empty()){view.running=run.load();view.state=run?(c.synthetic?"Receiving synthetic RF":"Receiving HackRF"):"Stopping";}view.dropped_samples=dropped.load();view.elapsed_seconds=now-started;view.processing_load=.1*((now-begin)/(double(count)/c.sample_rate))+.9*view.processing_load;
+                {std::lock_guard lock(mutex);if(view.error.empty()){view.running=run.load();view.state=run?("Receiving "+std::string(receiver_source_name(c))):"Stopping";}view.dropped_samples=dropped.load();view.elapsed_seconds=now-started;view.processing_load=.1*((now-begin)/(double(count)/c.sample_rate))+.9*view.processing_load;
                     if(now-last_publish>=.05){view.spectrum_dbfs=display;++view.spectrum_sequence;publish_bins();last_publish=now;}}
                 if(store&&now-last_save>=1)checkpoint();
 
@@ -471,10 +587,11 @@ struct Engine::Impl {
 #ifdef OVMESH_HAVE_HACKRF
         if(device)hackrf_stop_rx(device);
 #endif
-        if(producer.joinable())producer.join();input_finished=true;wake.notify_all();if(worker.joinable())worker.join();
-#ifdef OVMESH_HAVE_HACKRF
-        close_hardware();
+#ifdef OVMESH_HAVE_RTLSDR
+        rtl_pump.stop();
 #endif
+        if(producer.joinable())producer.join();input_finished=true;wake.notify_all();if(worker.joinable())worker.join();
+        close_hardware();
         for(auto& b:pool)std::fill(b.data.begin(),b.data.end(),int8_t{});pool.clear();store.reset();
         prepared_discovery.reset();
         std::lock_guard lock(mutex);view.running=false;view.recording=false;if(view.state!="Failed"&&view.state!="Idle"&&!view.historical)view.state="Stopped";
@@ -511,16 +628,20 @@ struct Engine::Impl {
 Engine::Engine():impl_(std::make_unique<Impl>()){}
 Engine::~Engine(){stop();disconnect_gps();}
 std::string Engine::version(){return OVMESH_VERSION;}
-bool Engine::start(const ReceiverConfig& config,bool hardware_permission,std::string& error) {
+bool Engine::start(const ReceiverConfig& requested,bool hardware_permission,std::string& error) {
     std::lock_guard life(impl_->lifecycle);auto& p=*impl_;p.stop_locked();
+    auto config=requested;
     try {
         validate(config);
-        if(!config.synthetic&&!hardware_permission)throw std::runtime_error("Explicit permission is required before opening HackRF");
+        if(!config.synthetic&&!hardware_permission)throw std::runtime_error("Explicit permission is required before opening "+std::string(receiver_source_name(config)));
 #ifndef OVMESH_HAVE_HACKRF
-        if(!config.synthetic)throw std::runtime_error("This build does not include libhackrf");
+        if(!config.synthetic&&config.hardware_receiver==HardwareReceiver::HackRf)throw std::runtime_error("This build does not include libhackrf");
 #endif
-        bool capability=p.view.hardware_available;{
-            std::lock_guard lock(p.mutex);p.view=Snapshot{};p.view.hardware_available=capability;p.view.config=config;p.view.state="Starting";p.view.session_id=std::to_string(static_cast<uint64_t>(utc_now()*1000000));p.view.upstream_loss_unknown=!config.synthetic;p.save_requested=0;p.save_completed=0;p.final_save_confirmed=false;p.saved_path.clear();
+#ifndef OVMESH_HAVE_RTLSDR
+        if(!config.synthetic&&config.hardware_receiver==HardwareReceiver::RtlSdr)throw std::runtime_error("This build does not include librtlsdr");
+#endif
+        const bool capability=p.view.hardware_available,rtl_capability=p.view.rtl_sdr_available;{
+            std::lock_guard lock(p.mutex);p.view=Snapshot{};p.view.hardware_available=capability;p.view.rtl_sdr_available=rtl_capability;p.view.config=config;p.view.state="Starting";p.view.session_id=std::to_string(static_cast<uint64_t>(utc_now()*1000000));p.view.upstream_loss_unknown=!config.synthetic;p.save_requested=0;p.save_completed=0;p.final_save_confirmed=false;p.saved_path.clear();
             for(const auto& l:config.lanes){LaneHealth h;h.label=l.label;h.frequency_hz=l.frequency_hz;h.state=!l.enabled?"disabled":l.protocol!="Meshtastic"?"unsupported protocol":"searching; one frame at a time";p.view.lane_health.push_back(h);}
             p.fix_history.clear();if(p.current_fix)p.fix_history.push_back(*p.current_fix);
             if(p.current_fix&&p.current_fix->valid)p.view.track.push_back(*p.current_fix);
@@ -538,28 +659,46 @@ bool Engine::start(const ReceiverConfig& config,bool hardware_permission,std::st
             }
         }
         p.pool.clear();p.pool.resize(pool_blocks);p.head=0;p.tail=0;p.next_sample=0;p.dropped=0;p.input_finished=false;p.started=monotonic_now();p.last_input_arrival=p.started;p.started_utc=utc_now();
-        if(!config.session_path.empty()){p.store=std::make_unique<SessionStore>();p.store->create(config.session_path,config,p.view.session_id);p.saved_path=config.session_path;std::lock_guard lock(p.mutex);p.view.recording=true;}
 #ifdef OVMESH_HAVE_HACKRF
-        if(!config.synthetic){
+        if(!config.synthetic&&config.hardware_receiver==HardwareReceiver::HackRf){
             auto require=[](int result){if(result!=HACKRF_SUCCESS)throw std::runtime_error(std::string("HackRF operation failed: ")+hackrf_error_name(static_cast<hackrf_error>(result)));};
             require(hackrf_init());p.hackrf_initialized=true;
             if(config.device_serial.empty())require(hackrf_open(&p.device));else require(hackrf_open_by_serial(config.device_serial.c_str(),&p.device));
             require(hackrf_set_sample_rate(p.device,config.sample_rate));require(hackrf_set_baseband_filter_bandwidth(p.device,hackrf_compute_baseband_filter_bw_round_down_lt(config.sample_rate+1)));
             require(hackrf_set_freq(p.device,tuned_center_hz(config)));require(hackrf_set_lna_gain(p.device,config.lna_gain));require(hackrf_set_vga_gain(p.device,config.vga_gain));require(hackrf_set_amp_enable(p.device,config.amplifier?1:0));require(hackrf_set_antenna_enable(p.device,0));
-            p.run=true;require(hackrf_start_rx(p.device,&Impl::receive,&p));
         }
 #endif
+#ifdef OVMESH_HAVE_RTLSDR
+        if(!config.synthetic&&config.hardware_receiver==HardwareReceiver::RtlSdr) {
+            p.configure_rtl(config);
+            std::lock_guard lock(p.mutex);p.view.config=config;
+        }
+#endif
+        if(!config.session_path.empty()){p.store=std::make_unique<SessionStore>();p.store->create(config.session_path,config,p.view.session_id);p.saved_path=config.session_path;std::lock_guard lock(p.mutex);p.view.recording=true;}
+        // Hardware setup is not RF exposure. Anchor elapsed/UTC immediately
+        // before input startup, including the no-callback watchdog baseline.
+        p.started=monotonic_now();p.started_utc=utc_now();p.last_input_arrival=p.started;
         p.run=true;{std::lock_guard lock(p.mutex);p.view.running=true;}
+#ifdef OVMESH_HAVE_HACKRF
+        if(p.device) {
+            const auto result=hackrf_start_rx(p.device,&Impl::receive,&p);
+            if(result!=HACKRF_SUCCESS)throw std::runtime_error(std::string("HackRF operation failed: ")+hackrf_error_name(static_cast<hackrf_error>(result)));
+        }
+#endif
         p.worker=std::thread([&p,config]{p.process(config);});if(config.synthetic)p.producer=std::thread([&p,config]{p.simulate(config);});
+#ifdef OVMESH_HAVE_RTLSDR
+        if(p.rtl_device)p.start_rtl();
+#endif
         error.clear();return true;
     }catch(const std::exception& e){error=e.what();p.run=false;
 #ifdef OVMESH_HAVE_HACKRF
         if(p.device)hackrf_stop_rx(p.device);
 #endif
-        if(p.producer.joinable())p.producer.join();p.input_finished=true;p.wake.notify_all();if(p.worker.joinable())p.worker.join();
-#ifdef OVMESH_HAVE_HACKRF
-        p.close_hardware();
+#ifdef OVMESH_HAVE_RTLSDR
+        p.rtl_pump.stop();
 #endif
+        if(p.producer.joinable())p.producer.join();p.input_finished=true;p.wake.notify_all();if(p.worker.joinable())p.worker.join();
+        p.close_hardware();
         p.prepared_discovery.reset();p.store.reset();p.fail(error);return false;}
 }
 void Engine::stop(){auto& p=*impl_;std::lock_guard life(p.lifecycle);p.stop_locked();}
@@ -616,7 +755,7 @@ void Engine::disconnect_gps(){
     if(!impl_->current_fix||!impl_->current_fix->manual)impl_->clear_live_position_locked("Serial GPS disconnected");
 }
 GpsConnectionStatus Engine::gps_connection_status() const {return impl_->gps.status();}
-bool Engine::open_session(const std::string& path,std::string& error){std::lock_guard life(impl_->lifecycle);impl_->stop_locked();try{SessionStore store;store.open_readonly(path);auto snapshot=store.read();snapshot.config.session_path=path;snapshot.hardware_available=impl_->view.hardware_available;std::lock_guard lock(impl_->mutex);impl_->view=std::move(snapshot);impl_->saved_path=path;error.clear();return true;}catch(const std::exception& e){error=e.what();return false;}}
+bool Engine::open_session(const std::string& path,std::string& error){std::lock_guard life(impl_->lifecycle);impl_->stop_locked();try{SessionStore store;store.open_readonly(path);auto snapshot=store.read();snapshot.config.session_path=path;snapshot.hardware_available=impl_->view.hardware_available;snapshot.rtl_sdr_available=impl_->view.rtl_sdr_available;std::lock_guard lock(impl_->mutex);impl_->view=std::move(snapshot);impl_->saved_path=path;error.clear();return true;}catch(const std::exception& e){error=e.what();return false;}}
 bool Engine::save_session(std::string& error) {
     auto& p=*impl_;std::lock_guard life(p.lifecycle);return p.save_locked(error);
 }
@@ -648,8 +787,8 @@ bool Engine::new_session(std::string& error,bool discard_unrecorded) {
     {std::lock_guard lock(p.mutex);has_data=p.view.delivered_samples||p.view.total_receptions||p.view.spectrum_tiles;}
     if(!historical&&!p.saved_path.empty()&&has_data&&!p.save_locked(error))return false;
     std::lock_guard lock(p.mutex);
-    const bool capability=p.view.hardware_available;auto config=p.view.config;config.session_path.clear();
-    p.view=Snapshot{};p.view.hardware_available=capability;p.view.config=std::move(config);
+    const bool capability=p.view.hardware_available,rtl_capability=p.view.rtl_sdr_available;auto config=p.view.config;config.session_path.clear();
+    p.view=Snapshot{};p.view.hardware_available=capability;p.view.rtl_sdr_available=rtl_capability;p.view.config=std::move(config);
     p.view.gps_status=p.live_position_status_locked();
     p.saved_path.clear();p.save_requested=0;p.save_completed=0;p.final_save_confirmed=false;
     p.fix_history.clear();if(p.current_fix)p.fix_history.push_back(*p.current_fix);

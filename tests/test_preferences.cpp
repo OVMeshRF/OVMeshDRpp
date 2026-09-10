@@ -64,7 +64,7 @@ void defaults_and_roundtrip(const Fixture& fixture) {
     require(!fs::exists(fs::path(paths.settings_file)), "Directory initialization does not create settings");
     ovmesh::save_preferences(paths, defaults);
     require(ovmesh::load_preferences(paths) == defaults, "Default settings round trip");
-    require(contents(paths.settings_file).starts_with("version=5\n"), "New preferences use version 5");
+    require(contents(paths.settings_file).starts_with("version=6\n"), "New preferences use version 6");
 
     auto changed = defaults;
     const auto alternate = fixture.folder / fs::path(u8"région-測定"); fs::create_directory(alternate);
@@ -109,7 +109,15 @@ void tuning_offset_roundtrip_and_migration(const Fixture& fixture) {
         ovmesh::save_preferences(paths, preferences);
         require(ovmesh::load_preferences(paths) == preferences, "Signed tuning offset round trips without changing other preferences");
     }
-    const auto version5 = contents(paths.settings_file);
+    const auto version6 = contents(paths.settings_file);
+    auto version5 = version6;
+    replace(version5, "version=6\n", "version=5\n");
+    replace(version5, "rtl_gain_tenths_db=280\n", "");
+    replace(version5, "rtl_auto_gain=0\n", "");
+    write_existing(paths.settings_file, version5);
+    require(ovmesh::load_preferences(paths) == preferences,
+        "Version 5 adopts absent RTL defaults without changing the saved receiver");
+    require(contents(paths.settings_file) == version5, "Loading version 5 leaves its file unchanged");
     auto version4 = version5;
     replace(version4, "version=5\n", "version=4\n");
     for (const auto* line : {"spectrum_only=0\n", "decode_enabled=1\n", "receiver_source=hackrf\n", "center_hz=907500000\n",
@@ -146,12 +154,12 @@ void tuning_offset_roundtrip_and_migration(const Fixture& fixture) {
         "Version 1 loads all retained settings and defaults tuning offset to zero");
     require(contents(paths.settings_file) == legacy, "Loading version 1 does not migrate or rewrite its file");
     ovmesh::save_preferences(paths, loaded_legacy);
-    require(contents(paths.settings_file) == version5 && ovmesh::load_preferences(paths) == preferences,
-        "Explicit save migrates version 1 to version 5 and retains every prior field");
+    require(contents(paths.settings_file) == version6 && ovmesh::load_preferences(paths) == preferences,
+        "Explicit save migrates version 1 to version 6 and retains every prior field");
     write_existing(paths.settings_file, version4);
     ovmesh::save_preferences(paths, ovmesh::load_preferences(paths));
-    require(ovmesh::load_preferences(paths) == discovery_opt_out && contents(paths.settings_file).starts_with("version=5\n"),
-        "Explicit migration to version 5 preserves an older discovery opt-out");
+    require(ovmesh::load_preferences(paths) == discovery_opt_out && contents(paths.settings_file).starts_with("version=6\n"),
+        "Explicit migration to version 6 preserves an older discovery opt-out");
 }
 
 void new_files_do_not_overwrite(const Fixture& fixture) {
@@ -177,7 +185,7 @@ void malformed_settings_preserved(const Fixture& fixture) {
     const auto valid = contents(paths.settings_file);
     std::set<std::string> malformed = {"", valid.substr(0, valid.size() - 1), std::string(32769, 'x'), valid + "unexpected=1\n"};
     for (const auto& [from, to] : {
-            std::pair<std::string, std::string>{"version=5", "version=6"},
+            std::pair<std::string, std::string>{"version=6", "version=7"},
             {"gps_enabled=1", "gps_enabled=true"}, {"recording_enabled=1", "recording_enabled=2"},
             {"gps_baud=9600", "gps_baud=0"}, {"gps_baud=9600", "gps_baud=230400"},
             {"gps_baud=9600", "gps_baud=09600"}, {"gps_baud=9600", "gps_baud=9999999"},
@@ -185,8 +193,8 @@ void malformed_settings_preserved(const Fixture& fixture) {
             {"gps_device_id=", "gps_device_id=0"}, {"gps_device_id=", "gps_device_id=c0af"},
             {"gps_device_id=", "gps_device_id=edb080"}, {"gps_device_id=", "gps_device_id=f4908080"},
             {"gps_device_id=", "gps_enabled=1"}, {"gps_device_id=", "unknown="},
-            {"version=5", "version=1"}, {"version=5", "version=2"}, {"version=5", "version=3"},
-            {"version=5", "version=4"}, {"tuning_offset_hz=0\n", ""},
+            {"version=6", "version=1"}, {"version=6", "version=2"}, {"version=6", "version=3"},
+            {"version=6", "version=4"}, {"version=6", "version=5"}, {"tuning_offset_hz=0\n", ""},
             {"discover_lora=1", "discover_lora=true"}, {"discover_lora=1", "discover_lora=2"},
             {"discover_lora=1\n", ""}, {"discover_lora=1", "gps_enabled=1"},
             {"compact_recording=1\n", ""}, {"compact_recording=1", "compact_recording=2"},
@@ -200,12 +208,14 @@ void malformed_settings_preserved(const Fixture& fixture) {
             {"survey_span_hz=10000000", "survey_span_hz=499999"}, {"survey_span_hz=10000000", "survey_span_hz=12800001"},
             {"lna_gain=16", "lna_gain=7"}, {"lna_gain=16", "lna_gain=48"},
             {"vga_gain=16", "vga_gain=3"}, {"vga_gain=16", "vga_gain=64"},
-            {"amplifier=0", "amplifier=true"}, {"spectrum_only=0", "spectrum_only=2"}, {"decode_enabled=1", "decode_enabled=true"},
+            {"rtl_gain_tenths_db=280", "rtl_gain_tenths_db=601"}, {"rtl_gain_tenths_db=280", "rtl_gain_tenths_db=-101"},
+            {"rtl_auto_gain=0", "rtl_auto_gain=2"}, {"amplifier=0", "amplifier=true"}, {"spectrum_only=0", "spectrum_only=2"}, {"decode_enabled=1", "decode_enabled=true"},
             {"mixed_fonts=1", "mixed_fonts=0 "}, {"mobile_position_display=0", "mobile_position_display=-1"}}) {
         auto text = valid; replace(text, from, to); malformed.insert(text);
     }
     for (const auto* field : {"center_hz", "sample_rate", "survey_span_hz", "lna_gain", "vga_gain",
-            "amplifier", "spectrum_only", "decode_enabled", "mixed_fonts", "mobile_position_display"}) {
+            "amplifier", "spectrum_only", "decode_enabled", "mixed_fonts", "mobile_position_display",
+            "rtl_gain_tenths_db", "rtl_auto_gain"}) {
         const auto start = valid.find(std::string(field) + '=');
         const auto line = valid.substr(start, valid.find('\n', start) + 1 - start);
         auto missing = valid; replace(missing, line, ""); malformed.insert(missing);
@@ -268,7 +278,7 @@ void receiver_bounds(const Fixture& fixture) {
     }
     const auto valid = contents(paths.settings_file);
     for (const auto mutate : {
-            +[](ovmesh::DesktopPreferences& p) { p.receiver_source = static_cast<ovmesh::DesktopReceiver>(2); },
+            +[](ovmesh::DesktopPreferences& p) { p.receiver_source = static_cast<ovmesh::DesktopReceiver>(3); },
             +[](ovmesh::DesktopPreferences& p) { p.center_hz = std::numeric_limits<uint64_t>::max(); },
             +[](ovmesh::DesktopPreferences& p) { p.center_hz = 1000000; p.tuning_offset_hz = -1; },
             +[](ovmesh::DesktopPreferences& p) { p.center_hz = 5999750001ULL; },
@@ -280,6 +290,37 @@ void receiver_bounds(const Fixture& fixture) {
         auto invalid = preferences; mutate(invalid);
         rejects([&] { ovmesh::save_preferences(paths, invalid); }, "Out-of-range RF preference cannot be persisted");
         require(contents(paths.settings_file) == valid, "Invalid RF preference preserves previous valid settings");
+    }
+}
+
+void rtl_receiver_roundtrip(const Fixture& fixture) {
+    const auto paths = fixture.paths("rtl-profile");
+    auto preferences = ovmesh::load_preferences(paths);
+    preferences.receiver_source = ovmesh::DesktopReceiver::RtlSdr;
+    preferences.center_hz = 906875000;
+    preferences.tuning_offset_hz = -600;
+    preferences.sample_rate = 2000000;
+    preferences.survey_span_hz = 1500000;
+    for (const int gain : {-100, 0, 280, 496, 600}) for (const bool automatic : {false, true}) {
+        preferences.rtl_gain_tenths_db = gain; preferences.rtl_auto_gain = automatic;
+        ovmesh::save_preferences(paths, preferences);
+        require(ovmesh::load_preferences(paths) == preferences,
+            "RTL source, signed Offset, gain and automatic/manual choice survive restart");
+    }
+    preferences.discover_lora = false; preferences.sample_rate = 1000000; preferences.survey_span_hz = 800000;
+    ovmesh::save_preferences(paths, preferences);
+    require(ovmesh::load_preferences(paths) == preferences, "RTL 1 MS/s survey retains its narrower range");
+    const auto valid = contents(paths.settings_file);
+    for (const auto mutate : {
+            +[](ovmesh::DesktopPreferences& p) { p.sample_rate = 16000000; },
+            +[](ovmesh::DesktopPreferences& p) { p.sample_rate = 2400000; },
+            +[](ovmesh::DesktopPreferences& p) { p.survey_span_hz = 800001; },
+            +[](ovmesh::DesktopPreferences& p) { p.amplifier = true; },
+            +[](ovmesh::DesktopPreferences& p) { p.rtl_gain_tenths_db = -101; },
+            +[](ovmesh::DesktopPreferences& p) { p.rtl_gain_tenths_db = 601; }}) {
+        auto invalid = preferences; mutate(invalid);
+        rejects([&] { ovmesh::save_preferences(paths, invalid); }, "Unsupported RTL preference is rejected before replacing valid settings");
+        require(contents(paths.settings_file) == valid, "Rejected RTL changes preserve the recorded preference file");
     }
 }
 
@@ -344,6 +385,7 @@ int main() {
         new_files_do_not_overwrite(fixture);
         malformed_settings_preserved(fixture);
         receiver_bounds(fixture);
+        rtl_receiver_roundtrip(fixture);
         unsafe_paths(fixture);
         std::cout << "Desktop preference checks passed\n";
         return 0;

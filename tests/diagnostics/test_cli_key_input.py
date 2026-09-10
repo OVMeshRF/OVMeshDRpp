@@ -31,7 +31,7 @@ for option, expected in (("0,LongFast", b"1 through 4"), ("5,LongFast", b"1 thro
                          ("2,LongFast", b"must exist"), ("1,", b"nonempty"),
                          ("1," + "x" * 81, b"at most 80"), ("1,a,b", b"requires LANE")):
     check(base + ["--channel-key-stdin", option], b"AQ==\n", expected)
-check([binary, "--headless-demo", "--channel-key-stdin", "1,LongFast"], b"AQ==\n", b"explicit HackRF")
+check([binary, "--headless-demo", "--channel-key-stdin", "1,LongFast"], b"AQ==\n", b"explicit hardware")
 check([binary, "--receive-hackrf", "--channel-key-stdin", "1,LongFast"], b"AQ==\n", b"requires explicit")
 check(base + ["--channel-key-stdin", "1,LongFast", "--channel-key-stdin", "1,LongFast"], b"AQ==\n", b"Only one")
 for slot in (1, 8, 16):
@@ -42,7 +42,7 @@ for option, expected in (("0,Key", b"1 through 16"), ("17,Key", b"1 through 16")
     check(base + ["--survey-key-stdin", option], b"AQ==\n", expected)
 check(base + ["--survey-key-stdin", "1,Survey", "--channel-key-stdin", "1,LongFast"], b"AQ==\n", b"Only one")
 check(base + ["--survey-key-stdin", "1,Survey"], b"AR==\n", b"Invalid redirected")
-check([binary, "--headless-demo", "--survey-key-stdin", "1,Survey"], b"AQ==\n", b"explicit HackRF")
+check([binary, "--headless-demo", "--survey-key-stdin", "1,Survey"], b"AQ==\n", b"explicit hardware")
 if os.name == "posix":
     import pty
     master, slave = pty.openpty()

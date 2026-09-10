@@ -45,10 +45,10 @@ public:
         : rate(sample_rate), phases(sample_rate / center_spacing_hz),
           stride(sample_rate / output_sample_rate),
           delay(static_cast<uint32_t>(phases * taps_per_phase / 2)) {
-        constexpr std::array<uint32_t, 5> supported{8000000, 10000000, 12000000,
+        constexpr std::array<uint32_t, 6> supported{2000000, 8000000, 10000000, 12000000,
                                                    16000000, 20000000};
         if (std::find(supported.begin(), supported.end(), rate) == supported.end())
-            throw std::invalid_argument("Discovery channelizer requires 8, 10, 12, 16 or 20 MS/s");
+            throw std::invalid_argument("Discovery channelizer requires 2, 8, 10, 12, 16 or 20 MS/s");
         if (!std::isfinite(center) || !std::isfinite(lower) || !std::isfinite(upper) ||
             lower < 0 || lower >= upper || lower < center - rate / 2.0 ||
             upper > center + rate / 2.0)

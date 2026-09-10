@@ -340,6 +340,14 @@ struct BurstListState {
     }
 };
 
+int receiver_source_index(const ReceiverConfig& config) {
+    return config.synthetic ? 0 : config.hardware_receiver == HardwareReceiver::RtlSdr ? 2 : 1;
+}
+
+bool receiver_source_available(int source, const Snapshot& snapshot) {
+    return source == 0 || (source == 1 && snapshot.hardware_available) || (source == 2 && snapshot.rtl_sdr_available);
+}
+
 struct DesktopState {
     SessionDiskMonitor session_disk;
     BurstListState burst_list;
@@ -510,6 +518,40 @@ struct DesktopState {
         gps_devices = discover_gps_devices();
         selected_gps = gps_devices.error.empty() ? select_gps_device(gps_devices.devices, preferences.gps_device_id) : std::nullopt;
     }
+    // Updates setup only. Selecting a source never enumerates or opens an SDR.
+    void select_receiver(int next_source) {
+        if (next_source < 0 || next_source > 2 || next_source == source) return;
+        const bool hardware_changed = next_source != 0 && next_source != source;
+        source = next_source;
+        config.synthetic = source == 0;
+        config.hardware_receiver = source == 2 ? HardwareReceiver::RtlSdr : HardwareReceiver::HackRf;
+        if (hardware_changed) {
+            device_serial.fill(0);
+            config.device_serial.clear();
+            config.tuning_offset_hz = 0;
+        }
+        if (source == 2) {
+            config.sample_rate = 2000000;
+            config.survey_span_hz = 1500000;
+            config.amplifier = false;
+            if (config.center_hz < 24000000 || config.center_hz > 1766000000ULL)
+                config.center_hz = 906875000;
+        } else if (config.sample_rate < 8000000) {
+            config.sample_rate = 16000000;
+            config.survey_span_hz = 10000000;
+        }
+        feedback(true, source == 2 ?
+            "RTL-SDR selected: 1.5 MHz survey at 2 MS/s. Check the center frequency; Offset reset for this receiver." :
+            "Receiver selected. Check the survey range and Offset before starting.");
+    }
+    void prepare_discovery_rate() {
+        if (source != 2 || spectrum_only || !config.discover_lora) return;
+        if (config.sample_rate != 2000000 || config.survey_span_hz > 1500000) {
+            config.sample_rate = 2000000;
+            config.survey_span_hz = std::min(config.survey_span_hz, 1500000U);
+            feedback(true, "RTL-SDR LoRa discovery uses 2 MS/s with up to a 1.5 MHz survey span. Check the displayed range.");
+        }
+    }
     void persist_preferences() {
         if (!preferences_ready) return;
         preferences.recording_enabled = save_session;
@@ -522,13 +564,16 @@ struct DesktopState {
         preferences.decode_enabled = decode_enabled;
         preferences.mixed_fonts = mixed_fonts;
         preferences.mobile_position_display = position_view_mode == PositionViewMode::Mobile;
-        preferences.receiver_source = source == 0 ? DesktopReceiver::Synthetic : DesktopReceiver::HackRf;
+        preferences.receiver_source = source == 0 ? DesktopReceiver::Synthetic :
+            source == 2 ? DesktopReceiver::RtlSdr : DesktopReceiver::HackRf;
         preferences.center_hz = config.center_hz;
         preferences.sample_rate = config.sample_rate;
         preferences.survey_span_hz = config.survey_span_hz;
         preferences.lna_gain = config.lna_gain;
         preferences.vga_gain = config.vga_gain;
         preferences.amplifier = config.amplifier;
+        preferences.rtl_gain_tenths_db = config.rtl_gain_tenths_db;
+        preferences.rtl_auto_gain = config.rtl_auto_gain;
         try {
             save_preferences(preference_locations, preferences);
             preferences_error.clear();
@@ -572,14 +617,17 @@ struct DesktopState {
             mixed_fonts = preferences.mixed_fonts;
             position_view_mode = preferences.mobile_position_display ? PositionViewMode::Mobile : PositionViewMode::Stationary;
             if (restore_receiver) {
-                source = preferences.receiver_source == DesktopReceiver::Synthetic ? 0 : 1;
+                source = static_cast<int>(preferences.receiver_source);
                 config.synthetic = source == 0;
+                config.hardware_receiver = source == 2 ? HardwareReceiver::RtlSdr : HardwareReceiver::HackRf;
                 config.center_hz = preferences.center_hz;
                 config.sample_rate = preferences.sample_rate;
                 config.survey_span_hz = preferences.survey_span_hz;
                 config.lna_gain = preferences.lna_gain;
                 config.vga_gain = preferences.vga_gain;
                 config.amplifier = preferences.amplifier;
+                config.rtl_gain_tenths_db = preferences.rtl_gain_tenths_db;
+                config.rtl_auto_gain = preferences.rtl_auto_gain;
                 // The decoder is armed, but no channel key is implicitly loaded.
                 if (config.lanes.empty()) config.lanes.push_back(LaneConfig{});
             }
@@ -618,6 +666,7 @@ struct DesktopState {
             return;
         }
         config.synthetic = source == 0;
+        config.hardware_receiver = source == 2 ? HardwareReceiver::RtlSdr : HardwareReceiver::HackRf;
         if (preferences_active && save_session && (session_path.empty() || recording_path_used)) prepare_recording_file();
         if (save_session && session_path.empty()) {
             feedback(false, "Choose a recording location before starting. Recording has not been disabled.");
@@ -630,7 +679,7 @@ struct DesktopState {
         config.receiver_description = receiver_description.data();
         config.survey_notes = survey_notes.data();
         if (prepared_run && config.synthetic) {
-            feedback(false, "This prepared session is for the explicitly selected HackRF source.");
+            feedback(false, "This prepared session requires its explicitly selected hardware receiver.");
             return;
         }
         std::string error;
@@ -650,7 +699,8 @@ struct DesktopState {
         const double upper = double(effective.center_hz) + effective.survey_span_hz * .5;
         std::erase_if(effective.lanes, [&](const LaneConfig& lane) {
             return double(lane.frequency_hz) - lane.bandwidth_hz * .5 < lower ||
-                   double(lane.frequency_hz) + lane.bandwidth_hz * .5 > upper;
+                   double(lane.frequency_hz) + lane.bandwidth_hz * .5 > upper ||
+                   (lane.bandwidth_hz != 0 && effective.sample_rate % (uint64_t(lane.bandwidth_hz) * 4) != 0);
         });
         const bool ok = engine.start(effective, permission, error);
         feedback(ok, ok ? (config.synthetic ? "Synthetic reception started. No USB device is accessed."
@@ -1067,7 +1117,7 @@ void spectrum_view(DesktopState& ui, const Snapshot& snapshot, float height) {
     std::array<char, 160> context{};
     const double utc = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
     std::snprintf(context.data(),context.size(),"%s | MHz / relative dBFS | %.1f MS/s | View %s%s",
-        cfg.synthetic ? "Synthetic" : "HackRF",cfg.sample_rate/1e6,
+        receiver_source_name(cfg),cfg.sample_rate/1e6,
         clock_text(utc).c_str(),ui.freeze_waterfall?" / frozen display":snapshot.running?"":" / stopped results");
     draw->PushClipRect(origin,{origin.x+width,origin.y+height},true);
     draw->AddText({origin.x+10,bottom+8},ImGui::GetColorU32(muted),context.data());
@@ -2863,7 +2913,7 @@ int run_desktop(Engine& engine, int maximum_frames, bool auto_demo,
     ui.manual_stop = until_stopped;
     if (launch_config) {
         ui.config = *launch_config;
-        ui.source = launch_config->synthetic ? 0 : 1;
+        ui.source = receiver_source_index(*launch_config);
         ui.spectrum_only = !launch_config->discover_lora && launch_config->lanes.empty();
         ui.decode_enabled = !launch_config->lanes.empty();
         ui.prepared_run = prepare_only;
@@ -2899,11 +2949,12 @@ int run_desktop(Engine& engine, int maximum_frames, bool auto_demo,
 #endif
             std::printf("Desktop control pid=%ld until_stopped=%u recording=%u stop_signal=%s window_stays_open_after_stop=%u\n",
                 static_cast<long>(process_id), until_stopped ? 1u : 0u, ui.save_session ? 1u : 0u, until_stopped && external_stop_supported ? "SIGINT" : "none", until_stopped ? 1u : 0u);
-            std::printf("Started %s desktop nominal_center_hz=%llu tuning_offset_hz=%lld tuned_center_hz=%llu sample_rate=%u survey_span_hz=%u lna_gain_db=%u vga_gain_db=%u rf_amplifier=%u antenna_bias=0 duration_seconds=%.3f deadline_utc_seconds=%.3f\n",
-                ui.config.synthetic ? "synthetic" : "receive-only HackRF",
+            std::printf("Started %s desktop nominal_center_hz=%llu tuning_offset_hz=%lld tuned_center_hz=%llu sample_rate=%u survey_span_hz=%u lna_gain_db=%u vga_gain_db=%u rf_amplifier=%u rtl_gain_tenths_db=%d rtl_auto_gain=%u antenna_bias=0 duration_seconds=%.3f deadline_utc_seconds=%.3f\n",
+                receiver_source_name(ui.config),
                 static_cast<unsigned long long>(ui.config.center_hz), static_cast<long long>(ui.config.tuning_offset_hz),
                 static_cast<unsigned long long>(tuned_center_hz(ui.config)), ui.config.sample_rate, ui.config.survey_span_hz,
-                ui.config.lna_gain, ui.config.vga_gain, ui.config.amplifier ? 1u : 0u, until_stopped ? 0 : duration_seconds, utc_deadline);
+                ui.config.lna_gain, ui.config.vga_gain, ui.config.amplifier ? 1u : 0u,
+                ui.config.rtl_gain_tenths_db, ui.config.rtl_auto_gain ? 1u : 0u, until_stopped ? 0 : duration_seconds, utc_deadline);
             for (size_t i = 0; i < ui.config.lanes.size(); ++i) {
                 const auto& lane = ui.config.lanes[i];
                 std::printf("Desktop started lane=%zu enabled=%u frequency_hz=%llu bandwidth_hz=%u sf=%u cr_denominator=%u\n",
@@ -2944,10 +2995,11 @@ int run_desktop(Engine& engine, int maximum_frames, bool auto_demo,
             ui.save_session = true;
             ui.session_path = launch_config->session_path;
         }
-        if (ui.source == 1 && !initial.hardware_available) {
-            ui.source = 0;
-            ui.feedback(false, "HackRF support is unavailable in this build. Synthetic source selected.");
-        } else if (ui.source == 1 && ui.gps_enabled && !ui.passive_smoke) {
+        if (!receiver_source_available(ui.source, initial)) {
+            const std::string unavailable_name = receiver_source_name(ui.config);
+            ui.select_receiver(0);
+            ui.feedback(false, unavailable_name + " support is unavailable in this build. Synthetic source selected.");
+        } else if (ui.source != 0 && ui.gps_enabled && !ui.passive_smoke) {
             ui.connect_selected_gps(engine);
         }
     }
@@ -2956,7 +3008,7 @@ int run_desktop(Engine& engine, int maximum_frames, bool auto_demo,
         // metadata populates controls, but no source or receive timer starts.
         ui.config = initial.config;
         ui.config.session_path.clear();
-        ui.source = initial.config.synthetic ? 0 : 1;
+        ui.source = receiver_source_index(initial.config);
         ui.save_session = false;
         ui.passive_smoke = maximum_frames > 0;
         copy_text(ui.session_title, initial.config.session_title);
