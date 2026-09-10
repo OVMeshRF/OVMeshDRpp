@@ -36,6 +36,14 @@ the committed smoke-test source. These are **source-file hashes**, not fingerpri
 of compiled libraries, whose hashes depend on the build environment. Preserve the upstream
 [license](../../third_party/openssl/LICENSE.txt) with the dependency.
 
+## Assisted local setup
+
+The explicit [bootstrap helper](../../tools/bootstrap_openssl.py) automates the recorded configuration for native Linux x86_64/aarch64 and macOS arm64/x86_64. Use `python3 tools/bootstrap_openssl.py --download`, or `--archive PATH` without network access. It uses only Python's standard library; no virtual environment or pip package is needed. See [complete Linux instructions](../operations/linux-build.md).
+
+The helper verifies the pinned archive size/SHA-256 before extraction or build, rejects links, special entries and paths outside the expected source prefix, then checks the recorded build-source hashes. Downloads require an explicit flag, HTTPS and the official release/CDN hosts. Builds and logs stay under ignored `build/`, and only generated public headers, static libcrypto and its license are staged. It validates the existing hardening/NIST smoke test through CMake before making a new prefix available; existing prefixes are left unchanged. These checks do not verify the unverified detached publisher signature or replace target qualification.
+
+Normal CMake configuration selects the prepared local prefix by default, or an explicit `OPENSSL_ROOT_DIR`. It rejects missing or mixed-prefix headers/libraries, nonstatic crypto and an incorrect version. It compiles and links the hardened intake source even when application tests are disabled. Configure does not execute that test or download/build a dependency. Run CTest for the known-answer runtime check. A header/library path and version check is not proof of source provenance; use the recorded source preparation and inspect the final linkage.
+
 ## Build configuration
 
 Build static `libcrypto` with its default provider available for AES-128/256-CTR.

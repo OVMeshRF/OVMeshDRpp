@@ -8,6 +8,7 @@ OVMeshDR++ is an experimental receive-only RF survey application. Start with the
 - [Receiver and platform compatibility](operations/hardware-compatibility.md): HackRF One and RTL-SDR capabilities, limits and validation status.
 - [RTL-SDR setup](operations/rtl-sdr.md): source selection, sample rates, tuner gain and USB troubleshooting.
 - [Build and packaging](operations/deployment.md): local builds, dependencies, storage locations and platform limits.
+- [Linux build setup](operations/linux-build.md): local OpenSSL preparation, prerequisites and configure-error troubleshooting.
 - [Screenshot gallery](screenshots/README.md): current interface examples and separately labeled sample reports.
 - [Support playbook](operations/support-playbook.md): troubleshooting and useful diagnostic information.
 - [Current capabilities and limitations](engineering/implementation-status.md).

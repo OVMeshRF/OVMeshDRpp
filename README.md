@@ -37,6 +37,8 @@ The report explains observation coverage, busy time, frequency activity and meas
 
 Start with the [build instructions](docs/operations/deployment.md) and [user guide](docs/user-guide.md). The synthetic receiver lets you explore the application without radio hardware. Ordinary startup opens an empty session with RF stopped; enabled recognized GPS setup may connect automatically. Saved receiver preferences persist, while old survey results and keys are not automatically restored.
 
+**Building on Linux?** Follow the [Linux setup guide](docs/operations/linux-build.md). It prepares the required OpenSSL library inside the checkout without replacing system OpenSSL or requiring a Python virtual environment.
+
 The core uses C++20/CMake, with a Dear ImGui/GLFW/OpenGL desktop, SQLite, bounded Nanopb decoding, OpenSSL libcrypto, and direct HackRF or RTL-SDR/libusb reception. Dependencies are pinned and reviewed; normal builds do not download them. macOS development builds are available from source. Windows/Linux packaging and hardware behavior still require validation.
 
 ## Understand the measurements
