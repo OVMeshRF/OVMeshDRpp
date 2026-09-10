@@ -1,0 +1,12 @@
+* skip_message:true
+meshtastic.Telemetry skip_message:false
+meshtastic.DeviceMetrics skip_message:false
+meshtastic.EnvironmentMetrics skip_message:false
+meshtastic.AirQualityMetrics skip_message:false
+meshtastic.PowerMetrics skip_message:false
+meshtastic.LocalStats skip_message:false
+meshtastic.HealthMetrics skip_message:false
+meshtastic.HostMetrics skip_message:false
+meshtastic.TrafficManagementStats skip_message:false
+meshtastic.EnvironmentMetrics.one_wire_temperature max_count:32
+meshtastic.HostMetrics.user_string max_size:234

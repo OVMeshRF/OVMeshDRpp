@@ -1,0 +1,4 @@
+# Keep the nested Role enumeration referenced by User without config payloads.
+* skip_message:true
+meshtastic.Config.DeviceConfig skip_message:false
+meshtastic.Config.DeviceConfig.* type:FT_IGNORE

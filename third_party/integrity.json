@@ -1,0 +1,657 @@
+{
+  "purpose": "Reviewed local vendored file hashes; not an upstream signature",
+  "files": [
+    {
+      "path": "third_party/imgui/LICENSE.txt",
+      "sha256": "173506a2d6f7fb67990d257fb2507f188690eca39060c39469ae7bef43aae2a3"
+    },
+    {
+      "path": "third_party/imgui/backends/imgui_impl_glfw.cpp",
+      "sha256": "41b11f71c17e05a748d4eaf8905a5fe6924d3ac42f69230feec4e585fd84900f"
+    },
+    {
+      "path": "third_party/imgui/backends/imgui_impl_glfw.h",
+      "sha256": "ec95fe696c025dbf5fe6d24b958d7531d8cfbac0cb306a5435899d3526f64c4e"
+    },
+    {
+      "path": "third_party/imgui/backends/imgui_impl_opengl3.cpp",
+      "sha256": "415001ebde1124337de5ded44aa42dc0ab458531049b7ca5b8b358514555af5d"
+    },
+    {
+      "path": "third_party/imgui/backends/imgui_impl_opengl3.h",
+      "sha256": "f8b452e0af80969e7d2a5c55c5bef42055f0686404e92bbd9d7ccc8a20754e7a"
+    },
+    {
+      "path": "third_party/imgui/backends/imgui_impl_opengl3_loader.h",
+      "sha256": "d3aa3e1f3d23c8c88817832e17d8dd0f2d0b599ae28430067c3fad563b8b7cd5"
+    },
+    {
+      "path": "third_party/imgui/imconfig.h",
+      "sha256": "5755e1b8d6ab0d7811a9d7cac0f509878b51fc5ee77e09bd0f235bcb414971e7"
+    },
+    {
+      "path": "third_party/imgui/imgui.cpp",
+      "sha256": "5a1e5128c0305f50b6556a77f71fde35836505883b74c1d6ae44723243f1e8de"
+    },
+    {
+      "path": "third_party/imgui/imgui.h",
+      "sha256": "0d8db1045db01d908853adfd26ae07c5bc5ab4789d4515f6ea34234a69ade0ca"
+    },
+    {
+      "path": "third_party/imgui/imgui_draw.cpp",
+      "sha256": "83d30419a8e06a5f0a8692ee6de186f7ecfddecdc33769e76244837e2975b400"
+    },
+    {
+      "path": "third_party/imgui/imgui_internal.h",
+      "sha256": "efba9bccc971cc49ec3da3168968ba412c7ea89745c104a7f5c004c8349bc71f"
+    },
+    {
+      "path": "third_party/imgui/imgui_tables.cpp",
+      "sha256": "b5deabe5b569ab712c11b6556562a646bf88327320fc60a451071b2a36498d72"
+    },
+    {
+      "path": "third_party/imgui/imgui_widgets.cpp",
+      "sha256": "a8a0b2f65caa5711467d9e3ca4028fded48329ea65e11ec92a968293dc2aa231"
+    },
+    {
+      "path": "third_party/imgui/imstb_rectpack.h",
+      "sha256": "889b396795202d1457560a797a7242e96f6f132d4b88ca2d69be58bf05e1771f"
+    },
+    {
+      "path": "third_party/imgui/imstb_textedit.h",
+      "sha256": "a985f5fa0ed97353d493b497961e9eef52082edcd045cf6954b69990ec9d0741"
+    },
+    {
+      "path": "third_party/imgui/imstb_truetype.h",
+      "sha256": "c51a0f7e7ea760f2366bd3752635ec58e21fccfec4a832501639990ba6ce0528"
+    },
+    {
+      "path": "third_party/glfw/CMake/GenerateMappings.cmake",
+      "sha256": "a8e56bfae146f6be1706c162d3a9173df8c02885940a17bfac41f74b29c04e7f"
+    },
+    {
+      "path": "third_party/glfw/CMake/Info.plist.in",
+      "sha256": "19fe6a501764fc2f37f998a53d6422c1a64ea16c8e7c844153c617ab4cf6142b"
+    },
+    {
+      "path": "third_party/glfw/CMake/cmake_uninstall.cmake.in",
+      "sha256": "e720f60e30bf9dcd6eafa092d3a8fe9eea48e038ce8a0cd8b41b5fc96ab69faf"
+    },
+    {
+      "path": "third_party/glfw/CMake/glfw3.pc.in",
+      "sha256": "90616f3779a2d7491e644b61d44a478b7c9cdfa06c3b8cb44c2ef2e515fc8008"
+    },
+    {
+      "path": "third_party/glfw/CMake/glfw3Config.cmake.in",
+      "sha256": "0d266f3f8b0ae324404dc36a8ca8af01b5bf58d15b1ce806e9e318e895e9b755"
+    },
+    {
+      "path": "third_party/glfw/CMake/i686-w64-mingw32-clang.cmake",
+      "sha256": "9cf42de30ad84095801b2dff752df930c692680089d8f47c77f9445cdacece24"
+    },
+    {
+      "path": "third_party/glfw/CMake/i686-w64-mingw32.cmake",
+      "sha256": "f26d94a113c02bba7cded9715bcf51a9d04ba40d497ccffc05b4ef256aa8399f"
+    },
+    {
+      "path": "third_party/glfw/CMake/modules/FindEpollShim.cmake",
+      "sha256": "3689ad05d6b6460d2b5313130d3cb474ab195f6698690737582d3ee98cb4c942"
+    },
+    {
+      "path": "third_party/glfw/CMake/x86_64-w64-mingw32-clang.cmake",
+      "sha256": "7f2ea33c57c8726be2a1dfac703d2a4f7c3993c3345ce5c927f0fa1474fc2083"
+    },
+    {
+      "path": "third_party/glfw/CMake/x86_64-w64-mingw32.cmake",
+      "sha256": "e68df045d9aa039fef4f984a7c8e48cd6ac3df8960adc960f6e45674d3f6cee3"
+    },
+    {
+      "path": "third_party/glfw/CMakeLists.txt",
+      "sha256": "70a98ffab88eb67a730735f8c2ad3c9e8f9cb887feda646b5c53e75a69ec48be"
+    },
+    {
+      "path": "third_party/glfw/LICENSE.md",
+      "sha256": "149704059b5d0bf551637e50042dd4de9c2cae921021f6636298911e3a5f9462"
+    },
+    {
+      "path": "third_party/glfw/README.md",
+      "sha256": "6f8bae5e5a71c0e512d934e6e2c7adae12339edb1594ec391e91a6a34b8926de"
+    },
+    {
+      "path": "third_party/glfw/include/GLFW/glfw3.h",
+      "sha256": "95ecc16e4875bca18cff863232d5dbb623f3457b05f07efd26fe8bc8a06345b6"
+    },
+    {
+      "path": "third_party/glfw/include/GLFW/glfw3native.h",
+      "sha256": "d301085c2a998345c0f80127d8e67d4394f1c7b12ca9c2cf3b73b7fa15c804ae"
+    },
+    {
+      "path": "third_party/glfw/src/CMakeLists.txt",
+      "sha256": "a16eea2f9f944debf8e8b2ab031e3d975abc320adbeca93186c6417c8e3f6d06"
+    },
+    {
+      "path": "third_party/glfw/src/cocoa_init.m",
+      "sha256": "deb56d1b01fd04908d5c83e5b78146b2eb753f581fd143778288a8257f19d00a"
+    },
+    {
+      "path": "third_party/glfw/src/cocoa_joystick.h",
+      "sha256": "af44682e64e88526373aebb5a48f53edde18eee158b8f4dbd55f25ebde575ccc"
+    },
+    {
+      "path": "third_party/glfw/src/cocoa_joystick.m",
+      "sha256": "b3d9ec109c5496a43443cc64727fffd1d8d2e0e01063c3be5cec59b87e6a3de4"
+    },
+    {
+      "path": "third_party/glfw/src/cocoa_monitor.m",
+      "sha256": "0ec584e087bffb7bb9f8b7782792e46d2969966d109da3d0bb1d897457075cf6"
+    },
+    {
+      "path": "third_party/glfw/src/cocoa_platform.h",
+      "sha256": "b1e91a156eb4017f94d87303881a6db1db4d8a2fac98906f7096c217142da1eb"
+    },
+    {
+      "path": "third_party/glfw/src/cocoa_window.m",
+      "sha256": "63f7d7fad22c016b587eb9ba319167f65e18388eb11308781383e121e58ccf72"
+    },
+    {
+      "path": "third_party/glfw/src/context.c",
+      "sha256": "1555a8d185de9c64b86eba2beabaea151d33c9162813e562724d4109aae403fb"
+    },
+    {
+      "path": "third_party/glfw/src/egl_context.c",
+      "sha256": "a9d01f5c4b78dc5a186971847e2500a1e85f445582be54b092ae85c02ced3e3b"
+    },
+    {
+      "path": "third_party/glfw/src/glfw.rc.in",
+      "sha256": "14f50b28f6d801c6a99549376face170970023ac139a33e4555affecfebe24f1"
+    },
+    {
+      "path": "third_party/glfw/src/glx_context.c",
+      "sha256": "1c022c0e4e24dcdde1aaa6cca58b50fc464295a9e87b79f5ecbe38bc5fb5012f"
+    },
+    {
+      "path": "third_party/glfw/src/init.c",
+      "sha256": "d2b87ac99ee03a2f4bc4e3f2134dd32cd1bac7f9fc9821727d51f0df5166d507"
+    },
+    {
+      "path": "third_party/glfw/src/input.c",
+      "sha256": "d750bc5a5553aae4e7f0e9d4b1628d06dc7e0626b847efba26b800943b0c0f6d"
+    },
+    {
+      "path": "third_party/glfw/src/internal.h",
+      "sha256": "fec6a5d74a8873e97da2dc6427daed63350c1de41f7aa03d9c39a04cd76f45a6"
+    },
+    {
+      "path": "third_party/glfw/src/linux_joystick.c",
+      "sha256": "b6691fbb3d80dd3ff5f560828b6fae0045ade62777b33ab3f7787e1074da790e"
+    },
+    {
+      "path": "third_party/glfw/src/linux_joystick.h",
+      "sha256": "f18c9fabd1b92c47c0c60be97cc7a91ae1aa7682f2730a2ab2ce5b4d3f290dcb"
+    },
+    {
+      "path": "third_party/glfw/src/macos_time.c",
+      "sha256": "2597d7277e6f4323bcc2c37c331eec65d59243107e1af20880fe9e003c31c043"
+    },
+    {
+      "path": "third_party/glfw/src/macos_time.h",
+      "sha256": "1c4e574a4482c3c28785f37c1d02389a843a4d031fc391359f989b532beb4b17"
+    },
+    {
+      "path": "third_party/glfw/src/mappings.h",
+      "sha256": "67e203c5e06401fdfbb623fa489581947fd6f0c0bd35ce876f73df5d653a665f"
+    },
+    {
+      "path": "third_party/glfw/src/mappings.h.in",
+      "sha256": "add6b239c335251c436ec4db9f9c9eff0c9afbd4359122492ef67340c52a08b3"
+    },
+    {
+      "path": "third_party/glfw/src/monitor.c",
+      "sha256": "f1139c60d99f79e8e586877c8cc3f88a9e1b8922e54f8bed64c01012272ec7de"
+    },
+    {
+      "path": "third_party/glfw/src/nsgl_context.m",
+      "sha256": "a532f5084a72e484985504b9d0540d11fff86e6e2beec1b6da2f58d90978b0b0"
+    },
+    {
+      "path": "third_party/glfw/src/null_init.c",
+      "sha256": "90e32f70e6a0cee1bc306c95e9a30148a58e0801864421f4c73ce3e380945bf5"
+    },
+    {
+      "path": "third_party/glfw/src/null_joystick.c",
+      "sha256": "cab40056113cbaf530c1c2237ac3fe28c49ce966cf7b0a30b0656413e9c179b2"
+    },
+    {
+      "path": "third_party/glfw/src/null_joystick.h",
+      "sha256": "17588d2c8616df080e1932228cedb77561f33e4d11f680e7243959866b2114d7"
+    },
+    {
+      "path": "third_party/glfw/src/null_monitor.c",
+      "sha256": "4b0192f700bb353ef535251e0985235fbc0ae9e26b55a79c95cfd1604e09bf22"
+    },
+    {
+      "path": "third_party/glfw/src/null_platform.h",
+      "sha256": "7ce4254caf8da442216158650fef8ab8bab0364e3ea74fa41c4028b4a3b94621"
+    },
+    {
+      "path": "third_party/glfw/src/null_window.c",
+      "sha256": "123b2a750fef93a533cd2e07281cdcdfc95421bf7881d2c9137ef355e38679a0"
+    },
+    {
+      "path": "third_party/glfw/src/osmesa_context.c",
+      "sha256": "7db59920557fb704b8535ce85a57b37966be5f056ed8c1321e46ab66502415c5"
+    },
+    {
+      "path": "third_party/glfw/src/platform.c",
+      "sha256": "7b903e5732a825fe52198213f24c12b03e5e9089f4eeb7cf49eb74f31ba865dc"
+    },
+    {
+      "path": "third_party/glfw/src/platform.h",
+      "sha256": "40e9e4950b1c7ad49d251b8885b118f5fe9f44ab58111a883aebd8a701a5a4e3"
+    },
+    {
+      "path": "third_party/glfw/src/posix_module.c",
+      "sha256": "39adce2a7972f1d4d5733d2588b915456e2042471185b4d52dea88c1fe4dca71"
+    },
+    {
+      "path": "third_party/glfw/src/posix_poll.c",
+      "sha256": "10661b1ab39c51cdd419f71731d44d74f0a01ba64912546bc115194d26a46868"
+    },
+    {
+      "path": "third_party/glfw/src/posix_poll.h",
+      "sha256": "b97b1079a3db8ce811a45d53dcdfba7b9bfe260f1cd3fa8e648990634dc8693c"
+    },
+    {
+      "path": "third_party/glfw/src/posix_thread.c",
+      "sha256": "f81c8e10cc0c2c61cce554b5076818987b104a4bea99ac51df299ef4c0817d2b"
+    },
+    {
+      "path": "third_party/glfw/src/posix_thread.h",
+      "sha256": "3c28b9404812a7f483aee79bde48e74dd8bde3170fb97e8dfe493da930996c2f"
+    },
+    {
+      "path": "third_party/glfw/src/posix_time.c",
+      "sha256": "ebf251fbf2ac71d224e5316e4d50ad18e13d7c6b70fea5c55f3f08085f5bfc9d"
+    },
+    {
+      "path": "third_party/glfw/src/posix_time.h",
+      "sha256": "62b5bf4a10e7e36553c6879783cffbf646453b371eaeb4338ab6df18bef26127"
+    },
+    {
+      "path": "third_party/glfw/src/vulkan.c",
+      "sha256": "cf60b2af6813afa3587da9c18341659e4befe2552426735ed50992a7044ce357"
+    },
+    {
+      "path": "third_party/glfw/src/wgl_context.c",
+      "sha256": "f0e71ebcee95b48c507d0f981052da64831a06f02ff21a0ca5cfdc79b52fb8f1"
+    },
+    {
+      "path": "third_party/glfw/src/win32_init.c",
+      "sha256": "ec4f7db6d48c8c0c4a9edaee648fa6e421f15fbb113d89b50a1c7be6ca9be732"
+    },
+    {
+      "path": "third_party/glfw/src/win32_joystick.c",
+      "sha256": "e1714124ebc5e790ba958fc7c120fa17a2839edcc55809480feeda8b464fb820"
+    },
+    {
+      "path": "third_party/glfw/src/win32_joystick.h",
+      "sha256": "40ed90f3c54d345feed9672f8fb197eddb6e22987f8eaf2d8a3f7d129b1d2b66"
+    },
+    {
+      "path": "third_party/glfw/src/win32_module.c",
+      "sha256": "559ffb520632d09ebd117725fe6936eaf0d07a59907930b8bf118e99dbe70581"
+    },
+    {
+      "path": "third_party/glfw/src/win32_monitor.c",
+      "sha256": "3d8f47e8d87ad5f0be75fce8453b77c924ae97cfb5299599bea3a844fe6e7603"
+    },
+    {
+      "path": "third_party/glfw/src/win32_platform.h",
+      "sha256": "505e9b111da133b5eb271f543a64ea72f16b3c1640b58adf12c9dca74d08f3bf"
+    },
+    {
+      "path": "third_party/glfw/src/win32_thread.c",
+      "sha256": "f1ea844894609ae2ead09b77e51b9ddcf1452a66b517b4b1331fd18bf839dc34"
+    },
+    {
+      "path": "third_party/glfw/src/win32_thread.h",
+      "sha256": "a44bf9b2e0cb95d3342a90058adadf9573919706672d434b257fbfaf37d841cc"
+    },
+    {
+      "path": "third_party/glfw/src/win32_time.c",
+      "sha256": "22942d9ad8e7aeb733584ce6acc9cce3f38d73bf98c7a330aead27d1328741a1"
+    },
+    {
+      "path": "third_party/glfw/src/win32_time.h",
+      "sha256": "758ee634914ed1b7ffbac850267b462b87fd23206a2f40b36641ab06cb12c871"
+    },
+    {
+      "path": "third_party/glfw/src/win32_window.c",
+      "sha256": "5e41feabb38ee18de7cc1ceb9b8ab68e2985020af0cb6a7788b3c3ba5cb5152e"
+    },
+    {
+      "path": "third_party/glfw/src/window.c",
+      "sha256": "48e24362b5d28d91cbeb974b54fef3814d2ef153a41c1ff72cb929fae35503fa"
+    },
+    {
+      "path": "third_party/glfw/src/wl_init.c",
+      "sha256": "12c743a66d28bede0cf816d66756f2c5699c196d1d1fb0548a43821fefb7db07"
+    },
+    {
+      "path": "third_party/glfw/src/wl_monitor.c",
+      "sha256": "31de35f3c4433e126084dd0e3e1a454f06b13aeb0ce3ea56305bfe121ab8c6a1"
+    },
+    {
+      "path": "third_party/glfw/src/wl_platform.h",
+      "sha256": "fb838adf68bc70f3299d362cc03294ee7ed68920449762cf8201ca47160fb74d"
+    },
+    {
+      "path": "third_party/glfw/src/wl_window.c",
+      "sha256": "16c71a92a4a0bfe4711e6d2b4e651dde89d0d3c81f344047b980a4668c9dac8f"
+    },
+    {
+      "path": "third_party/glfw/src/x11_init.c",
+      "sha256": "1e21738fd8dae202db64fd1d9a7d69bc008acd04dd8d78a20981c392380dc9f9"
+    },
+    {
+      "path": "third_party/glfw/src/x11_monitor.c",
+      "sha256": "dfa9666d506b13709190e318f2a83d38073bec28ba08aa356dd611608a7cae52"
+    },
+    {
+      "path": "third_party/glfw/src/x11_platform.h",
+      "sha256": "52787dd014ea4d26baa34e9c2823b9745fdf8ea4322cf108037429c7236dfb6f"
+    },
+    {
+      "path": "third_party/glfw/src/x11_window.c",
+      "sha256": "754d7553b140ef9890d397048eaf5ddd7b3179038d5e6b6a26d51bff6ec00f39"
+    },
+    {
+      "path": "third_party/glfw/src/xkb_unicode.c",
+      "sha256": "03d975ce3cec2ad05dc39114d5537422f1d12f6dbf3d2de46d6b800fd439b0bc"
+    },
+    {
+      "path": "third_party/sqlite/sqlite3.c",
+      "sha256": "b1dd5d74ec7f29055a6684fa06fb3c2f6821c87dd38f9a458dfd2e8a1db28189"
+    },
+    {
+      "path": "third_party/sqlite/sqlite3.h",
+      "sha256": "919e7f2e8ed1d8f56ac17b412b8971c76aa5d1a879752cc6058f75e7d5910e1d"
+    },
+    {
+      "path": "third_party/sdrangel/LICENSE",
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    {
+      "path": "third_party/sdrangel/PROVENANCE.md",
+      "sha256": "84f3d90b120dcbe6bf9e16fa61811197500a3eb7bb75d51465575137b04788ca"
+    },
+    {
+      "path": "third_party/sdrangel/lora_codec.hpp",
+      "sha256": "69f3348976c491ff472b9348224d5e78421c2d9b39fff0c3c371da4ac015f3af"
+    },
+    {
+      "path": "third_party/openssl/LICENSE.txt",
+      "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+    },
+    {
+      "path": "third_party/openssl/intake_smoke.c",
+      "sha256": "4361dc162b251fd41df31019e88a7084155631679e75730cc3543d68e76f72c3"
+    },
+    {
+      "path": "third_party/nanopb/LICENSE.txt",
+      "sha256": "e2f2fc8fe3faa7dcb09dbe995db48c6ec5c1f72705db915101e4a83fed44f66d"
+    },
+    {
+      "path": "third_party/nanopb/PROVENANCE.md",
+      "sha256": "d93a39b8a5ab28962cb5e69ad5ac6dfca84e47849c701e1f79acb9702e64287e"
+    },
+    {
+      "path": "third_party/nanopb/generator/nanopb_generator.py",
+      "sha256": "67d3c5e6de1e5dbd9f45bb4e5b7055d888d1afd6d6e1690791ab8607b6c6b738"
+    },
+    {
+      "path": "third_party/nanopb/generator/proto/__init__.py",
+      "sha256": "b387c9a6a553ed2184cf8c67243bb26b27bd46baf44465f0d5ffeb139c365105"
+    },
+    {
+      "path": "third_party/nanopb/generator/proto/_utils.py",
+      "sha256": "6d091e256cdda09002c357da4901d259078fe1ef53a010392a251dd1107d6313"
+    },
+    {
+      "path": "third_party/nanopb/generator/proto/nanopb.proto",
+      "sha256": "1a50d0822c5ba4395297755b11864af952053be3e0dc44c860f988b1b73c3c55"
+    },
+    {
+      "path": "third_party/nanopb/pb.h",
+      "sha256": "e0db84a27e0d41a2d2d347b8c879e30ceb856d36dc192cce0f1124f833c67bc2"
+    },
+    {
+      "path": "third_party/nanopb/pb_common.c",
+      "sha256": "8d2ec28baaaf2b7a5e90e4cb2fa9700d21cef7f826f051a637c30b7a1e6a0516"
+    },
+    {
+      "path": "third_party/nanopb/pb_common.h",
+      "sha256": "6495a691aca68d6973f2274b5dd54b74fbb57f6b019c45fff255a857fe1abcfd"
+    },
+    {
+      "path": "third_party/nanopb/pb_decode.c",
+      "sha256": "f5b425beaa207251e531c8ce2c86c9b6867e2920ed59cc1b125332af0c147632"
+    },
+    {
+      "path": "third_party/nanopb/pb_decode.h",
+      "sha256": "fcac5f7680fe6e870157e4bcf34d5162bdd4fff0d7db3cad1122f2ad24a6da87"
+    },
+    {
+      "path": "third_party/meshtastic/LICENSE",
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    {
+      "path": "third_party/meshtastic/PROTOBUF-TOOLING-LICENSE",
+      "sha256": "6e5e117324afd944dcf67f36cf329843bc1a92229a8cd9bb573d7a83130fea7d"
+    },
+    {
+      "path": "third_party/meshtastic/PROVENANCE.md",
+      "sha256": "5d275fbba86dc47ed0cd4da082a409a6d55ead04a1ee4ce193b4358c156dd179"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/atak.pb.c",
+      "sha256": "5ebd23f526536b6890675505636a2aca93a6320cd2763771452802135cf49321"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/atak.pb.h",
+      "sha256": "d40f4f6c059c890ca36cff3fed1ed66ad65356491a88b492c5188d2edb6d132b"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/channel.pb.c",
+      "sha256": "23be9eafc392e055a739650c90deada1651bdff9988481d8ba2f0d3e6d3214df"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/channel.pb.h",
+      "sha256": "71f78169a9cfaffe2076bb5b041292ddc98eac1a8d8200c8df30bbf3121b535e"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/config.pb.c",
+      "sha256": "2a4c80488ec80da5e520ced2e97f14ed58ba299f99ffba0074b57c02e15424b5"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/config.pb.h",
+      "sha256": "cd1834c35efdee013edca1ea23ab77da5559e9290f299cdeead3aecca2140ee1"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/device_ui.pb.c",
+      "sha256": "115408db1cf442095968922712498830fe0a08b3ce3c80e6feab051e20df4c1f"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/device_ui.pb.h",
+      "sha256": "91de5a0de795e98f81eedb104703e753443ef338d4f2c4809385769685957fd1"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/mesh.pb.c",
+      "sha256": "3fef32d094206f57dac91bb42cdfd56b15264f3a9ac5a6c853533256c8bd2b70"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/mesh.pb.h",
+      "sha256": "031c74b28ccaa1c73db62b6aa922d314f7d24e1b0530317099ac2511f2ded9ed"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/module_config.pb.c",
+      "sha256": "e581b0e795b341969b1600d4e0a5602003a7b4d74b27b13ec54d5fc74955ff3a"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/module_config.pb.h",
+      "sha256": "ed7f53dd0597898d7be3fc7d81bbb9adda1637c592e5608a56e21c17c6e2ac90"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/portnums.pb.c",
+      "sha256": "9f40b1280671fc7c188f662438f425a8c79b7250ae7887be9fd0ef375c055a40"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/portnums.pb.h",
+      "sha256": "b4a01edcf54228d5f85c773cc76da411ecaeb5582f0d57f41d294cfdf5537997"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/telemetry.pb.c",
+      "sha256": "864948176c824fde9427af35ed2b4dc2925f35d498c5e78071d10c1fcc0b2839"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/telemetry.pb.h",
+      "sha256": "235d396825f21d7798f413d8bb2c441a6399a910612133441874a921f0dda1cc"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/xmodem.pb.c",
+      "sha256": "55e681e000e922af77726e9ab1b3122b726846e96e6cad1509ea70793fea490d"
+    },
+    {
+      "path": "third_party/meshtastic/generated/meshtastic/xmodem.pb.h",
+      "sha256": "f86a601de63edbdfde7d543687eb8a4814e8dde259894891de317f76800bb985"
+    },
+    {
+      "path": "third_party/meshtastic/options/meshtastic/atak.options",
+      "sha256": "99f580ec22e9220a5b4d611b529782fbe92a7bf3df9ec0e70aeafb5e19157b51"
+    },
+    {
+      "path": "third_party/meshtastic/options/meshtastic/channel.options",
+      "sha256": "99f580ec22e9220a5b4d611b529782fbe92a7bf3df9ec0e70aeafb5e19157b51"
+    },
+    {
+      "path": "third_party/meshtastic/options/meshtastic/config.options",
+      "sha256": "0dbd61cf94b20f5c8d815afcd9638401c1b9fddfb30de4a29844e33aa07ea761"
+    },
+    {
+      "path": "third_party/meshtastic/options/meshtastic/device_ui.options",
+      "sha256": "99f580ec22e9220a5b4d611b529782fbe92a7bf3df9ec0e70aeafb5e19157b51"
+    },
+    {
+      "path": "third_party/meshtastic/options/meshtastic/mesh.options",
+      "sha256": "af960490710124b127d11e1e989092d76cc3eb2244e649a2631cdc51429a65d5"
+    },
+    {
+      "path": "third_party/meshtastic/options/meshtastic/module_config.options",
+      "sha256": "99f580ec22e9220a5b4d611b529782fbe92a7bf3df9ec0e70aeafb5e19157b51"
+    },
+    {
+      "path": "third_party/meshtastic/options/meshtastic/portnums.options",
+      "sha256": "99f580ec22e9220a5b4d611b529782fbe92a7bf3df9ec0e70aeafb5e19157b51"
+    },
+    {
+      "path": "third_party/meshtastic/options/meshtastic/telemetry.options",
+      "sha256": "cc6b1b28927abdc6dd590e8ae2e5bbac4e366d7ec3f6face5e207744876f9168"
+    },
+    {
+      "path": "third_party/meshtastic/options/meshtastic/xmodem.options",
+      "sha256": "99f580ec22e9220a5b4d611b529782fbe92a7bf3df9ec0e70aeafb5e19157b51"
+    },
+    {
+      "path": "third_party/meshtastic/regenerate.py",
+      "sha256": "04f85a65915ebe7506ac2b836c73a8aed8ede3d585200beb7d278da099910c7b"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.7.19/meshtastic/channel.proto",
+      "sha256": "415b5865b57b004ff474dc6be93982dea3f40ea85fcd9adcbbbef88bd9349dce"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.7.19/meshtastic/config.proto",
+      "sha256": "41aa44e5156de3fab836ceeee772535f548a3696622db90e6d5e58193002305c"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.7.19/meshtastic/device_ui.proto",
+      "sha256": "51f5e76c3ea2b25aab9ed0e59222380c7e00ea57777770ba6c72245baced3a97"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.7.19/meshtastic/mesh.proto",
+      "sha256": "8f0d779b8ec85adcf8c13e14b55996dc6d789ba59c5dcc532e375c80846985ac"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.7.19/meshtastic/module_config.proto",
+      "sha256": "379f01b6a5d5fe4fbb8a85c553d2bfff1d39a39e26faec1556bd3522a7c8a95c"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.7.19/meshtastic/portnums.proto",
+      "sha256": "a1ff711c4f1e19a12ed4e5ad18f57b33a6a8632325caef7af4f41fbd6a312ba3"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.7.19/meshtastic/telemetry.proto",
+      "sha256": "71c19e354207678ae3eb1f9ea94832dbfb5c04620eed44bec6d6f34c3652b191"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.7.19/meshtastic/xmodem.proto",
+      "sha256": "202012d9ae7642b1599cf269d03d41c6d18f28602f6e65976f0c6e954e3b9ea0"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.8.0/meshtastic/atak.proto",
+      "sha256": "91112e26a688fbce14cf662f4ffab43690a3ff42be2f92fc42282f29373bdc1b"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.8.0/meshtastic/channel.proto",
+      "sha256": "415b5865b57b004ff474dc6be93982dea3f40ea85fcd9adcbbbef88bd9349dce"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.8.0/meshtastic/config.proto",
+      "sha256": "ddff29ef71a4e2c067d50d8353452781cdf9b8aef7a42165bd5f7f888b2677c9"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.8.0/meshtastic/device_ui.proto",
+      "sha256": "51f5e76c3ea2b25aab9ed0e59222380c7e00ea57777770ba6c72245baced3a97"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.8.0/meshtastic/mesh.proto",
+      "sha256": "932a3d9258f17213698ae1030986f6971185aa3c0e5cf472178fe42437fee20a"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.8.0/meshtastic/module_config.proto",
+      "sha256": "afbf04a24351a5b374316218c96489f6c5e37ad9070877040f3b4a5f51646b2c"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.8.0/meshtastic/portnums.proto",
+      "sha256": "5c752a2ccbd01fd49d378192919b7561e1623c0b219966cd1717f86dd8b6107e"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.8.0/meshtastic/telemetry.proto",
+      "sha256": "a605b8630ee1a0fda02c0f483aff14725030424e7a81668c4c6d4cea703a2041"
+    },
+    {
+      "path": "third_party/meshtastic/schemas/v2.8.0/meshtastic/xmodem.proto",
+      "sha256": "202012d9ae7642b1599cf269d03d41c6d18f28602f6e65976f0c6e954e3b9ea0"
+    },
+    {
+      "path": "third_party/meshtastic/toolchain.json",
+      "sha256": "3e1d4630ae57bce43a88f282fe6f32cbc664e6331aac41325bc2d0cf03db5add"
+    },
+    {
+      "path": "third_party/LIBUSB_COPYING.txt",
+      "sha256": "5df07007198989c622f5d41de8d703e7bef3d0e79d62e24332ee739a452af62a"
+    },
+    {
+      "path": "third_party/SQLITE_NOTICE.txt",
+      "sha256": "2722076e1e0a52bd30a7255473b25182cda0d6171e1cb7905bcdb9c4efc4de6f"
+    },
+    {
+      "path": "third_party/UI_ADDITIONAL_NOTICES.txt",
+      "sha256": "cf27cab5933f08fe52481c91898a62bd75374878d4481c53a76bcc965384769c"
+    },
+    {
+      "path": "third_party/libhackrf-NOTICE.txt",
+      "sha256": "20815d286012fde9da01b51d7b53b1168307cb7e83372fde1d45d959aba59822"
+    }
+  ]
+}

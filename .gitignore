@@ -1,0 +1,61 @@
+# Local environment and editor state
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+
+# Repository-local CMake build, dependency build, and synthetic test output
+/build/
+/dist/
+/out/
+/coverage/
+
+# Public upstream snapshots for static review; not adopted application code.
+/.source-review/
+
+# Operational data must live outside this repository.
+/local-data/
+/surveys/
+/captures/
+/exports/
+/secrets/
+*.iq
+*.iq8
+*.cfile
+*.sigmf-data
+*.sigmf-meta
+*.pcap
+*.pcapng
+*.sqlite
+*.sqlite3
+*.db
+*-wal
+*-shm
+*.log
+*.dmp
+*.core
+
+# Secret key containers; this does not replace staged-content review.
+*.pem
+*.key
+*.p12
+*.pfx
+
+# GPS routes, serial dumps, preferences and exported survey reports
+*.gpx
+*.kml
+*.kmz
+*.nmea
+*.nme
+*.ubx
+*.csv
+*.geojson
+preferences.conf

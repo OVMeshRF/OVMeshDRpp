@@ -1,0 +1,19 @@
+{
+  "name": "sqlite",
+  "version": "3.53.4",
+  "url": "https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip",
+  "checksum_source": "https://www.sqlite.org/download.html",
+  "archive_sha3_256": "628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e",
+  "files": [
+    {
+      "path": "sqlite3.c",
+      "sha256": "b1dd5d74ec7f29055a6684fa06fb3c2f6821c87dd38f9a458dfd2e8a1db28189",
+      "bytes": 9515341
+    },
+    {
+      "path": "sqlite3.h",
+      "sha256": "919e7f2e8ed1d8f56ac17b412b8971c76aa5d1a879752cc6058f75e7d5910e1d",
+      "bytes": 690838
+    }
+  ]
+}

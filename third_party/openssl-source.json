@@ -1,0 +1,102 @@
+{
+  "component": "OpenSSL libcrypto",
+  "version": "3.5.8",
+  "release_date": "2026-08-25",
+  "official_release_page": "https://openssl-library.org/source/",
+  "license": "Apache-2.0",
+  "license_file": "third_party/openssl/LICENSE.txt",
+  "license_sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a",
+  "files": [
+    {
+      "name": "openssl-3.5.8.tar.gz",
+      "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz",
+      "bytes": 53213818,
+      "sha256": "a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2"
+    },
+    {
+      "name": "openssl-3.5.8.tar.gz.sha256",
+      "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz.sha256",
+      "bytes": 87,
+      "sha256": "03917b1ef4b845cfee8a777ce963397fb777d198e6f4d1ca0e2608d8130926df"
+    },
+    {
+      "name": "openssl-3.5.8.tar.gz.asc",
+      "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz.asc",
+      "bytes": 931,
+      "sha256": "f4bfa84a290dfd5ad102a54ebc0f93f9b35359cb36c383769b5c7bc6034f1f65"
+    },
+    {
+      "name": "pubkeys.asc",
+      "url": "https://openssl-library.org/source/pubkeys.asc",
+      "bytes": 45049,
+      "sha256": "56e106cd1c44bdb117aec24795f6dfbecaa9bfa0a2901b85331f0059aad16d53"
+    }
+  ],
+  "purpose": "Public source pins and reproducible build configuration; no machine-specific binary identity or build result is recorded here",
+  "integrity": {
+    "published_sha256_match": true,
+    "pgp_signature_verified": false,
+    "pgp_reason": "The detached release signature has not been verified. A recorded checksum or signing fingerprint does not authenticate the publisher.",
+    "published_primary_signing_fingerprint": "B146647E45A7B33947AB226B2A2C87D161692D40",
+    "source_transport": "HTTPS via official release-page links"
+  },
+  "source_file_hashes": {
+    "Configure": "3d3ed5a3e4c69a917cee593643c4614a0d6ccc074c0e2b4ecad3293de47aa452",
+    "Configurations/unix-Makefile.tmpl": "e5680fd3add540d4feb934282dbb19db528ffe24a841a414a216b2b29bd3090d"
+  },
+  "build_configuration": {
+    "target_selection": "Select the documented OpenSSL Configure target for the intended OS, architecture and compiler; darwin64-arm64-cc is the macOS ARM64 example",
+    "configure_arguments": [
+      "${OPENSSL_TARGET}",
+      "no-shared",
+      "no-dso",
+      "no-engine",
+      "no-module",
+      "no-autoload-config",
+      "no-apps",
+      "no-docs",
+      "no-tests",
+      "no-sock",
+      "no-http",
+      "no-quic",
+      "no-tls",
+      "no-dtls",
+      "no-comp",
+      "no-zlib",
+      "no-legacy",
+      "--prefix=${REPO_ROOT}/build/deps/openssl-3.5.8-local",
+      "--openssldir=${REPO_ROOT}/build/deps/openssl-3.5.8-local/ssl",
+      "--libdir=lib"
+    ],
+    "targets": [
+      "build_generated",
+      "libcrypto.a"
+    ],
+    "source_changes": false,
+    "prefix_relative": "build/deps/openssl-3.5.8-local",
+    "prefix_notation": "${REPO_ROOT} is the project checkout chosen by the builder; ${OPENSSL_TARGET} is the intended OpenSSL build target",
+    "install_method": "Stage generated public headers, the static crypto library and LICENSE.txt under the repository-local prefix; no global installation is required"
+  },
+  "validation_procedure": {
+    "archive_review": "Before extraction, require the expected top-level prefix and reject absolute/traversal paths, links and special/device entries",
+    "build_plan_review": "Review Configure, configuration helpers, target templates and generated commands before execution; check for unexpected downloads, services or privileged/system installation",
+    "smoke_source": "third_party/openssl/intake_smoke.c",
+    "smoke_source_sha256": "4361dc162b251fd41df31019e88a7084155631679e75730cc3543d68e76f72c3",
+    "nist_reference": "NIST SP 800-38A sections F.5.1 and F.5.5, four-block AES-128-CTR and AES-256-CTR published vectors",
+    "required_hardening_macros": [
+      "OPENSSL_NO_AUTOLOAD_CONFIG",
+      "OPENSSL_NO_DSO",
+      "OPENSSL_NO_ENGINE",
+      "OPENSSL_NO_SOCK",
+      "OPENSSL_NO_HTTP"
+    ],
+    "linkage_review": "Inspect the resulting binary dependencies using the target platform tools; record build and test outcomes separately",
+    "scope_limitations": [
+      "PGP release signature not verified",
+      "Build instructions and source pins do not establish successful validation on any particular target",
+      "The no-apps/no-tests configuration omits the upstream full test suite",
+      "A bounded build-path review and primitive smoke tests are not a comprehensive source security audit or FIPS validation",
+      "Application protocol and integration tests are separate from primitive validation"
+    ]
+  }
+}

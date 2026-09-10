@@ -1,0 +1,9 @@
+# Predictable documentation diffs.
+*.md text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+# Local working instructions are never distribution files.
+/AGENTS.md export-ignore
+/.agents export-ignore
+/.codex export-ignore

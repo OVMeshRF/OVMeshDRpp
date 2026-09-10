@@ -1,0 +1,314 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Paced, bounded, offline source for the experimental asynchronous discovery
+// worker. It never opens hardware, reads recordings or writes sample data.
+// Build against the same optimized discovery and spectrum objects as the app.
+// Example: discovery-worker-capacity --seconds 3 --scenario all --span-mhz all
+// Add --spectrum to execute the actual SpectrumProcessor in the submitting
+// caller. Storage, GUI, USB and physical RF effects remain outside this test.
+#include "discovery_observations.hpp"
+#include "discovery_worker.hpp"
+#include "lora_discovery_fixtures.hpp"
+#include "spectrum.hpp"
+
+#include <algorithm>
+#include <charconv>
+#include <chrono>
+#include <cmath>
+#include <ctime>
+#include <iomanip>
+#include <iostream>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <vector>
+
+namespace {
+namespace f = lora_discovery_fixtures;
+using Worker = ovmesh::DiscoveryWorker;
+using Clock = std::chrono::steady_clock;
+constexpr uint32_t sample_rate = 16000000;
+constexpr uint64_t source_origin = 8191;
+constexpr double center_hz = 907500000;
+
+struct Options {
+    unsigned seconds = 3;
+    std::string scenario = "all", span = "all";
+    bool spectrum = false, help = false;
+};
+
+Options options(int argc, char** argv) {
+    Options out;
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view arg(argv[i]);
+        if (arg == "--help") { out.help = true; continue; }
+        if (arg == "--spectrum") { out.spectrum = true; continue; }
+        if (arg != "--seconds" && arg != "--scenario" && arg != "--span-mhz")
+            throw std::invalid_argument("Unknown diagnostic option; use --help");
+        if (++i == argc) throw std::invalid_argument("Missing diagnostic option value");
+        const std::string_view value(argv[i]);
+        if (arg == "--seconds") {
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), out.seconds);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() ||
+                out.seconds < 1 || out.seconds > 5)
+                throw std::invalid_argument("--seconds must be an integer from 1 to 5");
+        } else if (arg == "--scenario") out.scenario = value;
+        else out.span = value;
+    }
+    if (out.scenario != "all" && out.scenario != "quiet" && out.scenario != "noise" &&
+        out.scenario != "cw" && out.scenario != "lora")
+        throw std::invalid_argument("--scenario must be all, quiet, noise, cw or lora");
+    if (out.span != "all" && out.span != "12" && out.span != "5")
+        throw std::invalid_argument("--span-mhz must be all, 12 or 5");
+    return out;
+}
+
+struct Source {
+    // One second of unique noise avoids artificial short-block repetition at a
+    // LoRa symbol lag. This period is reused in each second, explicitly; source
+    // synthesis is completed before timing begins. Peak source storage ~151 MiB
+    // while adding a bounded independent fixture; the retained period is 122 MiB.
+    std::vector<f::Complex> period;
+    std::vector<f::FrameTruth> truth;
+};
+
+Source make_source(const std::string& scenario) {
+    Source out;
+    out.period.resize(sample_rate);
+    if (scenario != "quiet") f::add_noise(out.period, .02, 0x973108569ULL);
+    if (scenario == "cw") {
+        f::add_cw(out.period, sample_rate, 0, .25);
+        f::add_cw(out.period, sample_rate, 1337321, .15);
+    }
+    if (scenario == "lora") {
+        for (unsigned i = 0; i < 2; ++i) {
+            f::PreambleSpec spec;
+            spec.sample_rate_hz = sample_rate;
+            spec.bandwidth_hz = i ? 500000 : 250000;
+            spec.spreading_factor = 11;
+            spec.center_offset_hz = i ? 1237391.75 : -1491273;
+            spec.cfo_hz = i ? -873.5 : 927.5;
+            spec.leading_samples = i ? 2400000 : 1920000;
+            spec.fractional_start_samples = i ? .375 : .625;
+            spec.amplitude = .08;
+            spec.sync_word = i ? 0x34 : 0x12;
+            const auto fixture = f::make_preamble(spec);
+            if (fixture.samples.size() > out.period.size())
+                throw std::logic_error("Independent fixture exceeds source period");
+            for (size_t j = 0; j < fixture.samples.size(); ++j) out.period[j] += fixture.samples[j];
+            out.truth.push_back(fixture.truth);
+        }
+    }
+    return out;
+}
+
+double seconds(Clock::duration duration) { return std::chrono::duration<double>(duration).count(); }
+
+void run(const Source& source, const std::string& scenario, unsigned span_mhz,
+         const Options& config) {
+    const uint32_t span_hz = span_mhz * 1000000;
+    Worker worker(sample_rate, center_hz, center_hz - span_hz / 2., center_hz + span_hz / 2.);
+    const size_t subbands = worker.snapshot().subbands.size();
+    ovmesh::DiscoveryObservations observations(sample_rate, subbands);
+    std::unique_ptr<ovmesh::SpectrumProcessor> spectrum;
+    if (config.spectrum) spectrum = std::make_unique<ovmesh::SpectrumProcessor>(
+        static_cast<uint64_t>(center_hz), sample_rate, span_hz, -55.f);
+    uint64_t tiles = 0, spectrum_frames = 0, spectrum_events = 0;
+    const auto tile = [&](ovmesh::SpectrumTile value) { ++tiles; spectrum_frames += value.frame_count; };
+    const auto event = [&](ovmesh::SpectrumEvent) { ++spectrum_events; };
+    uint64_t raw_results = 0, boundary_results = 0, merged_results = 0;
+    uint64_t gap_records = 0, all_subband_gap_samples = 0, individual_subband_gap_samples = 0;
+    const auto collect = [&] {
+        for (const auto& result : worker.take_results()) {
+            ++raw_results;
+            if (!result.complete_in_requested_range) ++boundary_results;
+            if (observations.observe(result.waveform, result.subband_index,
+                                     result.first_input_anchor, result.input_sample_stride).merged)
+                ++merged_results;
+        }
+        for (const auto& gap : worker.take_gaps()) {
+            ++gap_records;
+            // These are records, not a temporal union: processing-failure source
+            // and individual subband records can overlap. Keep them separate.
+            if (gap.subband_index == Worker::all_subbands)
+                all_subband_gap_samples += gap.end_input_sample - gap.first_input_sample;
+            else individual_subband_gap_samples += gap.end_input_sample - gap.first_input_sample;
+        }
+    };
+
+    const uint64_t total = static_cast<uint64_t>(config.seconds) * sample_rate;
+    uint64_t accepted = 0, rejected = 0, blocks = 0, late_blocks = 0;
+    double maximum_lateness = 0, maximum_submit = 0, submit_seconds = 0, spectrum_seconds = 0;
+    const auto cpu_start = std::clock();
+    const auto start = Clock::now();
+    for (uint64_t first = 0; first < total;) {
+        const size_t position = static_cast<size_t>(first % sample_rate);
+        const auto count = static_cast<size_t>(std::min<uint64_t>(
+            {Worker::maximum_input_block, sample_rate - position, total - first}));
+        const auto input = std::span(source.period).subspan(position, count);
+        // Model a USB callback delivered after the last sample of its block was
+        // acquired. If the caller falls behind, preserve that lateness as evidence
+        // instead of silently slowing the nominal source clock.
+        const auto due = start + std::chrono::duration_cast<Clock::duration>(
+            std::chrono::duration<double>(static_cast<double>(first + count) / sample_rate));
+        std::this_thread::sleep_until(due);
+        const auto delivery = Clock::now();
+        const double late = std::max(0., seconds(delivery - due));
+        maximum_lateness = std::max(maximum_lateness, late);
+        if (late > static_cast<double>(count) / sample_rate) ++late_blocks;
+        const auto submit_start = Clock::now();
+        if (worker.submit(input, source_origin + first)) accepted += count;
+        else rejected += count;
+        const double submitted = seconds(Clock::now() - submit_start);
+        submit_seconds += submitted;
+        maximum_submit = std::max(maximum_submit, submitted);
+        if (spectrum) {
+            const auto measurement_start = Clock::now();
+            // Full-rate spectrum receives every sample even if discovery drops.
+            spectrum->feed(input, source_origin + first, tile, event);
+            spectrum_seconds += seconds(Clock::now() - measurement_start);
+        }
+        collect();
+        first += count;
+        ++blocks;
+    }
+    const auto delivery_end = Clock::now();
+    const auto before_drain = worker.snapshot();
+    uint64_t least_processed = total;
+    for (const auto& band : before_drain.subbands)
+        least_processed = std::min(least_processed, band.last_processed_input_sample > source_origin ?
+            std::min(total, band.last_processed_input_sample - source_origin) : uint64_t{0});
+    const auto drain_start = Clock::now();
+    worker.finish();
+    const double drain_seconds = seconds(Clock::now() - drain_start);
+    collect();
+    if (spectrum) {
+        const auto measurement_start = Clock::now();
+        spectrum->finish(tile, event);
+        spectrum_seconds += seconds(Clock::now() - measurement_start);
+    }
+    const double total_wall = seconds(Clock::now() - start);
+    const double cpu_seconds = static_cast<double>(std::clock() - cpu_start) / CLOCKS_PER_SEC;
+    const auto state = worker.snapshot();
+    if (accepted != state.accepted_input_samples || rejected != state.rejected_input_samples ||
+        accepted + rejected != total ||
+        state.channelized_input_samples + state.abandoned_input_samples != accepted)
+        throw std::runtime_error("Worker input-accounting invariant failed");
+
+    uint64_t processed = 0, abandoned = 0, ffts = 0, windows = 0, candidates = 0, tracks = 0;
+    uint64_t outside = 0, discovered = 0;
+    for (const auto& band : state.subbands) {
+        processed += band.processed_output_samples; abandoned += band.abandoned_output_samples;
+        ffts += band.fft_searches; windows += band.windows;
+        candidates += band.candidate_limit_hits; tracks += band.track_limit_hits;
+        outside += band.outside_range_candidates; discovered += band.discoveries;
+    }
+    if (raw_results + state.result_overflows != discovered)
+        throw std::runtime_error("Worker result-accounting invariant failed");
+    const size_t expected = source.truth.size() * config.seconds;
+    std::vector<bool> matched(expected);
+    size_t unexpected = 0, repeated_match = 0;
+    double maximum_center_error = 0, maximum_delimiter_error = 0;
+    for (const auto& found : observations.observations()) {
+        bool match = false;
+        for (unsigned period = 0; period < config.seconds && !match; ++period) {
+            for (size_t i = 0; i < source.truth.size() && !match; ++i) {
+                const auto& truth = source.truth[i];
+                if (found.bandwidth_hz != truth.bandwidth_hz ||
+                    found.spreading_factor != truth.spreading_factor) continue;
+                const double frequency_error = std::abs(found.received_center_hz -
+                    (center_hz + truth.received_center_offset_hz));
+                const double time_error = std::abs(found.delimiter_input_sample -
+                    (static_cast<double>(source_origin) + period * static_cast<double>(sample_rate) + truth.sync_end_sample));
+                if (frequency_error > 2. * truth.bandwidth_hz / (1u << truth.spreading_factor) ||
+                    time_error > 2. * sample_rate / truth.bandwidth_hz) continue;
+                const size_t index = period * source.truth.size() + i;
+                if (matched[index]) ++repeated_match;
+                matched[index] = true;
+                match = true;
+                maximum_center_error = std::max(maximum_center_error, frequency_error);
+                maximum_delimiter_error = std::max(maximum_delimiter_error, time_error);
+            }
+        }
+        if (!match) ++unexpected;
+    }
+
+    std::cout << std::setprecision(9)
+        << "scenario=" << scenario << " span_mhz=" << span_mhz << " subbands=" << subbands
+        << " spectrum=" << config.spectrum << " source_slots=" << Worker::source_capacity
+        << " nominal_input_seconds=" << config.seconds
+        << " delivered_wall_seconds=" << seconds(delivery_end - start)
+        << " drain_seconds=" << drain_seconds << " total_wall_seconds=" << total_wall
+        << " process_cpu_seconds=" << cpu_seconds << " blocks=" << blocks
+        << " max_delivery_lateness_ms=" << maximum_lateness * 1000 << " late_beyond_block=" << late_blocks
+        << " submit_seconds=" << submit_seconds << " max_submit_ms=" << maximum_submit * 1000
+        << " accepted_samples=" << accepted << " rejected_samples=" << rejected
+        << " rejected_percent=" << 100. * static_cast<double>(rejected) / static_cast<double>(total)
+        << " channelized_samples=" << state.channelized_input_samples
+        << " abandoned_source_samples=" << state.abandoned_input_samples
+        << " source_gap_samples=" << state.source_gap_input_samples
+        << " source_drop_blocks=" << state.source_queue_drops
+        << " source_queue_high_water=" << state.source_queue_high_water
+        << " source_backlog_at_end=" << before_drain.accepted_input_samples - before_drain.channelized_input_samples
+        << " slowest_subband_lag_at_end_seconds=" << static_cast<double>(total - least_processed) / sample_rate
+        << " processed_output_samples=" << processed << " abandoned_output_samples=" << abandoned
+        << " stream_resets=" << state.stream_resets << " windows=" << windows << " ffts=" << ffts
+        << " candidate_limit_hits=" << candidates << " track_limit_hits=" << tracks
+        << " raw_results=" << raw_results << " cross_subband_merges=" << merged_results
+        << " retained_observations=" << observations.observations().size()
+        << " observation_evictions=" << observations.eviction_count()
+        << " result_overflows=" << state.result_overflows << " boundary_results=" << boundary_results
+        << " guard_only_candidates=" << outside << " expected_preambles=" << expected
+        << " matched_preambles=" << std::count(matched.begin(), matched.end(), true)
+        << " unexpected_observations=" << unexpected << " repeated_truth_matches=" << repeated_match
+        << " max_center_error_hz=" << maximum_center_error
+        << " max_delimiter_error_input_samples=" << maximum_delimiter_error
+        << " gap_records=" << gap_records << " gap_overflows=" << state.gap_overflows
+        << " all_subband_gap_record_samples=" << all_subband_gap_samples
+        << " individual_subband_gap_record_samples=" << individual_subband_gap_samples
+        << " spectrum_seconds=" << spectrum_seconds << " spectrum_tiles=" << tiles
+        << " spectrum_frames=" << spectrum_frames << " spectrum_events=" << spectrum_events
+        << " spectrum_partial_samples=" << (spectrum ? spectrum->dropped_partial_samples() : 0)
+        << " failed=" << state.failed << '\n';
+    std::cout << "detector_queue_high_water=";
+    for (size_t i = 0; i < state.detector_queue_high_water.size(); ++i)
+        std::cout << (i ? "," : "") << state.detector_queue_high_water[i];
+    std::cout << '\n';
+    if (state.failed) std::cout << "fault=" << state.fault << '\n';
+    for (const auto& found : observations.observations())
+        std::cout << "observation id=" << found.id << " center_hz=" << found.received_center_hz
+                  << " bandwidth_hz=" << found.bandwidth_hz << " sf=" << found.spreading_factor
+                  << " delimiter_input_sample=" << found.delimiter_input_sample
+                  << " contributing_subbands=" << found.contributing_subbands.size() << '\n';
+    std::cout.flush();
+}
+} // namespace
+
+int main(int argc, char** argv) {
+    try {
+        const auto config = options(argc, argv);
+        if (config.help) {
+            std::cout << "Usage: discovery-worker-capacity [--seconds 1..5] "
+                         "[--scenario all|quiet|noise|cw|lora] [--span-mhz all|12|5] [--spectrum]\n"
+                         "Paced 16 MS/s, 1-second generated source period, 3 detector workers.\n"
+                         "No hardware. No sample files. Final drain waits for the finite accepted queue.\n";
+            return 0;
+        }
+        std::cout << "Offline paced experiment. Includes PFB, asynchronous detectors, bounded queues and "
+                     "metadata collection; optional actual spectrum processing. Excludes storage, GUI, USB "
+                     "and physical RF effects. Source generated before timing, 1-second period repeated. "
+                     "Strong analytic preambles are not sensitivity, payload or mesh-identity tests.\n";
+        for (const std::string scenario : {"quiet", "noise", "cw", "lora"}) {
+            if (config.scenario != "all" && config.scenario != scenario) continue;
+            const auto source = make_source(scenario);
+            for (unsigned span : {12u, 5u}) {
+                if (config.span != "all" && config.span != std::to_string(span)) continue;
+                run(source, scenario, span, config);
+            }
+        }
+    } catch (const std::exception& error) {
+        std::cerr << "Capacity diagnostic failed: " << error.what() << '\n';
+        return 1;
+    }
+}

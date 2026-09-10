@@ -1,0 +1,23 @@
+{
+  "purpose": "Offline regeneration only; no Python/protoc application dependency",
+  "reviewed_python": "CPython 3.14.0; invoke with -I -S",
+  "protoc_version": "36.1",
+  "python_protobuf_version": "7.36.1",
+  "protoc_binary_sha256": "dbd9a127dbbadd379bbea9a28a4349a0c9b1ad34b4c06f03fbe0f3853583a014",
+  "archives": [
+    {
+      "filename": "protoc-36.1-osx-aarch_64.zip",
+      "directory": "protoc-36.1",
+      "url": "https://github.com/protocolbuffers/protobuf/releases/download/v36.1/protoc-36.1-osx-aarch_64.zip",
+      "sha256": "de56d57afe30c5d191b11d24ff93dd4025728d7fb43b773886b2d3613e0bdbb2",
+      "digest_evidence": "GitHub official release asset digest"
+    },
+    {
+      "filename": "protobuf-7.36.1-py3-none-any.whl",
+      "directory": "python",
+      "url": "https://files.pythonhosted.org/packages/39/ca/c47f91d3cab175b01fd8c4f0d80fdf8613be876cc616e66ad281a59c5ddf/protobuf-7.36.1-py3-none-any.whl",
+      "sha256": "7d951e46b3f963d6c264c367c437921de9d5aedd9c3f9612b9077736b4e3ad5c",
+      "digest_evidence": "PyPI official protobuf 7.36.1 release metadata"
+    }
+  ]
+}

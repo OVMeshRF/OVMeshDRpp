@@ -1,0 +1,9 @@
+{
+  "modifications": [
+    {
+      "path": "third_party/glfw/src/CMakeLists.txt",
+      "reason": "Remove optional network-backed gamepad mapping update target",
+      "sha256": "a16eea2f9f944debf8e8b2ab031e3d975abc320adbeca93186c6417c8e3f6d06"
+    }
+  ]
+}

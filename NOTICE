@@ -1,0 +1,30 @@
+OVMeshDRpp / OVMeshDR++
+Copyright (C) 2026 OVMeshDRpp contributors.
+
+OVMeshDRpp is free software: you can redistribute and modify it under
+the GNU General Public License, version 3, subject to its terms.
+The project's original code is GPL-3.0-or-later. Third-party components
+retain their own licenses and copyright notices. The combined build uses
+GPL version 3; no later-version permission is asserted for components
+whose upstream grant does not expressly include that option.
+
+This program is distributed WITHOUT ANY WARRANTY; without even the
+implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+See LICENSE for the complete GNU General Public License version 3.
+
+This is an independent application. SDR++ inspired the interface; no
+SDR++ source or application runtime is included in the current inventory.
+Selected SDRangel LoRa logic was adapted, with its original authors and
+license preserved. SDRangel, Meshtastic, MeshCore and SDR++ do not endorse
+or maintain this application.
+
+Project modifications are documented in CHANGELOG.md and the
+third-party provenance records.
+See THIRD_PARTY_NOTICES.md for component versions, source references,
+copyright attribution and the distinction between runtime and tooling.
+
+Source project: https://github.com/OVMeshRF/OVMeshDRpp
+This source snapshot is experimental. Anyone distributing a binary must
+provide its matching Corresponding Source and build/install materials
+under GPL section 6. A credits page or upstream repository link alone
+does not satisfy that obligation. This notice is not a written source offer.

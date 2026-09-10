@@ -1,0 +1,18 @@
+# Application bounds; official .proto definitions are unchanged.
+* skip_message:true
+meshtastic.Position skip_message:false
+meshtastic.User skip_message:false
+meshtastic.RouteDiscovery skip_message:false
+meshtastic.Routing skip_message:false
+meshtastic.Data skip_message:false
+meshtastic.User.id max_size:16
+meshtastic.User.long_name max_size:40
+meshtastic.User.short_name max_size:5
+meshtastic.User.macaddr max_size:6
+meshtastic.User.public_key max_size:32
+meshtastic.RouteDiscovery.route max_count:32
+meshtastic.RouteDiscovery.route_back max_count:32
+meshtastic.RouteDiscovery.snr_towards max_count:32 int_size:IS_32
+meshtastic.RouteDiscovery.snr_back max_count:32 int_size:IS_32
+meshtastic.Data.payload max_size:233
+meshtastic.Data.xeddsa_signature max_size:64

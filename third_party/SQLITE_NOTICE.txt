@@ -1,0 +1,16 @@
+SQLite 3.53.4
+https://www.sqlite.org/copyright.html
+
+Verbatim dedication from sqlite3.h:
+
+/*
+** 2001-09-15
+**
+** The author disclaims copyright to this source code.  In place of
+** a legal notice, here is a blessing:
+**
+**    May you do good and not evil.
+**    May you find forgiveness for yourself and forgive others.
+**    May you share freely, never taking more than you give.
+**
+*/

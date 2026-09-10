@@ -1,0 +1,213 @@
+{
+  "source_project": "f4exb/sdrangel",
+  "revision": "866ef1656af7e0923554581afc5c6dd97cbafbaf",
+  "retrieved_utc_date": "2026-09-09",
+  "purpose": "Static reuse review only; no fetched code executed or adopted.",
+  "coverage": "Selected files only. Retrieval and integrity do not imply a full correctness, cryptographic, security, or license audit.",
+  "files": [
+    {
+      "path": "LICENSE",
+      "bytes": 35149,
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/LICENSE"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshtastic/CMakeLists.txt",
+      "bytes": 2233,
+      "sha256": "fd1b58afe1588edd476b1d67389be9f1baa39036db903d08269e2443e869d374",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshtastic/CMakeLists.txt"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshtastic/readme.md",
+      "bytes": 21988,
+      "sha256": "705ab8219a0dad51ca79c05e581206b0a5b8883204ad69e1ab38b204d15498a5",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshtastic/readme.md"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshtastic/meshtasticdemod.cpp",
+      "bytes": 64749,
+      "sha256": "9faa280405b5e2b8f40843f4354ccab11d3e7b4df7339c31116fc00be72f4b22",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshtastic/meshtasticdemod.cpp"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshtastic/meshtasticdemodsettings.cpp",
+      "bytes": 15060,
+      "sha256": "e38c558235d2ddeb584993334ed90978d88b2f602e2ceb1c987354060b3c9d1c",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshtastic/meshtasticdemodsettings.cpp"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshtastic/meshtasticdemodbaseband.cpp",
+      "bytes": 6918,
+      "sha256": "dfa9acddc0802858513a1145e39f281959c9aa3f06abd7c6bb083e8051caf712",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshtastic/meshtasticdemodbaseband.cpp"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshtastic/meshtasticdemodsink.cpp",
+      "bytes": 48200,
+      "sha256": "3bc15558c3dea4353a8f7b7b2b35374cf3ab9d5b4785e8d8bdc21f338d40cb8f",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshtastic/meshtasticdemodsink.cpp"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshtastic/meshtasticdemodsink.h",
+      "bytes": 8128,
+      "sha256": "cf20330153e4f80837a87fb56c7c5a7cc047c3afb6cfa30561feba8745569b73",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshtastic/meshtasticdemodsink.h"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshtastic/meshtasticdemoddecoder.cpp",
+      "bytes": 15013,
+      "sha256": "fe790442ba732efae3273d5dcc9a9a47e947b9c174ae5d2b4ce5cd1e784bfa53",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshtastic/meshtasticdemoddecoder.cpp"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshtastic/meshtasticdemoddecoderlora.cpp",
+      "bytes": 25095,
+      "sha256": "34d0a0e42adadbee0a8844a760b640ae67d87a960bd69e2ba00900e037096836",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshtastic/meshtasticdemoddecoderlora.cpp"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshtastic/meshtasticdemoddecoderlora.h",
+      "bytes": 19013,
+      "sha256": "f3055cb9da5e943dd4332e10bf79e0df0b096f7596da08e68cf29c3706893dc0",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshtastic/meshtasticdemoddecoderlora.h"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshcore/CMakeLists.txt",
+      "bytes": 2157,
+      "sha256": "774198b1c4a890d919cf2ef2a9dde871f8e3231a4ff836259ae033a01d82cfe7",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshcore/CMakeLists.txt"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshcore/readme.md",
+      "bytes": 2571,
+      "sha256": "6533cd20d64651cd010a3c82bd90ac0a033a781f53f506a08eaa4f334d017d03",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshcore/readme.md"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshcore/meshcoredemod.cpp",
+      "bytes": 67556,
+      "sha256": "d49890c499ddb130a809d6bf685797f5b24962f62beabfba4480566cadd45ef2",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshcore/meshcoredemod.cpp"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshcore/meshcoredemodsettings.cpp",
+      "bytes": 15483,
+      "sha256": "33eb4d87d305181d4a9b980e1adb2ccc0ff32de01daa15dc5ef264615f40eec0",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshcore/meshcoredemodsettings.cpp"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshcore/meshcoredemodbaseband.cpp",
+      "bytes": 6848,
+      "sha256": "06a6909b3b0a1f7150d018f820b3828347baa283daa8538e3894347ff05868ec",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshcore/meshcoredemodbaseband.cpp"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshcore/meshcoredemodsink.cpp",
+      "bytes": 50170,
+      "sha256": "a4a4f7d71f46e15269961ce64a977c25742014c74dc33b12ac18d5b15543a0ff",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshcore/meshcoredemodsink.cpp"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshcore/meshcoredemodsink.h",
+      "bytes": 8106,
+      "sha256": "ab010cb51e737d591a473a8afac11f648de6cce17f6130e9a3535eb4e6f96d9b",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshcore/meshcoredemodsink.h"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshcore/meshcoredemoddecoder.cpp",
+      "bytes": 14945,
+      "sha256": "27524078c875dea36191e2095b15345ea331f3415a9bb4505520a6827ad974bc",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshcore/meshcoredemoddecoder.cpp"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshcore/meshcoredemoddecoderlora.cpp",
+      "bytes": 23364,
+      "sha256": "ac5f92478835459484889b3b3c6c3726089e2902a03b814dc045fbef724dca4d",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshcore/meshcoredemoddecoderlora.cpp"
+    },
+    {
+      "path": "plugins/channelrx/demodmeshcore/meshcoredemoddecoderlora.h",
+      "bytes": 17888,
+      "sha256": "4c6cd98de3ce90cc9846fd2b7a74ab135e874b45f8724d68f36c8b731e496432",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/plugins/channelrx/demodmeshcore/meshcoredemoddecoderlora.h"
+    },
+    {
+      "path": "modemmeshtastic/CMakeLists.txt",
+      "bytes": 373,
+      "sha256": "41e16231d6d473aa633bf9f6c9e3cfdad0e38982ef5200d5b403b263af49c292",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/modemmeshtastic/CMakeLists.txt"
+    },
+    {
+      "path": "modemmeshtastic/meshtasticpacket.cpp",
+      "bytes": 105656,
+      "sha256": "7a20e7eeb8d420148edf9478bc94572d01c4aac03a454553914a134ee2c1fe20",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/modemmeshtastic/meshtasticpacket.cpp"
+    },
+    {
+      "path": "modemmeshtastic/meshtasticpacket.h",
+      "bytes": 3214,
+      "sha256": "b6d71d3aea6152f5168081bf4e61c800bbe9a8f2c1e52e7bdfd1b5b68c7009cb",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/modemmeshtastic/meshtasticpacket.h"
+    },
+    {
+      "path": "modemmeshcore/CMakeLists.txt",
+      "bytes": 1562,
+      "sha256": "733f4bc0b75cb0e34f0ec5ef6334285e432d1204a07b0558e378590625aacf13",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/modemmeshcore/CMakeLists.txt"
+    },
+    {
+      "path": "modemmeshcore/meshcore_decoder.cpp",
+      "bytes": 17043,
+      "sha256": "bd4d2d151d35bdb1595e4484a687ea4c7c3b60b02abe0ff40613c5464791c626",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/modemmeshcore/meshcore_decoder.cpp"
+    },
+    {
+      "path": "modemmeshcore/meshcore_decoder.h",
+      "bytes": 4722,
+      "sha256": "8294a896cdab309124c92ef12c382c1638bfc1a3d9a7d80c50f7462737ac8608",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/modemmeshcore/meshcore_decoder.h"
+    },
+    {
+      "path": "modemmeshcore/meshcore_crypto.cpp",
+      "bytes": 9635,
+      "sha256": "67126792ceec45a3c1fbe40be8c95f58bca33d0b6811710e6b55ca53673b8c33",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/modemmeshcore/meshcore_crypto.cpp"
+    },
+    {
+      "path": "modemmeshcore/meshcore_crypto.h",
+      "bytes": 4010,
+      "sha256": "795e1c1ec0ae0a45f32f7a1eee6e9598e82e939bbe945a21b2ef236915089d9b",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/modemmeshcore/meshcore_crypto.h"
+    },
+    {
+      "path": "modemmeshcore/meshcorepacket.cpp",
+      "bytes": 5417,
+      "sha256": "09c5f5555cdcc596c5ae4a7c85f6cd9e0c7e47c7cf23e5e4fbd92104cecb1892",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/modemmeshcore/meshcorepacket.cpp"
+    },
+    {
+      "path": "modemmeshcore/meshcorepacket.h",
+      "bytes": 6021,
+      "sha256": "98f08c3511f486d66cd4de9873c68674b83fc6a72582b2249045f4e7cc79df76",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/modemmeshcore/meshcorepacket.h"
+    },
+    {
+      "path": "modemmeshcore/monocypher.c",
+      "bytes": 100425,
+      "sha256": "ca0cfd2d66525861f70bc52c8944e273c817e0ec882ce498c1db934f9263260a",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/modemmeshcore/monocypher.c"
+    },
+    {
+      "path": "modemmeshcore/monocypher-ed25519.c",
+      "bytes": 16487,
+      "sha256": "78f56049104043567c0b9a1970f5c7f4c27759af0ade4dfa029d3a949f3cf609",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/modemmeshcore/monocypher-ed25519.c"
+    },
+    {
+      "path": "modemmeshcore/tiny_aes.h",
+      "bytes": 11098,
+      "sha256": "a7484a06e912f0d7cca13ff0c4423767308c6a392b819585fe4b4e98b1a70c2e",
+      "url": "https://raw.githubusercontent.com/f4exb/sdrangel/866ef1656af7e0923554581afc5c6dd97cbafbaf/modemmeshcore/tiny_aes.h"
+    }
+  ]
+}
