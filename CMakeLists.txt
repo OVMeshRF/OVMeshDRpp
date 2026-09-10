@@ -13,11 +13,7 @@ option(OVMESH_SANITIZERS "Enable address and undefined-behavior sanitizers" OFF)
 option(OVMESH_BUILD_IQ_LAB "Build the explicitly authorized temporary IQ developer tool (Mac only)" OFF)
 
 find_package(Threads REQUIRED)
-set(OPENSSL_USE_STATIC_LIBS TRUE)
-find_package(OpenSSL 3.5.8 REQUIRED COMPONENTS Crypto)
-if(NOT OPENSSL_VERSION STREQUAL "3.5.8")
-  message(FATAL_ERROR "This prototype was reviewed with OpenSSL 3.5.8. Supply its reviewed local OPENSSL_ROOT_DIR; review and record dependency changes before changing this baseline.")
-endif()
+include(cmake/ReviewedOpenSSL.cmake)
 add_library(ovmesh_sqlite STATIC third_party/sqlite/sqlite3.c)
 target_include_directories(ovmesh_sqlite PUBLIC third_party/sqlite)
 target_compile_definitions(ovmesh_sqlite PUBLIC SQLITE_OMIT_LOAD_EXTENSION=1

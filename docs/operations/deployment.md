@@ -4,12 +4,12 @@ Status: experimental native development build, updated 2026-09-10. Builds and va
 
 ## Build
 
-Use a C++20 compiler, CMake 3.24 or newer, and platform development headers. The first Mac build uses Apple Clang/SDK. GLFW, Dear ImGui and SQLite source are vendored and verified by CMake. The reviewed OpenSSL prefix is built locally; see [OpenSSL intake](../security/openssl-intake.md). No system package installation is part of configuration.
+Use a C++20 compiler, CMake 3.24 or newer, and platform development headers. The first Mac build uses Apple Clang/SDK. GLFW, Dear ImGui and SQLite source are vendored and verified by CMake. Prepare the reviewed local OpenSSL prefix with `python3 tools/bootstrap_openssl.py --download` (native Linux/macOS), or use `--archive PATH` for an offline verified archive. This explicit helper uses Python's standard library, not a virtual environment or pip; it leaves system OpenSSL unchanged. See the [Linux build guide](linux-build.md) and [OpenSSL intake](../security/openssl-intake.md). No system package installation is part of configuration.
 
 From the repository root:
 
 ```sh
-cmake -S . -B build/native -DCMAKE_BUILD_TYPE=Release -DOPENSSL_ROOT_DIR="$PWD/build/deps/openssl-3.5.8-local" -DOPENSSL_USE_STATIC_LIBS=TRUE
+cmake --fresh -S . -B build/native -DCMAKE_BUILD_TYPE=Release
 cmake --build build/native --parallel 4
 ctest --test-dir build/native --output-on-failure
 ```
