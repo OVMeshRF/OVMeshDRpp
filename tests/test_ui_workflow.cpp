@@ -153,6 +153,30 @@ void persisted_setup_and_effective_modes(const Fixture& fixture) {
         !fs::exists(fs::path(reopened.session_path)), "Fresh launch never restores prior results or opens their recording");
 }
 
+void rtl_receiver_controls(Canvas& canvas) {
+    Engine engine; DesktopState ui; ui.passive_smoke=true;
+    ui.select_receiver(2); ui.config.center_hz=906875000;
+    Snapshot snapshot; snapshot.rtl_sdr_available=true;
+    const auto draw=[&] { receiver_controls(engine,ui,snapshot); };
+    canvas.frame(draw);const auto rtl=canvas.frame(draw);
+    for(const auto* text:{"RTL-SDR / USB","Tuner gain","Automatic tuner gain","2 MS/s","906.125 - 907.625 MHz",
+            "Only this range is monitored continuously."})contains(rtl,text);
+    for(const auto* text:{"LNA gain","VGA gain","RF amplifier","16 MS/s"})
+        require(rtl.find(text)==std::string::npos,"RTL controls do not offer HackRF gain stages or unsupported wideband rates");
+    require(!engine.snapshot().running&&engine.gps_connection_status().state==GpsConnectionState::Disconnected,
+        "Rendering RTL controls starts neither radio nor GPS");
+    snapshot.rtl_sdr_available=false;
+    contains(canvas.frame(draw),"RTL-SDR support is unavailable in this build.");
+    snapshot.historical=true;snapshot.config=ui.config;snapshot.config.rtl_gain_tenths_db=297;
+    ui.select_receiver(1);
+    const auto saved=canvas.frame(draw);
+    contains(saved,"RTL-SDR / USB");contains(saved,"Applied tuner gain: 29.7 dB");
+    require(saved.find("RF amplifier")==std::string::npos,
+        "Historical RTL recordings show their own receiver controls even when the next session selects HackRF");
+    require(ui.source==1&&ui.config.hardware_receiver==HardwareReceiver::HackRf,
+        "Displaying historical RTL acquisition does not mutate the next receiver setup");
+}
+
 void save_new_and_historical(Canvas& canvas, const Fixture& fixture) {
     Engine engine; DesktopState ui; ui.initialize_preferences(fixture.path("session-profile"), false);
     prepare_synthetic(ui); ui.start(engine, false); require(!ui.notice_error, ui.notice); measurements(engine);
@@ -372,6 +396,7 @@ int main() {
         Fixture fixture; Canvas canvas;
         fresh_layout_and_settings(canvas, fixture);
         persisted_setup_and_effective_modes(fixture);
+        rtl_receiver_controls(canvas);
         save_new_and_historical(canvas, fixture);
         unrecorded_and_pending_feedback(canvas);
         asynchronous_analysis_preserves_selection(canvas, fixture);

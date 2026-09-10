@@ -13,6 +13,8 @@ namespace ovmesh {
 
 struct ReportOptions;
 
+enum class HardwareReceiver { HackRf, RtlSdr };
+
 struct LaneConfig {
     std::string label = "LongFast";
     std::string channel_name = "LongFast";
@@ -26,6 +28,7 @@ struct LaneConfig {
 
 struct ReceiverConfig {
     bool synthetic = true;
+    HardwareReceiver hardware_receiver = HardwareReceiver::HackRf;
     uint64_t center_hz = 907500000;
     // Positive values raise the hardware tune command, matching SDR++ manual offset.
     // Spectrum/profile frequencies remain on the nominal, user-calibrated axis.
@@ -35,6 +38,8 @@ struct ReceiverConfig {
     unsigned lna_gain = 16;
     unsigned vga_gain = 16;
     bool amplifier = false;
+    int rtl_gain_tenths_db = 280;
+    bool rtl_auto_gain = false;
     std::string device_serial;
     float activity_threshold_dbfs = -55.0f;
     bool discover_lora = false;
@@ -53,6 +58,8 @@ struct ReceiverConfig {
 // Validates the nominal center, bounded +/-100 kHz correction, and corrected tune.
 // Does not access hardware. Synthetic RF models this offset as a receive-frequency shift.
 uint64_t tuned_center_hz(const ReceiverConfig& config);
+// Stable display/provenance label; never enumerates or opens a device.
+const char* receiver_source_name(const ReceiverConfig& config) noexcept;
 
 struct Reception {
     uint64_t id = 0;
@@ -112,6 +119,7 @@ struct Snapshot {
     bool historical = false;
     bool incomplete = false;
     bool hardware_available = false; // Build capability only; never USB enumeration.
+    bool rtl_sdr_available = false; // Build capability only; never USB enumeration.
     std::string state = "Idle";
     std::string error;
     std::string session_id;

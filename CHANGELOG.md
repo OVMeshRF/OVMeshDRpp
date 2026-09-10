@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add a direct RTL-SDR receiver choice, receiver-specific controls, saved setup and acquisition provenance. Initial RTL LoRa discovery uses 2 MS/s over a guarded 1.5 MHz span; spectrum-only reception also supports 1 MS/s.
+- Include the pinned minimal librtlsdr source and allocation-failure checks; builds remain offline.
+
 ## 2026-09-10 — Initial experimental source snapshot (0.4.0)
 
 - Receive-only HackRF spectrum surveys with a live spectrum/waterfall, measured coverage and frequency activity.

@@ -11,9 +11,9 @@ Status: native prototype inventory, updated 2026-09-10. The combined build uses 
 | Crypto | OpenSSL libcrypto | Maintained primitives, isolated local static build; no libssl application or external provider/config loading |
 | Sessions | SQLite amalgamation | Embedded storage, no server/extensions, typed schema; plaintext files |
 | Desktop | Dear ImGui + GLFW + OpenGL | Existing vendored sources/backends and OS graphics; local system-font lookup plus built-in fallback, no font download |
-| USB | libhackrf + libusb | Existing host libraries initially; packaging must inventory actual closure |
+| USB | libhackrf + reviewed static librtlsdr 2.0.3 + libusb | RTL source pinned in tree; existing host USB transport, no upstream utilities or implicit installation; [RTL intake](../security/rtlsdr-intake.md). Packaging must inventory actual closure |
 | GPS | Owned NMEA, device discovery and OS serial APIs | Metadata enumeration via macOS IOKit/CoreFoundation, Windows SetupAPI or Linux serial/sysfs; no serial-port traffic probing, gpsd or external GPS package |
-| Desktop preferences | Owned bounded format 5 + OS file APIs | Existing OpenSSL random generation; private atomic receiver/source/display/settings persistence, no settings framework, keys, coordinates or content |
+| Desktop preferences | Owned bounded format 6 + OS file APIs | Existing OpenSSL random generation; private atomic receiver/source/display/settings persistence, no settings framework, keys, coordinates or content |
 | Session copy / image capture | Existing SQLite backup API + owned PNG writer | Private new local files; full retained SQLite snapshot or bounded spectrum/waterfall image; no backup framework, image codec package or OS-dialog dependency |
 | Cloud/remote | None | No listener, telemetry, online map, updater or source synchronization |
 

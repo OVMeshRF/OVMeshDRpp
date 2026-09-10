@@ -2,11 +2,11 @@
 
 **Community & support:** Join the [OVMesh Discord](https://discord.gg/kwKhFamfaU).
 
-**Hardware support:** HackRF One is currently supported. RTL-SDR support is planned by this weekend (September 12–13, 2026).
+**Hardware support:** HackRF One and RTL-SDR have direct USB receive adapters. RTL-SDR integration is experimental: 1–2 MS/s, up to 1.6 MHz for spectrum surveying or 1.5 MHz for LoRa discovery at 2 MS/s. See [receiver and platform compatibility](docs/operations/hardware-compatibility.md) and [RTL-SDR setup](docs/operations/rtl-sdr.md).
 
 OVMeshDR++ is a local, receive-only spectrum survey application with an SDR++-inspired desktop interface. Observe a configurable frequency range, save measurements with optional receiver GPS, and explore activity by frequency, time and location. The application runs locally; it has no cloud service, automatic uploader or online map.
 
-**Version 0.4.0 is experimental source.** Spectrum surveying is the primary workflow. LoRa waveform discovery and explicitly configured Meshtastic decoding are experimental; this version does not reliably identify every transmission or automatically decode discovered waveforms throughout the range. MeshCore decoding and RTL-SDR reception are not implemented yet. See [capabilities and limitations](docs/engineering/implementation-status.md).
+**Version 0.4.0 is experimental source.** Spectrum surveying is the primary workflow. LoRa waveform discovery and explicitly configured Meshtastic decoding are experimental; this version does not reliably identify every transmission or automatically decode discovered waveforms throughout the range. MeshCore decoding is not implemented yet. See [capabilities and limitations](docs/engineering/implementation-status.md).
 
 ## What you can do
 
@@ -37,7 +37,7 @@ The report explains observation coverage, busy time, frequency activity and meas
 
 Start with the [build instructions](docs/operations/deployment.md) and [user guide](docs/user-guide.md). The synthetic receiver lets you explore the application without radio hardware. Ordinary startup opens an empty session with RF stopped; enabled recognized GPS setup may connect automatically. Saved receiver preferences persist, while old survey results and keys are not automatically restored.
 
-The core uses C++20/CMake, with a Dear ImGui/GLFW/OpenGL desktop, SQLite, bounded Nanopb decoding, OpenSSL libcrypto, and direct HackRF/libusb reception. Dependencies are pinned and reviewed; normal builds do not download them. macOS development builds are available from source. Windows/Linux packaging and hardware behavior still require validation.
+The core uses C++20/CMake, with a Dear ImGui/GLFW/OpenGL desktop, SQLite, bounded Nanopb decoding, OpenSSL libcrypto, and direct HackRF or RTL-SDR/libusb reception. Dependencies are pinned and reviewed; normal builds do not download them. macOS development builds are available from source. Windows/Linux packaging and hardware behavior still require validation.
 
 ## Understand the measurements
 
@@ -47,7 +47,7 @@ The core uses C++20/CMake, with a Dear ImGui/GLFW/OpenGL desktop, SQLite, bounde
 - **Receiver GPS** locates the observation, not the transmitter. Fix quality and missing positions matter.
 - A quiet-looking interval does not establish an interference-free channel or regulatory compliance.
 
-The default survey span is 10 MHz. Usable passband, sensitivity, mobile positioning, long-term capture reliability and protocol recall require further field validation. Read the [measurement reference](docs/design/spectrum-measurement-record.md) and [RF capability gaps](docs/engineering/rf-survey-gap-analysis.md) before interpreting results.
+The initial HackRF survey span is 10 MHz; selecting RTL-SDR sets 2 MS/s and a 1.5 MHz span. Remembered settings may differ. Usable passband, sensitivity, mobile positioning, long-term capture reliability and protocol recall require further field validation. Read the [measurement reference](docs/design/spectrum-measurement-record.md) and [RF capability gaps](docs/engineering/rf-survey-gap-analysis.md) before interpreting results.
 
 ## Privacy and security
 

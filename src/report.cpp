@@ -116,16 +116,19 @@ struct Context {
     std::vector<std::string> metadata_header() const {
         std::vector<std::string> result{"session_id","recording_schema_version","source","sample_rate_hz","receiver_center_hz","offset_hz",
             "lna_gain_db","vga_gain_db","rf_amplifier","threshold_dbfs","fft_bin_width_hz","hann_enbw_hz",
-            "recording_incomplete","geographic_filter_applied","session_dropped_samples","requested_lower_hz","requested_upper_hz"};
+            "recording_incomplete","geographic_filter_applied","session_dropped_samples","requested_lower_hz","requested_upper_hz",
+            "rtl_tuner_gain_db","rtl_auto_gain"};
         if (options.privacy.include_provenance) append(result,{"antenna_description","receiver_description","survey_notes"});
         return result;
     }
     std::vector<std::string> metadata() const {
         const auto& c = summary.config;
-        std::vector<std::string> result{text(summary.session_id),std::to_string(schema),text(c.synthetic ? "synthetic" : "HackRF"),
-            integer(c.sample_rate),integer(c.center_hz),schema>=2?number(double(c.tuning_offset_hz)):"",integer(c.lna_gain),
-            integer(c.vga_gain),integer(c.amplifier),number(c.activity_threshold_dbfs),schema>=4?number(summary.spectrum_bin_width_hz):"",
-            schema>=4?number(summary.spectrum_enbw_hz):"",integer(summary.incomplete),integer(options.query.geographic_filter),integer(summary.dropped_samples),number(lower),number(upper)};
+        const bool rtl=!c.synthetic&&c.hardware_receiver==HardwareReceiver::RtlSdr;
+        std::vector<std::string> result{text(summary.session_id),std::to_string(schema),text(c.synthetic ? "synthetic" : receiver_source_name(c)),
+            integer(c.sample_rate),integer(c.center_hz),schema>=2?number(double(c.tuning_offset_hz)):"",rtl?"":integer(c.lna_gain),
+            rtl?"":integer(c.vga_gain),rtl?"":integer(c.amplifier),number(c.activity_threshold_dbfs),schema>=4?number(summary.spectrum_bin_width_hz):"",
+            schema>=4?number(summary.spectrum_enbw_hz):"",integer(summary.incomplete),integer(options.query.geographic_filter),integer(summary.dropped_samples),number(lower),number(upper),
+            rtl&&!c.rtl_auto_gain?number(c.rtl_gain_tenths_db/10.0):"",rtl?integer(c.rtl_auto_gain):""};
         if (options.privacy.include_provenance) append(result,{text(c.antenna_description),text(c.receiver_description),text(c.survey_notes)});
         return result;
     }

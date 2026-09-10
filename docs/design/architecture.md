@@ -6,7 +6,7 @@ The application is a standalone C++20 receiver, measurement engine, local sessio
 
 ```mermaid
 flowchart LR
-    R[HackRF receive adapter or synthetic source] --> M[Bounded transient IQ]
+    R[HackRF or RTL-SDR receive adapter or synthetic source] --> M[Bounded transient IQ]
     M --> S[Spectrum measurements and energy events]
     M --> F[Experimental LoRa waveform discovery]
     M --> L[Explicit decoder profiles]

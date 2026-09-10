@@ -7,11 +7,19 @@ local graphics session; they open windows but never open a radio or GPS.
 """
 from pathlib import Path
 import subprocess
+import sqlite3
 import sys
 import tempfile
 
 desktop, cli = (str(Path(arg).resolve()) for arg in sys.argv[1:3])
 cases = [
+    (cli, ["--receive-rtlsdr", "--spectrum-only"], "requires explicit"),
+    (cli, ["--receive-rtlsdr", "--confirm-radio-access", "--rf-amplifier"], "do not apply to RTL-SDR"),
+    (cli, ["--headless-demo", "--rtl-auto-gain"], "require an RTL-SDR"),
+    (cli, ["--sample-rate", "2400000", "--receive-rtlsdr", "--confirm-radio-access", "--spectrum-only"], "sample rate"),
+    (cli, ["--receive-rtlsdr", "--receive-hackrf"], "Choose one"),
+    (desktop, ["--prepare-desktop-rtlsdr", "--confirm-radio-access"], "consent in the UI"),
+    (desktop, ["--view-survey", "/not-opened.sqlite", "--rtl-auto-gain"], "require an RTL-SDR"),
     (desktop, ["--ui-smoke", "0"], "positive frame count"),
     (desktop, ["--ui-smoke", "-1"], "positive frame count"),
     (desktop, ["--settings-directory", "relative"], "absolute local folder"),
@@ -43,7 +51,7 @@ cases = [
     (desktop, ["--desktop-receive-hackrf", "--until-stopped"], "requires explicit --confirm-radio-access"),
     (desktop, ["--desktop-receive-hackrf", "--seconds", "1"], "requires explicit --confirm-radio-access"),
     (desktop, ["--prepare-desktop-hackrf", "--until-stopped", "--confirm-radio-access"], "requires consent in the UI"),
-    (desktop, ["--demo", "--until-stopped", "--confirm-radio-access"], "only to an explicit HackRF"),
+    (desktop, ["--demo", "--until-stopped", "--confirm-radio-access"], "only to an explicit hardware"),
     (cli, ["--demo", "--until-stopped"], "requires the desktop executable"),
     (cli, ["--prepare-desktop-hackrf", "--until-stopped"], "requires the desktop executable"),
 ]
@@ -62,7 +70,6 @@ for args in (["--ui-smoke", "3"], ["--demo", "--ui-smoke", "3"]):
 # Ordinary demo launches must still apply their supplied recording/provenance.
 with tempfile.TemporaryDirectory(prefix="desktop-mode-", dir=Path(cli).parent) as directory:
     session = str(Path(directory) / "demo.sqlite")
-    output = str(Path(directory) / "demo.csv")
     result = subprocess.run([desktop, "--demo", "--ui-smoke", "3", "--session", session,
                              "--antenna-description", "Ordinary synthetic demo antenna",
                              "--receiver-description", "Synthetic startup regression",
@@ -70,16 +77,18 @@ with tempfile.TemporaryDirectory(prefix="desktop-mode-", dir=Path(cli).parent) a
                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, (result.returncode, result.stderr)
     assert "Desktop control" not in result.stdout
-    exported = subprocess.run([cli, "--export", session, "--output", output, "--provenance"],
-                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
-    assert exported.returncode == 0, exported.stderr
-    assert "Ordinary synthetic demo antenna" in Path(output).read_text()
-    assert "Three-frame local smoke" in Path(output).read_text()
+    # Three UI frames may finish before a complete FFT tile is generated.
+    # This smoke test validates setup persistence, not RF exposure; inspect the
+    # metadata directly instead of requiring a frequency report from no data.
+    with sqlite3.connect("file:" + session + "?mode=ro", uri=True) as recorded:
+        assert recorded.execute("SELECT synthetic FROM session").fetchone() == (1,)
+        assert recorded.execute("SELECT antenna,receiver,notes FROM survey_metrology").fetchone() == (
+            "Ordinary synthetic demo antenna", "Synthetic startup regression", "Three-frame local smoke")
     original = Path(session).read_bytes()
     viewed = subprocess.run([desktop, "--view-survey", session, "--ui-smoke", "3"],
                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
     assert viewed.returncode == 0, (viewed.returncode, viewed.stderr)
-    assert "Saved survey opened read-only: detailed_analysis=1" in viewed.stdout
+    assert "Saved survey opened read-only; analysis queued. No radio or GPS access." in viewed.stdout
     assert "Desktop control" not in viewed.stdout and "Started" not in viewed.stdout
     assert Path(session).read_bytes() == original, "Passive desktop viewing changed the saved database"
 

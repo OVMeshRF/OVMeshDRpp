@@ -652,6 +652,74 @@
     {
       "path": "third_party/libhackrf-NOTICE.txt",
       "sha256": "20815d286012fde9da01b51d7b53b1168307cb7e83372fde1d45d959aba59822"
+    },
+    {
+      "path": "third_party/rtlsdr/AUTHORS",
+      "sha256": "cbabb6f95d4c2fb9852295c698e123b27f13867fd4a93c6e4e69d0261fc99150"
+    },
+    {
+      "path": "third_party/rtlsdr/COPYING",
+      "sha256": "ab15fd526bd8dd18a9e77ebc139656bf4d33e97fc7238cd11bf60e2b9b8666c6"
+    },
+    {
+      "path": "third_party/rtlsdr/include/reg_field.h",
+      "sha256": "2fec66e8b4cd3d284f013184d504050faa785563563075e99e8330b70bda3718"
+    },
+    {
+      "path": "third_party/rtlsdr/include/rtl-sdr.h",
+      "sha256": "e97437079f7de47414b565b75ccf48a59f51e2d61709ee21980f93a35ea630c6"
+    },
+    {
+      "path": "third_party/rtlsdr/include/rtl-sdr_export.h",
+      "sha256": "dad8d49c7b46ba05bb3b6bb2a5cec6022df98a53b9d69df139db055845bd1241"
+    },
+    {
+      "path": "third_party/rtlsdr/include/rtlsdr_i2c.h",
+      "sha256": "9471c092e280ccbfd40cc702995e96924ff654c600b3f366076f1412f295dc59"
+    },
+    {
+      "path": "third_party/rtlsdr/include/tuner_e4k.h",
+      "sha256": "ef6c31b8340344e7cfaad5fa7ee12b7269031424d5626b82bd27a134e60bfdb9"
+    },
+    {
+      "path": "third_party/rtlsdr/include/tuner_fc0012.h",
+      "sha256": "89ab90ac9c0b8b4b94bc3c72f809c2de1dd14673d97d47009c15a3c7508daa7d"
+    },
+    {
+      "path": "third_party/rtlsdr/include/tuner_fc0013.h",
+      "sha256": "0791ef6036181b097999489924e310fefb3e10e04c9e50146b2afb3d162b7f1d"
+    },
+    {
+      "path": "third_party/rtlsdr/include/tuner_fc2580.h",
+      "sha256": "b220e01fe566230e5b7223c52f9b631e1be43b053244ba46e64758ec7eb71bce"
+    },
+    {
+      "path": "third_party/rtlsdr/include/tuner_r82xx.h",
+      "sha256": "f5b86dd01228141856545d2ebb9284ceaae1169d21a5f59279a140050c6cadf4"
+    },
+    {
+      "path": "third_party/rtlsdr/src/librtlsdr.c",
+      "sha256": "e22fb140dabe18c613bbf4307b149c61337c51e12191bbcd513ed4fbeb3590bc"
+    },
+    {
+      "path": "third_party/rtlsdr/src/tuner_e4k.c",
+      "sha256": "0242517d58e2c6abc6355febfcb0549af10edebfe1f5720062522aaaadd8bc37"
+    },
+    {
+      "path": "third_party/rtlsdr/src/tuner_fc0012.c",
+      "sha256": "617f23821611b0071c5b5dfcc526cb000e49f218aa90a693a1a7d9e7921feddf"
+    },
+    {
+      "path": "third_party/rtlsdr/src/tuner_fc0013.c",
+      "sha256": "75cb421993fc10c0ff2d4e389df46e6952add5cc5df063f56c60af08318b561f"
+    },
+    {
+      "path": "third_party/rtlsdr/src/tuner_fc2580.c",
+      "sha256": "10c6be566bf902d59c45b10244a3b12ab5203348bddc050871128297813f3423"
+    },
+    {
+      "path": "third_party/rtlsdr/src/tuner_r82xx.c",
+      "sha256": "4d890206ebdb4dff18bcf872a21f084200ba3190470965a864b661146ebbf6e3"
     }
   ]
 }

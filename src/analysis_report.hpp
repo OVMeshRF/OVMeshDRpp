@@ -262,11 +262,15 @@ th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #d6e1e7}th{backgr
     h.heading("6. Measurement setup and data quality");
     const auto& config=c.summary.config;const auto& d=c.summary.discovery;
     h.table({"Item","Recorded value / scope"});
+    h.row({"Receiver source",receiver_source_name(config)});
     h.row({"Nominal center / Offset",human_number(double(config.center_hz)/1e6,6)+" MHz / "+std::to_string(config.tuning_offset_hz)+" Hz"});
     h.row({"Sample rate / FFT / Hann ENBW",std::to_string(config.sample_rate)+" samples/s / "+std::to_string(c.summary.spectrum_fft_size)+" / "+human_number(c.summary.spectrum_enbw_hz)+" Hz"});
     h.row({"Recorded bin spacing",human_number(frequency.width)+" Hz"});
     h.row({"Activity threshold",human_number(config.activity_threshold_dbfs,2)+" dBFS per bin"});
-    h.row({"LNA / VGA / RF amplifier",std::to_string(config.lna_gain)+" / "+std::to_string(config.vga_gain)+" dB / "+(config.amplifier?"on":"off")});
+    if(!config.synthetic&&config.hardware_receiver==HardwareReceiver::RtlSdr)
+        h.row({"RTL-SDR tuner gain",config.rtl_auto_gain?"Automatic; sensitivity varies and no fixed gain is reported":
+            human_number(config.rtl_gain_tenths_db/10.0,1)+" dB (applied manual gain)"});
+    else h.row({"LNA / VGA / RF amplifier",std::to_string(config.lna_gain)+" / "+std::to_string(config.vga_gain)+" dB / "+(config.amplifier?"on":"off")});
     h.row({"Maximum retained power support in selection",human_number(support,6)+" s"});
     h.row({"Selected quality flags",quality_name(quality)});
     h.row({"Input drops / clipped samples (whole session)",std::to_string(c.summary.dropped_samples)+" / "+std::to_string(c.summary.clipped_samples)});

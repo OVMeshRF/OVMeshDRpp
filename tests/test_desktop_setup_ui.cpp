@@ -122,6 +122,47 @@ void receiver_offset_survives_restart(const Fixture& fixture) {
     require(contents(settings)==original_bytes,
         "Passive test state cannot overwrite the ordinary receiver correction");
 }
+void rtl_setup_survives_restart(const Fixture& fixture) {
+    const auto profile=fixture.path("rtl-receiver-profile");
+    DesktopState first;first.initialize_preferences(profile,false);
+    first.config.center_hz=906875000;
+    first.config.tuning_offset_hz=900;first.config.amplifier=true;
+    copy_text(first.device_serial,"synthetic-hackrf-selection");
+    first.config.device_serial=first.device_serial.data();
+    first.select_receiver(2);
+    require(first.source==2&&!first.config.synthetic&&first.config.hardware_receiver==HardwareReceiver::RtlSdr&&
+        first.config.center_hz==906875000&&first.config.sample_rate==2000000&&first.config.survey_span_hz==1500000,
+        "Selecting RTL retains center and chooses a supported continuous survey span and rate");
+    require(first.config.tuning_offset_hz==0&&first.config.device_serial.empty()&&first.device_serial.front()==0&&
+        !first.config.amplifier,"A different receiver does not inherit HackRF Offset, serial selection or amplifier enable");
+    first.config.tuning_offset_hz=-400;first.config.rtl_gain_tenths_db=372;first.config.rtl_auto_gain=true;
+    first.gps_enabled=false;first.persist_preferences();
+    require(first.preferences_error.empty(),"RTL setup persists without activating hardware");
+    DesktopState reopened;reopened.initialize_preferences(profile,false);
+    require(reopened.source==2&&reopened.config.hardware_receiver==HardwareReceiver::RtlSdr&&!reopened.config.synthetic&&
+        reopened.config.center_hz==906875000&&reopened.config.sample_rate==2000000&&reopened.config.survey_span_hz==1500000&&
+        reopened.config.tuning_offset_hz==-400&&reopened.config.rtl_gain_tenths_db==372&&reopened.config.rtl_auto_gain,
+        "Fresh desktop restores RTL receiver settings including its own Offset and tuner gain");
+    require(reopened.config.session_path.empty()&&reopened.waterfall.empty()&&reopened.gps_devices.devices.empty(),
+        "Restoring RTL source loads no results and performs no hardware discovery");
+    Snapshot capabilities;
+    require(!receiver_source_available(1,capabilities)&&!receiver_source_available(2,capabilities)&&
+        receiver_source_available(0,capabilities),"Missing hardware backends are independent of synthetic availability");
+    capabilities.rtl_sdr_available=true;
+    require(receiver_source_available(2,capabilities)&&!receiver_source_available(1,capabilities),
+        "RTL availability does not require HackRF build support");
+    capabilities.rtl_sdr_available=false;capabilities.hardware_available=true;
+    require(!receiver_source_available(2,capabilities)&&receiver_source_available(1,capabilities),
+        "HackRF availability never masquerades as RTL support");
+    reopened.spectrum_only=false;reopened.config.discover_lora=true;
+    reopened.config.sample_rate=1000000;reopened.config.survey_span_hz=800000;reopened.prepare_discovery_rate();
+    require(reopened.config.sample_rate==2000000&&reopened.config.survey_span_hz==800000,
+        "Enabling RTL discovery selects the supported rate without widening the selected survey");
+    reopened.select_receiver(1);
+    require(reopened.source==1&&reopened.config.hardware_receiver==HardwareReceiver::HackRf&&
+        reopened.config.sample_rate==16000000&&reopened.config.survey_span_hz==10000000&&reopened.config.tuning_offset_hz==0,
+        "Returning to HackRF restores a supported wideband setup and clears the other receiver's Offset");
+}
 void consecutive_recordings(const Fixture& fixture) {
     DesktopState ui;ui.initialize_preferences(fixture.path("recording-profile"),false);
     configure_synthetic(ui);Engine engine;
@@ -250,7 +291,7 @@ void frequency_summary_rendering() {
 }
 int main() {
     try {
-        Fixture fixture;defaults_folder_and_optouts(fixture);receiver_offset_survives_restart(fixture);consecutive_recordings(fixture);
+        Fixture fixture;defaults_folder_and_optouts(fixture);receiver_offset_survives_restart(fixture);rtl_setup_survives_restart(fixture);consecutive_recordings(fixture);
         unavailable_settings_or_folder(fixture);frequency_summary_rendering();
         std::cout<<"Desktop setup and recording integration passed; explicit fixtures only, no windows or USB opened\n";
         return 0;

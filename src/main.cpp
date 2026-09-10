@@ -218,6 +218,10 @@ void print_phy_counts(const ovmesh::PhyDiagnostics& phy) {
 void usage(){std::cout<<"OVMeshDRpp "<<ovmesh::Engine::version()<<" — local receive-only RF surveys\n"
     "  --headless-demo [--seconds 10] [--session NEW.sqlite]\n"
     "  --receive-hackrf --confirm-radio-access [--seconds 60]\n"
+    "  --receive-rtlsdr --confirm-radio-access [--seconds 60]\n"
+    "  --desktop-receive-rtlsdr --confirm-radio-access --seconds 60\n"
+    "  --prepare-desktop-rtlsdr --seconds 60\n"
+    "      RTL defaults: 906.875 MHz, 2 MS/s, 1.5 MHz span; direct USB only.\n"
     "  --desktop-receive-hackrf --confirm-radio-access --seconds 180\n"
     "      (visible desktop reception; stops and closes after the requested duration)\n"
     "      Use --until-stopped instead of --seconds to keep the window open.\n"
@@ -235,7 +239,9 @@ void usage(){std::cout<<"OVMeshDRpp "<<ovmesh::Engine::version()<<" — local re
     "      GPS opens only the explicitly specified local serial device.\n"
     "      [--lane HZ,BW_HZ,SF,CR_DENOM] (repeat for up to four lanes)\n"
     "      [--lane-hz N] (legacy single-lane option; cannot combine with --lane)\n"
-    "      [--lna-gain N] [--vga-gain N] [--rf-amplifier]\n"
+    "      [--lna-gain N] [--vga-gain N] [--rf-amplifier] (HackRF)\n"
+    "      [--rtl-gain-tenths-db N] [--rtl-auto-gain] (RTL; default manual 28 dB requested)\n"
+    "      [--device-serial TEXT] (optional exact receiver serial)\n"
     "      [--activity-threshold-dbfs N] (fixed per-bin threshold, -140..0; default -55 dBFS/bin)\n"
     "      The saved activity mask cannot be rethresholded retroactively.\n"
     "      [--channel-key-stdin LANE,CHANNEL] (one explicit hardware-mode key; lane 1..4)\n"
@@ -273,12 +279,13 @@ int main(int argc,char** argv){
         bool analysis_filter=false,spectrum_only=false,gps_consent=false,explicit_gps_baud=false,receiver_options_given=false,export_options_given=false;
         unsigned gps_baud=9600;
         bool explicit_lanes=false,legacy_lane=false,receiver_comparison=false,until_stopped=false,explicit_seconds=false,explicit_smoke=false;
+        bool explicit_center=false, explicit_rate=false, explicit_span=false, rtl_options=false, hackrf_options=false;
         std::optional<StdinKeyOption> stdin_key;
         for(int n=1;n<argc;++n){std::string arg=argv[n];auto value=[&](){if(++n>=argc)throw std::runtime_error("Missing value for "+arg);return std::string(argv[n]);};
             if(arg=="--output"||arg=="--content"||arg=="--positions"||arg=="--provenance"||arg=="--precision"||arg=="--report"||arg=="--detailed-archive"||arg=="--bucket-seconds"||arg=="--grid-metres")export_options_given=true;
             if(arg=="--session"||arg=="--spectrum-only"||arg=="--discover-lora"||arg=="--antenna-description"||arg=="--receiver-description"||
                arg=="--survey-notes"||arg=="--center-hz"||arg=="--tuning-offset-hz"||arg=="--sample-rate"||arg=="--span-hz"||
-               arg=="--lane"||arg=="--lane-hz"||arg=="--activity-threshold-dbfs"||arg=="--lna-gain"||arg=="--vga-gain"||arg=="--rf-amplifier"||arg=="--detailed-recording")receiver_options_given=true;
+               arg=="--lane"||arg=="--lane-hz"||arg=="--activity-threshold-dbfs"||arg=="--lna-gain"||arg=="--vga-gain"||arg=="--rf-amplifier"||arg=="--detailed-recording"||arg=="--rtl-gain-tenths-db"||arg=="--rtl-auto-gain"||arg=="--device-serial")receiver_options_given=true;
             if(arg=="--help"||arg=="-h"){usage();return 0;}
             else if(arg=="--version"){std::cout<<ovmesh::Engine::version()<<'\n';return 0;}
             else if(arg=="--licenses"){
@@ -290,6 +297,10 @@ int main(int argc,char** argv){
             else if(arg=="--receive-hackrf"){++source_options;headless=true;hardware=true;config.synthetic=false;}
             else if(arg=="--desktop-receive-hackrf"){++source_options;hardware=true;config.synthetic=false;}
             else if(arg=="--prepare-desktop-hackrf"){++source_options;hardware=true;prepare=true;config.synthetic=false;}
+            else if(arg=="--receive-rtlsdr"||arg=="--desktop-receive-rtlsdr"||arg=="--prepare-desktop-rtlsdr") {
+                ++source_options;hardware=true;config.synthetic=false;config.hardware_receiver=ovmesh::HardwareReceiver::RtlSdr;
+                headless=arg=="--receive-rtlsdr";prepare=arg=="--prepare-desktop-rtlsdr";
+            }
             else if(arg=="--confirm-radio-access")consent=true;
             else if(arg=="--demo"){++source_options;demo=true;}
             else if(arg=="--ui-smoke"){frames=integer<int>(value());explicit_smoke=true;}
@@ -310,10 +321,10 @@ int main(int argc,char** argv){
             else if(arg=="--gps-device")gps_device=value();
             else if(arg=="--gps-baud"){gps_baud=integer<unsigned>(value());explicit_gps_baud=true;}
             else if(arg=="--confirm-gps-access")gps_consent=true;
-            else if(arg=="--center-hz")config.center_hz=integer<uint64_t>(value());
+            else if(arg=="--center-hz"){config.center_hz=integer<uint64_t>(value());explicit_center=true;}
             else if(arg=="--tuning-offset-hz"){config.tuning_offset_hz=integer<int64_t>(value());receiver_comparison=true;}
-            else if(arg=="--sample-rate")config.sample_rate=integer<uint32_t>(value());
-            else if(arg=="--span-hz")config.survey_span_hz=integer<uint32_t>(value());
+            else if(arg=="--sample-rate"){config.sample_rate=integer<uint32_t>(value());explicit_rate=true;}
+            else if(arg=="--span-hz"){config.survey_span_hz=integer<uint32_t>(value());explicit_span=true;}
             else if(arg=="--lane") {
                 if(legacy_lane)throw std::runtime_error("Do not combine --lane and --lane-hz");
                 auto lane=lane_configuration(value());
@@ -327,9 +338,12 @@ int main(int argc,char** argv){
                 config.lanes[0].frequency_hz=integer<uint64_t>(value());legacy_lane=true;
             }
             else if(arg=="--activity-threshold-dbfs"){config.activity_threshold_dbfs=activity_threshold(value());receiver_comparison=true;}
-            else if(arg=="--lna-gain"){config.lna_gain=integer<unsigned>(value());receiver_comparison=true;}
-            else if(arg=="--vga-gain"){config.vga_gain=integer<unsigned>(value());receiver_comparison=true;}
-            else if(arg=="--rf-amplifier"){config.amplifier=true;receiver_comparison=true;}
+            else if(arg=="--lna-gain"){hackrf_options=true;config.lna_gain=integer<unsigned>(value());receiver_comparison=true;}
+            else if(arg=="--vga-gain"){hackrf_options=true;config.vga_gain=integer<unsigned>(value());receiver_comparison=true;}
+            else if(arg=="--rf-amplifier"){hackrf_options=true;config.amplifier=true;receiver_comparison=true;}
+            else if(arg=="--rtl-gain-tenths-db"){config.rtl_gain_tenths_db=integer<int>(value());rtl_options=true;}
+            else if(arg=="--rtl-auto-gain"){config.rtl_auto_gain=true;rtl_options=true;}
+            else if(arg=="--device-serial")config.device_serial=value();
             else if(arg=="--channel-key-stdin" || arg=="--survey-key-stdin") {
                 if(stdin_key)throw std::runtime_error("Only one redirected-stdin key option is supported");
                 stdin_key=stdin_key_option(value(),arg=="--survey-key-stdin");
@@ -371,6 +385,12 @@ int main(int argc,char** argv){
             else if(arg=="--precision")export_options.coordinate_decimals=integer<unsigned>(value());
             else throw std::runtime_error("Unknown argument: "+arg);
         }
+        if(hardware && config.hardware_receiver==ovmesh::HardwareReceiver::RtlSdr) {
+            if(hackrf_options)throw std::runtime_error("HackRF gain/amplifier options do not apply to RTL-SDR");
+            if(!explicit_center)config.center_hz=906875000;
+            if(!explicit_rate)config.sample_rate=2000000;
+            if(!explicit_span)config.survey_span_hz=1500000;
+        } else if(rtl_options)throw std::runtime_error("RTL tuner options require an RTL-SDR receiver mode");
         if(!settings_directory.empty() && (headless||hardware||demo||!view_input.empty()||!analysis_input.empty()||!input.empty()||explicit_smoke))
             throw std::runtime_error("--settings-directory is for ordinary desktop startup only; tests and explicit modes use isolated settings");
         if(!view_input.empty() && (explicit_seconds||until_stopped||receiver_options_given||stdin_key||gps_consent||
@@ -404,8 +424,8 @@ int main(int argc,char** argv){
         if(!gps_device.empty()&&!std::filesystem::path(gps_device).is_absolute())
             throw std::runtime_error("--gps-device requires an absolute local serial-device path");
         if(!headless&&!hardware&&!explicit_lanes&&!legacy_lane&&!stdin_key)config.lanes.clear();
-        if(receiver_comparison&&!headless&&!hardware&&!demo)throw std::runtime_error("Receiver comparison options require a demo or an explicit HackRF reception mode");
-        if(consent&&!hardware)throw std::runtime_error("Radio consent applies only to an explicit HackRF reception mode");
+        if(receiver_comparison&&!headless&&!hardware&&!demo)throw std::runtime_error("Receiver comparison options require a demo or an explicit hardware reception mode");
+        if(consent&&!hardware)throw std::runtime_error("Radio consent applies only to an explicit hardware reception mode");
         if(prepare&&consent)throw std::runtime_error("Passive setup requires consent in the UI; do not supply --confirm-radio-access");
         if(hardware&&!headless&&!prepare&&frames!=0)throw std::runtime_error("Desktop hardware reception uses --seconds, not --ui-smoke");
         if(export_options.coordinate_decimals>7)throw std::runtime_error("Coordinate precision must be 0 through 7");
@@ -421,7 +441,7 @@ int main(int argc,char** argv){
         if(hardware&&!headless)throw std::runtime_error("Desktop reception requires the desktop executable; no device was opened");
 #endif
         if(stdin_key) {
-            if(!hardware)throw std::runtime_error("--channel-key-stdin requires an explicit HackRF reception or setup mode");
+            if(!hardware)throw std::runtime_error("--channel-key-stdin requires an explicit hardware reception or setup mode");
             if(!stdin_key->survey && (stdin_key->lane>=config.lanes.size() || !config.lanes[stdin_key->lane].enabled))
                 throw std::runtime_error("Channel key lane must exist and be enabled");
 #ifdef _WIN32
@@ -453,12 +473,15 @@ int main(int argc,char** argv){
         if(headless){if(hardware&&!consent)throw std::runtime_error("Hardware access requires explicit --confirm-radio-access; no device was opened");
             std::signal(SIGINT,interrupt);std::signal(SIGTERM,interrupt);
             if(!engine.start(config,hardware&&consent,error))throw std::runtime_error(error);
-            std::cout << "Started " << (hardware ? "receive-only HackRF" : "synthetic reception")
+            const auto applied=engine.snapshot().config;
+            std::cout << "Started " << (hardware ? std::string("receive-only ")+ovmesh::receiver_source_name(applied) : std::string("synthetic reception"))
                       << ": center_hz=" << config.center_hz << " tuning_offset_hz=" << config.tuning_offset_hz
                       << " tuner_command_hz=" << ovmesh::tuned_center_hz(config) << " sample_rate=" << config.sample_rate
                       << " span_hz=" << config.survey_span_hz << " duration_s=" << seconds
-                      << " lna_gain_db=" << config.lna_gain << " vga_gain_db=" << config.vga_gain
+                      << " lna_gain_db=" << applied.lna_gain << " vga_gain_db=" << applied.vga_gain
                       << " rf_amplifier=" << (config.amplifier?"on":"off")
+                      << " rtl_tuner_gain_tenths_db=" << applied.rtl_gain_tenths_db
+                      << " rtl_auto_gain=" << config.rtl_auto_gain
                       << " activity_threshold_dbfs=" << config.activity_threshold_dbfs << '\n';
             std::cout << "waveform_discovery=" << config.discover_lora << " automatic_decoder_dispatch=0 decoding_scope=" << (config.lanes.empty()?"paused_spectrum_only":"selected_profiles")
                       << " configured_key_records=" << engine.configured_key_count() << '\n';

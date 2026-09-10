@@ -116,6 +116,59 @@ void make_legacy(const std::filesystem::path& path,int version) {
     if(version==1)execute_sql(path,"ALTER TABLE session DROP COLUMN tuning_offset_hz;");
     execute_sql(path,"PRAGMA user_version="+std::to_string(version)+";");
 }
+void rtl_receiver_storage(const std::filesystem::path& directory) {
+    unsigned serial=0;
+    for(const bool compact:{false,true})for(const bool automatic:{false,true}) {
+        const auto stem="rtl-metadata-"+std::to_string(serial++);
+        const auto path=directory/(stem+".sqlite");
+        ovmesh::ReceiverConfig config;config.synthetic=false;config.hardware_receiver=ovmesh::HardwareReceiver::RtlSdr;
+        config.compact_recording=compact;config.center_hz=906875000;config.sample_rate=2000000;
+        config.survey_span_hz=1500000;config.tuning_offset_hz=-600;
+        config.rtl_gain_tenths_db=297;config.rtl_auto_gain=automatic;config.lanes.clear();
+        {ovmesh::SessionStore store;store.create(path.string(),config,"rtl-typed-fixture");}
+        const auto before=contents(path);
+        ovmesh::SessionStore reader;reader.open_readonly(path.string());const auto saved=reader.read();
+        require(!saved.config.synthetic&&saved.config.hardware_receiver==ovmesh::HardwareReceiver::RtlSdr&&
+            saved.config.rtl_gain_tenths_db==297&&saved.config.rtl_auto_gain==automatic&&
+            saved.config.sample_rate==2000000&&saved.config.survey_span_hz==1500000&&saved.config.tuning_offset_hz==-600&&
+            saved.config.compact_recording==compact,"RTL identity, applied gain/mode and acquisition setup round trip in both storage modes");
+        require(reader.schema_version()==(compact?6:5),"RTL extension preserves existing measurement encoding versions");
+        const auto exported=directory/(stem+".csv");reader.export_csv(exported.string(),{});
+        const auto rows=csv_records(exported);
+        require(!rows.empty()&&rows.front().at("source")=="RTL-SDR"&&rows.front().at("rtl_auto_gain")==std::to_string(automatic),
+            "Detailed CSV identifies RTL receiver and gain mode");
+        require(rows.front().at("lna_gain_db").empty()&&rows.front().at("vga_gain_db").empty()&&
+            rows.front().at("rf_amplifier_enabled").empty(),"RTL export does not invent HackRF gain stages");
+        require(automatic?rows.front().at("rtl_tuner_gain_db").empty():std::stod(rows.front().at("rtl_tuner_gain_db"))==29.7,
+            "Automatic gain exports no fixed gain; manual gain exports the applied value");
+        const auto copy=directory/(stem+"-copy.sqlite");reader.save_copy(copy.string());
+        ovmesh::SessionStore copied;copied.open_readonly(copy.string());
+        require(copied.read().config.hardware_receiver==ovmesh::HardwareReceiver::RtlSdr&&
+            copied.read().config.rtl_auto_gain==automatic,"Saving a copy retains RTL provenance without rewriting the recording");
+        ovmesh::ExportOptions options;options.include_receiver_positions=true;
+        const auto geo=directory/(stem+".geojson");reader.export_geojson(geo.string(),options);
+        require(contents(geo).find("\"source\":\"RTL-SDR\"")!=std::string::npos&&
+            contents(geo).find("\"rtl_auto_gain\":"+std::to_string(automatic))!=std::string::npos,
+            "GeoJSON includes RTL acquisition metadata even when no GPS fix was recorded");
+        require(contents(path)==before,"RTL read/copy/export leave original recording unchanged");
+        for(const auto* mutation:{"DROP TABLE receiver_setup;", "UPDATE session SET synthetic=0;", "UPDATE session SET synthetic=3;",
+                "UPDATE receiver_setup SET hardware='HackRF';", "UPDATE receiver_setup SET gain_tenths_db=601;",
+                "UPDATE receiver_setup SET gain_tenths_db=-101;", "UPDATE receiver_setup SET gain_tenths_db=29.7;",
+                "UPDATE receiver_setup SET auto_gain=2;", "UPDATE receiver_setup SET id=2;", "DELETE FROM receiver_setup;",
+                "INSERT INTO receiver_setup VALUES(2,'rtl_sdr',280,0);", "ALTER TABLE receiver_setup ADD COLUMN extra TEXT;"}) {
+            const auto invalid=directory/(stem+"-bad-"+std::to_string(serial++)+".sqlite");std::filesystem::copy_file(path,invalid);
+            execute_sql(invalid,mutation);
+            rejects([&]{ovmesh::SessionStore bad;bad.open_readonly(invalid.string());(void)bad.read();},
+                "Inconsistent, ambiguous, malformed or altered RTL metadata is rejected");
+        }
+    }
+    const auto legacy=directory/"hackrf-metadata.sqlite";
+    auto config=detailed_config();config.synthetic=false;
+    {ovmesh::SessionStore store;store.create(legacy.string(),config,"typed-hackrf-fixture");}
+    ovmesh::SessionStore reader;reader.open_readonly(legacy.string());
+    require(!reader.read().config.synthetic&&reader.read().config.hardware_receiver==ovmesh::HardwareReceiver::HackRf,
+        "Legacy boolean hardware source remains HackRF without RTL metadata");
+}
 void calibration_storage(const std::filesystem::path& directory) {
     std::filesystem::path positive;
     unsigned counter=0;
@@ -393,6 +446,7 @@ int main() {
         const auto unique=std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
         const auto directory=root/"build/test-output"/("storage-"+unique);std::filesystem::create_directories(directory);
         calibration_storage(directory);
+        rtl_receiver_storage(directory);
         spectrum_storage(directory);
         route_evidence_storage(directory);
         const auto path=directory/"roundtrip.sqlite";

@@ -4,19 +4,19 @@ The priority is reliable range-wide measurement, local recording and meaningful 
 
 ## Current experimental capability
 
-Version 0.4.0 provides a HackRF receiver, native spectrum/waterfall, fine activity records, compact storage, GPS association, saved analysis, filtered exports and HTML findings reports. Experimental LoRa waveform discovery and explicit-profile Meshtastic decoding remain separate paths. See [implementation status](../engineering/implementation-status.md) and [validation scope](../engineering/quality-and-validation.md).
+Version 0.4.0 provides HackRF and RTL-SDR receivers, native spectrum/waterfall, fine activity records, compact storage, GPS association, saved analysis, filtered exports and HTML findings reports. Experimental LoRa waveform discovery and explicit-profile Meshtastic decoding remain separate paths. See [implementation status](../engineering/implementation-status.md) and [validation scope](../engineering/quality-and-validation.md).
 
 ## Near-term work
 
 | Work | Outcome | Gate |
 |---|---|---|
 | Receiver and recording reliability | Predictable continuous capture, truthful coverage/loss reporting and recoverable sessions | Sustained load, disconnection/storage failures and supported-configuration matrix |
-| Additional receiver support | RTL-SDR acquisition through the same measurement and retention contracts | Backend implementation, usable-span limits, device/driver tests and platform-specific validation |
+| Additional receiver support | RTL-SDR adapter implemented with the same measurement/retention contracts at 1/2 MS/s | More tuner models, extended endurance and platform-specific validation; separate design needed for wider swept surveys |
 | Measurement characterization | Defensible occupancy/power comparisons across settings and receivers | Calibrated source checks, passband/threshold characterization, overload and uncertainty reporting |
 | Regional analysis | Compare preserved sessions and repeat visits by frequency, time and receiver area | Setup compatibility, missing-data handling and source provenance preserved in comparisons |
 | Survey/report usability | Clear observation coverage and manageable reports for regional operators | Review against representative surveys without changing the meaning of stored measurements |
 
-The published RTL-SDR target is the weekend of September 12–13, 2026. This is a development target, not implemented support or a validation guarantee. The remaining work is ordered by evidence and dependencies rather than committed delivery dates.
+The RTL-SDR adapter is now implemented; its [initial limits and setup](../operations/rtl-sdr.md) are explicit. This is not a guarantee for every tuner, operating system or USB layout. The remaining work is ordered by evidence and dependencies rather than committed delivery dates.
 
 ## Full-range protocol discovery
 

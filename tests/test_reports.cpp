@@ -85,6 +85,39 @@ void make_session(const std::filesystem::path& path,bool compact,bool simultaneo
     s.delivered_samples=3*16384;s.total_receptions=2;s.authorized_messages=1;s.discovery.enabled=true;s.discovery.finished=true;s.discovery.observations=2;
     store.update(s,true);
 }
+void rtl_receiver_reports(const std::filesystem::path& directory) {
+    for(const bool compact:{false,true})for(const bool automatic:{false,true}) {
+        const auto stem=std::string("rtl-report-")+(compact?"compact-":"detailed-")+(automatic?"auto":"manual");
+        const auto path=directory/(stem+".sqlite");
+        auto config=configuration(compact);config.synthetic=false;config.hardware_receiver=HardwareReceiver::RtlSdr;
+        config.sample_rate=2000000;config.survey_span_hz=1500000;config.discover_lora=false;
+        config.rtl_gain_tenths_db=297;config.rtl_auto_gain=automatic;
+        {
+            SessionStore store;store.create(path.string(),config,"rtl-report-fixture");
+            auto t=tile(config,0);t.receiver_start.reset();t.receiver_end.reset();store.append(t);
+            Snapshot snapshot;snapshot.config=config;snapshot.elapsed_seconds=t.elapsed_end_seconds;
+            snapshot.input_seconds=snapshot.measurement_seconds=snapshot.elapsed_seconds;snapshot.delivered_samples=t.end_sample;
+            store.update(snapshot,true);
+        }
+        SessionStore reader;reader.open_readonly(path.string());
+        const auto csv=directory/(stem+".csv");export_survey_report(reader,csv.string(),{});
+        const auto rows=read_csv(csv);require(rows.size()==2,"RTL report retains frequency measurements");
+        for(const auto& row:rows) {
+            require(row.at("source")=="RTL-SDR"&&row.at("rtl_auto_gain")==std::to_string(automatic),"Every RTL frequency row identifies receiver and gain mode");
+            require(row.at("lna_gain_db").empty()&&row.at("vga_gain_db").empty()&&row.at("rf_amplifier").empty(),
+                "RTL frequency reports leave inapplicable HackRF controls blank");
+            require(automatic?row.at("rtl_tuner_gain_db").empty():std::stod(row.at("rtl_tuner_gain_db"))==29.7,
+                "Only manual RTL gain is reported as a fixed numeric value");
+        }
+        ReportOptions options;options.kind=ReportKind::Analysis;
+        const auto html=directory/(stem+".html");export_survey_report(reader,html.string(),options);
+        const auto text=contents(html);
+        require(text.find("RTL-SDR")!=std::string::npos&&text.find("LNA / VGA / RF amplifier")==std::string::npos,
+            "Narrative report explains RTL setup rather than HackRF gain controls");
+        require(text.find(automatic?"Automatic; sensitivity varies":"29.7 dB (applied manual gain)")!=std::string::npos,
+            "Narrative gain description distinguishes automatic sensitivity from fixed applied gain");
+    }
+}
 std::vector<Record> report(const SessionStore& reader,const std::filesystem::path& directory,const std::string& name,const ReportOptions& options={}) {
     const auto path=directory/(name+".csv");export_survey_report(reader,path.string(),options);return read_csv(path);
 }
@@ -336,6 +369,7 @@ int main(int argc,char** argv) {
         SessionStore a,b,c;a.open_readonly(legacy.string());b.open_readonly(compact.string());c.open_readonly(together.string());
         frequency_and_time(a,c,dir);geography(a,dir);specialized(a,dir);compact_equivalence(a,b,dir);gaps_and_limits(dir);geographic_boundaries(dir);legacy_availability(dir);
         narrative_analysis(a,c,dir);
+        rtl_receiver_reports(dir);
         if(argc==2&&std::string(argv[1])=="--example")std::filesystem::copy_file(dir/"analysis.html","synthetic-analysis-example.html");
         std::cout<<checks<<" compact report checks passed\n";std::filesystem::remove_all(dir);return 0;
     } catch(const std::exception& e) {std::cerr<<"Report test failed: "<<e.what()<<"; fixture directory "<<dir<<'\n';return 1;}

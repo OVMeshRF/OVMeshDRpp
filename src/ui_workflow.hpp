@@ -25,9 +25,9 @@ void request_new_session(Engine& engine, DesktopState& ui, bool discard = false)
     }, [&engine, &ui] {
         ui.clear_views(); ui.config.session_path.clear(); ui.recording_path_used = true;
         ui.prepare_recording_file(); ui.new_requested = false;
-        if (ui.preferences_active && ui.gps_enabled && ui.source == 1 && !ui.passive_smoke && !ui.prepared_run)
+        if (ui.preferences_active && ui.gps_enabled && ui.source != 0 && !ui.passive_smoke && !ui.prepared_run)
             ui.connect_selected_gps(engine);
-        if (ui.restart_after_new) { ui.restart_after_new = false; ui.start(engine, ui.source == 1); }
+        if (ui.restart_after_new) { ui.restart_after_new = false; ui.start(engine, ui.source != 0); }
     });
 }
 
@@ -114,21 +114,22 @@ void receiver_controls(Engine& engine, DesktopState& ui, const Snapshot& snapsho
     const auto& displayed = snapshot.historical ? snapshot.config : cfg;
     bool changed = false;
     ImGui::BeginDisabled(locked);
-    int source = snapshot.historical ? (snapshot.config.synthetic ? 0 : 1) : ui.source;
+    int source = snapshot.historical ? receiver_source_index(snapshot.config) : ui.source;
     ImGui::SetNextItemWidth(-1); ImGui::BeginDisabled(ui.prepared_run);
-    if (ImGui::Combo("##source", &source, "Synthetic / demo\0HackRF One / USB\0")) {
-        ui.source = source; changed = true;
+    if (ImGui::Combo("##source", &source, "Synthetic / demo\0HackRF One / USB\0RTL-SDR / USB\0")) {
+        ui.select_receiver(source); changed = true;
         if (source == 0) engine.disconnect_gps();
         else if (ui.preferences_active && ui.gps_enabled && !ui.passive_smoke) ui.connect_selected_gps(engine);
     }
     ImGui::EndDisabled();
+    const bool rtl = source == 2;
     ImGui::Spacing(); ImGui::TextDisabled("Center frequency / MHz");
     double center = displayed.center_hz / 1e6;
     {
         NumericFont font(ui, ui.mono_font ? 21 : 0);
         ImGui::SetNextItemWidth(-1);
         if (ImGui::InputDouble("##center", &center, 0, 0, "%.6f") && std::isfinite(center)) {
-            cfg.center_hz = static_cast<uint64_t>(std::clamp(center, 1.0, 6000.0) * 1e6); changed = true;
+            cfg.center_hz = static_cast<uint64_t>(std::clamp(center, rtl ? 24.0 : 1.0, rtl ? 1766.0 : 6000.0) * 1e6); changed = true;
         }
     }
     ImGui::Spacing(); ImGui::TextDisabled("Offset / Hz");
@@ -139,21 +140,53 @@ void receiver_controls(Engine& engine, DesktopState& ui, const Snapshot& snapsho
     double span = displayed.survey_span_hz / 1e6;
     ImGui::SetNextItemWidth(-1);
     { NumericFont font(ui); if (ImGui::InputDouble("##span", &span, 0, 0, "%.2f") && std::isfinite(span)) {
-        cfg.survey_span_hz = static_cast<uint32_t>(std::clamp(span, .5, std::min(16.0, cfg.sample_rate * .8e-6)) * 1e6); changed = true;
+        const double max_span = rtl && cfg.discover_lora && !ui.spectrum_only ? 1.5 : 16.0;
+        cfg.survey_span_hz = static_cast<uint32_t>(std::clamp(span, .5, std::min(max_span, cfg.sample_rate * .8e-6)) * 1e6); changed = true;
     } }
     ImGui::Spacing(); ImGui::TextDisabled("Sample rate");
-    constexpr std::array<uint32_t, 5> rates{8000000,10000000,12000000,16000000,20000000};
-    int rate = 3;
-    for (size_t i=0; i<rates.size(); ++i) if (displayed.sample_rate == rates[i]) rate = static_cast<int>(i);
     ImGui::SetNextItemWidth(-1);
-    if (ImGui::Combo("##sample", &rate, "8 MS/s\0 10 MS/s\0 12 MS/s\0 16 MS/s\0 20 MS/s\0")) {
-        cfg.sample_rate = rates[static_cast<size_t>(rate)];
-        cfg.survey_span_hz = std::min(cfg.survey_span_hz, static_cast<uint32_t>(cfg.sample_rate * .8)); changed = true;
+    if (rtl) {
+        if (ImGui::BeginCombo("##sample", displayed.sample_rate == 1000000 ? "1 MS/s" : "2 MS/s")) {
+            ImGui::BeginDisabled(cfg.discover_lora && !ui.spectrum_only);
+            if (ImGui::Selectable("1 MS/s / discovery off", displayed.sample_rate == 1000000)) {
+                cfg.sample_rate = 1000000; cfg.survey_span_hz = std::min(cfg.survey_span_hz, 800000U); changed = true;
+            }
+            ImGui::EndDisabled();
+            if (ImGui::Selectable("2 MS/s", displayed.sample_rate == 2000000)) {
+                cfg.sample_rate = 2000000; changed = true;
+            }
+            ImGui::EndCombo();
+        }
+    } else {
+        constexpr std::array<uint32_t, 5> rates{8000000,10000000,12000000,16000000,20000000};
+        int rate = 3;
+        for (size_t i=0; i<rates.size(); ++i) if (displayed.sample_rate == rates[i]) rate = static_cast<int>(i);
+        if (ImGui::Combo("##sample", &rate, "8 MS/s\0 10 MS/s\0 12 MS/s\0 16 MS/s\0 20 MS/s\0")) {
+            cfg.sample_rate = rates[static_cast<size_t>(rate)];
+            cfg.survey_span_hz = std::min(cfg.survey_span_hz, static_cast<uint32_t>(cfg.sample_rate * .8)); changed = true;
+        }
     }
     ImGui::Spacing(); ImGui::TextDisabled("Survey range");
     { NumericFont font(ui); ImGui::Text("%.3f - %.3f MHz", (double(displayed.center_hz)-displayed.survey_span_hz*.5)/1e6,
         (double(displayed.center_hz)+displayed.survey_span_hz*.5)/1e6); }
+    if (rtl) wrapped("Only this range is monitored continuously. RTL-SDR covers a narrower span than HackRF.");
     ImGui::Spacing(); ImGui::Separator(); ImGui::Spacing();
+    if (rtl) {
+        bool automatic = displayed.rtl_auto_gain;
+        if (ImGui::Checkbox("Automatic tuner gain", &automatic)) { cfg.rtl_auto_gain = automatic; changed = true; }
+        float gain_db = static_cast<float>(displayed.rtl_gain_tenths_db) / 10.f;
+        ImGui::BeginDisabled(automatic);
+        ImGui::TextDisabled("Tuner gain"); ImGui::SetNextItemWidth(-1);
+        if (ImGui::SliderFloat("##rtlTunerGain", &gain_db, -10.f, 60.f, "%.1f dB")) {
+            cfg.rtl_gain_tenths_db = static_cast<int>(std::lround(gain_db * 10)); changed = true;
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Manual request uses the nearest gain supported by the tuner. Fixed gain is preferable for comparing survey power measurements.");
+        if (automatic) wrapped("Automatic gain changes receiver sensitivity during the survey.", amber);
+        else if (snapshot.running || snapshot.historical)
+            ImGui::TextDisabled("Applied tuner gain: %.1f dB", snapshot.config.rtl_gain_tenths_db / 10.0);
+    } else {
     int lna = static_cast<int>(displayed.lna_gain), vga = static_cast<int>(displayed.vga_gain);
     ImGui::TextDisabled("LNA gain"); ImGui::SetNextItemWidth(-1);
     if (ImGui::SliderInt("##lnaGain", &lna, 0, 40, "%d dB")) { cfg.lna_gain = static_cast<unsigned>((lna+4)/8*8); changed = true; }
@@ -161,6 +194,7 @@ void receiver_controls(Engine& engine, DesktopState& ui, const Snapshot& snapsho
     if (ImGui::SliderInt("##vgaGain", &vga, 0, 62, "%d dB")) { cfg.vga_gain = static_cast<unsigned>((vga+1)/2*2); changed = true; }
     bool amp = displayed.amplifier;
     ImGui::Spacing(); if (ImGui::Checkbox("RF amplifier", &amp)) { cfg.amplifier = amp; changed = true; }
+    }
     ImGui::EndDisabled();
     if (changed) ui.persist_preferences();
     ImGui::Spacing(); ImGui::Spacing();
@@ -176,17 +210,17 @@ void receiver_controls(Engine& engine, DesktopState& ui, const Snapshot& snapsho
         }
         ImGui::PopStyleColor(2);
     } else {
-        const bool unavailable = ui.source == 1 && !snapshot.hardware_available;
+        const bool unavailable = !receiver_source_available(ui.source, snapshot);
         ImGui::BeginDisabled(unavailable || (ui.save_session && ui.session_path.empty()));
         ImGui::PushStyleColor(ImGuiCol_Button, accent); ImGui::PushStyleColor(ImGuiCol_Text, {0.03f,.10f,.11f,1});
         const char* action = has_session_data(snapshot) ? "Start new session" : ui.source == 0 ? "Start demo" : "Start reception";
         if (ImGui::Button(action, {-1,40})) {
             if (has_session_data(snapshot) && snapshot.config.session_path.empty()) { ui.new_requested = true; ui.restart_after_new = true; }
             else if (has_session_data(snapshot)) { ui.restart_after_new = true; request_new_session(engine, ui); }
-            else ui.start(engine, ui.source == 1);
+            else ui.start(engine, ui.source != 0);
         }
         ImGui::PopStyleColor(2); ImGui::EndDisabled();
-        if (unavailable) wrapped("HackRF support is unavailable in this build.", amber);
+        if (unavailable) wrapped(ui.source == 2 ? "RTL-SDR support is unavailable in this build." : "HackRF support is unavailable in this build.", amber);
         if (ui.save_session && ui.session_path.empty()) {
             wrapped("Choose a recording folder to start.", amber);
             if (ImGui::SmallButton("Recording settings")) { ui.settings_page = 2; ui.show_settings = true; }
@@ -201,10 +235,10 @@ void detection_settings(Engine& engine, DesktopState& ui, const Snapshot& snapsh
     wrapped("Choose what the survey looks for across the supplied range.");
     ImGui::BeginDisabled(snapshot.running || ui.operation_busy());
     int mode = ui.spectrum_only ? 1 : 0;
-    if (ImGui::RadioButton("Spectrum + LoRa", &mode, 0)) { ui.spectrum_only = false; ui.persist_preferences(); }
+    if (ImGui::RadioButton("Spectrum + LoRa", &mode, 0)) { ui.spectrum_only = false; ui.prepare_discovery_rate(); ui.persist_preferences(); }
     if (ImGui::RadioButton("Spectrum only", &mode, 1)) { ui.spectrum_only = true; ui.persist_preferences(); }
     ImGui::Spacing(); ImGui::BeginDisabled(ui.spectrum_only);
-    if (ImGui::Checkbox("Discover LoRa waveforms", &ui.config.discover_lora)) ui.persist_preferences();
+    if (ImGui::Checkbox("Discover LoRa waveforms", &ui.config.discover_lora)) { ui.prepare_discovery_rate(); ui.persist_preferences(); }
     wrapped("Estimate center frequency, modem bandwidth and spreading factor.");
     if (ImGui::Checkbox("Decode authorized messages", &ui.decode_enabled)) ui.persist_preferences();
     wrapped("Use only configured keys and supported receive profiles.");
@@ -225,6 +259,8 @@ void detection_settings(Engine& engine, DesktopState& ui, const Snapshot& snapsh
         return double(lane.frequency_hz) - lane.bandwidth_hz * .5 < lower || double(lane.frequency_hz) + lane.bandwidth_hz * .5 > upper;
     });
     if (outside) ImGui::TextWrapped("%zu legacy profile(s) are outside this survey range and will be skipped. Their settings are preserved.", static_cast<size_t>(outside));
+    if (ui.source == 2 && ui.config.sample_rate == 1000000)
+        wrapped("At 1 MS/s, legacy decoding supports 125/250 kHz profiles. 500 kHz profiles are skipped; use 2 MS/s for those profiles and waveform discovery.", amber);
     ImGui::Spacing();
     wrapped("Waveform discovery does not identify a mesh network. Automatic decoding of discovered signals is still in development.", secondary);
     if (ImGui::CollapsingHeader("Supported decoding and measurement limits")) {

@@ -670,6 +670,18 @@ DiscoveryGap discovery_gap_from(const Statement& row) {
     if(band< -1 || band>=discovery_band_limit)throw std::runtime_error("Invalid saved discovery-gap subband");
     g.subband_index=static_cast<int>(band);g.reason=row.text(4);validate_discovery_gap(g);return g;
 }
+// RTL uses an explicit extension and a non-boolean source discriminator. Earlier
+// readers reject this table (and source=2) rather than reporting RTL as HackRF.
+constexpr const char* receiver_setup_ddl="CREATE TABLE receiver_setup(id INTEGER PRIMARY KEY,hardware TEXT NOT NULL,gain_tenths_db INTEGER NOT NULL,auto_gain INTEGER NOT NULL)";
+void read_receiver_setup(sqlite3* db, ReceiverConfig& config) {
+    Statement receiver(db,"SELECT id,hardware,gain_tenths_db,auto_gain FROM receiver_setup LIMIT 2");
+    if(!receiver.row() || receiver.integer(0)!=1 || receiver.text(1)!="rtl_sdr")
+        throw std::runtime_error("Missing or invalid RTL-SDR receiver metadata");
+    const auto gain=receiver.integer(2);
+    if(gain< -100||gain>600)throw std::runtime_error("Invalid saved RTL-SDR tuner gain");
+    config.rtl_gain_tenths_db=static_cast<int>(gain);config.rtl_auto_gain=boolean(receiver,3);
+    if(receiver.row())throw std::runtime_error("Multiple RTL-SDR receiver metadata records");
+}
 void validate_schema(sqlite3* db, int version) {
     std::map<std::string,std::string> layouts{
         {"session","id,title,version,synthetic,center,sample_rate,span,lna,vga,amp,threshold,complete,elapsed,input_seconds,measurement_seconds,delivered,dropped,receptions,authorized"},
@@ -694,6 +706,8 @@ void validate_schema(sqlite3* db, int version) {
         if(version>=3 && type=="index" && name=="sqlite_autoindex_route_details_1" && sql.empty())continue;
         if(version>=6 && type=="index" && name=="position_identity" && sql=="CREATE INDEX position_identity ON positions(utc,monotonic,source)")continue;
         if(type=="index" && name=="reception_time" && sql=="CREATE INDEX reception_time ON receptions(utc)") continue;
+        if(version>=5 && name=="receiver_setup" && type=="table" && sql==receiver_setup_ddl)
+            layouts.emplace("receiver_setup","id,hardware,gain_tenths_db,auto_gain");
         const auto expected=layouts.find(name);
         if(type!="table" || expected==layouts.end() || sql.rfind("CREATE TABLE "+name+"(",0)!=0)
             throw std::runtime_error("Unexpected or executable objects in session schema");
@@ -711,6 +725,12 @@ void validate_schema(sqlite3* db, int version) {
     if(found.size()!=layouts.size()) throw std::runtime_error("Incomplete session schema");
     Statement rows(db,"SELECT count(*) FROM session");
     if(!rows.row()||rows.integer(0)!=1)throw std::runtime_error("Session must have exactly one metadata record");
+    Statement source(db,"SELECT synthetic FROM session");
+    if(!source.row())throw std::runtime_error("Session has no receiver source");
+    const auto discriminator=unsigned_value(source,0,version>=5?2:1);
+    if((discriminator==2)!=found.contains("receiver_setup"))
+        throw std::runtime_error("Receiver source and RTL-SDR metadata extension disagree");
+    if(discriminator==2) {ReceiverConfig receiver;read_receiver_setup(db,receiver);}
 }
 }
 
@@ -742,6 +762,14 @@ void SessionStore::create(const std::string& path,const ReceiverConfig& c,const 
     if(c.sample_rate<1000000 || c.sample_rate>20000000 || !c.survey_span_hz || c.survey_span_hz>c.sample_rate ||
        c.antenna_description.size()>512||c.receiver_description.size()>512||c.survey_notes.size()>2048)
         throw std::runtime_error("Invalid survey configuration or notes");
+    const bool rtl=!c.synthetic&&c.hardware_receiver==HardwareReceiver::RtlSdr;
+    if(c.hardware_receiver!=HardwareReceiver::HackRf&&c.hardware_receiver!=HardwareReceiver::RtlSdr)
+        throw std::runtime_error("Unsupported survey receiver");
+    if(rtl&&((c.sample_rate!=1000000&&c.sample_rate!=2000000)||c.amplifier||
+        c.survey_span_hz<500000||c.survey_span_hz>c.sample_rate*4/5||
+        (c.discover_lora&&(c.sample_rate!=2000000||c.survey_span_hz>1500000))||
+        c.rtl_gain_tenths_db< -100||c.rtl_gain_tenths_db>600))
+        throw std::runtime_error("Invalid RTL-SDR recording configuration");
     PrivateFile created(path);created.close();
     try {
     check(sqlite3_open_v2(path.c_str(),&db_,SQLITE_OPEN_READWRITE|SQLITE_OPEN_NOMUTEX|SQLITE_OPEN_NOFOLLOW,nullptr));configure(false);
@@ -763,7 +791,12 @@ void SessionStore::create(const std::string& path,const ReceiverConfig& c,const 
         "CREATE TABLE survey_metrology(fft_size INTEGER,hop_size INTEGER,window TEXT,bin_width REAL,enbw REAL,normalization TEXT,activity_rule TEXT,position_association TEXT,time_association TEXT,antenna TEXT,receiver TEXT,notes TEXT,encoding TEXT);"
         "CREATE INDEX reception_time ON receptions(utc); COMMIT;");
     for(const auto& [name,ddl]:discovery_tables()){(void)name;execute(ddl.c_str());}
-    insert(db_,"session","id,title,version,synthetic,center,sample_rate,span,lna,vga,amp,threshold,tuning_offset_hz,discover_lora",{id,c.session_title,Engine::version(),int64_t(c.synthetic),int64_t(c.center_hz),int64_t(c.sample_rate),int64_t(c.survey_span_hz),int64_t(c.lna_gain),int64_t(c.vga_gain),int64_t(c.amplifier),double(c.activity_threshold_dbfs),c.tuning_offset_hz,int64_t(c.discover_lora)});
+    insert(db_,"session","id,title,version,synthetic,center,sample_rate,span,lna,vga,amp,threshold,tuning_offset_hz,discover_lora",{id,c.session_title,Engine::version(),int64_t(rtl?2:c.synthetic?1:0),int64_t(c.center_hz),int64_t(c.sample_rate),int64_t(c.survey_span_hz),int64_t(c.lna_gain),int64_t(c.vga_gain),int64_t(c.amplifier),double(c.activity_threshold_dbfs),c.tuning_offset_hz,int64_t(c.discover_lora)});
+    if(rtl) {
+        execute(receiver_setup_ddl);
+        insert(db_,"receiver_setup","id,hardware,gain_tenths_db,auto_gain",
+            {int64_t(1),std::string("rtl_sdr"),int64_t(c.rtl_gain_tenths_db),int64_t(c.rtl_auto_gain)});
+    }
     DiscoveryStatus initial_discovery;initial_discovery.enabled=c.discover_lora;
     insert(db_,"discovery_status",discovery_status_columns,discovery_status_values(initial_discovery));
     for(const auto& l:c.lanes)insert(db_,"lanes","label,channel,protocol,frequency,bw,sf,cr,enabled",{l.label,l.channel_name,l.protocol,int64_t(l.frequency_hz),int64_t(l.bandwidth_hz),int64_t(l.spreading_factor),int64_t(l.coding_rate),int64_t(l.enabled)});
@@ -999,7 +1032,10 @@ Snapshot SessionStore::read() const {
     Statement s(db_,"SELECT * FROM session LIMIT 2");
     if(!s.row())throw std::runtime_error("Session has no metadata");
     auto& c=out.config;
-    out.session_id=s.text(0);c.session_title=s.text(1);c.synthetic=boolean(s,3);
+    out.session_id=s.text(0);c.session_title=s.text(1);
+    const auto source=unsigned_value(s,3,schema_version_>=5?2:1);
+    c.synthetic=source==1;c.hardware_receiver=source==2?HardwareReceiver::RtlSdr:HardwareReceiver::HackRf;
+    if(source==2)read_receiver_setup(db_,c);
     c.center_hz=unsigned_value(s,4,6000000000ULL);
     c.sample_rate=static_cast<uint32_t>(unsigned_value(s,5,20000000));
     c.survey_span_hz=static_cast<uint32_t>(unsigned_value(s,6,20000000));
@@ -1016,7 +1052,11 @@ Snapshot SessionStore::read() const {
     if(s.row())throw std::runtime_error("Multiple session metadata records");
     if(c.center_hz==0 || c.sample_rate==0 || c.survey_span_hz==0 || c.survey_span_hz>c.sample_rate ||
        c.lna_gain%8!=0 || c.vga_gain%2!=0 || out.session_id.empty() || out.session_id.size()>160 || c.session_title.size()>160)
-        throw std::runtime_error("Invalid saved receiver configuration");
+       throw std::runtime_error("Invalid saved receiver configuration");
+    if(source==2&&((c.sample_rate!=1000000&&c.sample_rate!=2000000)||c.amplifier||
+        c.survey_span_hz<500000||c.survey_span_hz>c.sample_rate*4/5||
+        (c.discover_lora&&(c.sample_rate!=2000000||c.survey_span_hz>1500000))))
+        throw std::runtime_error("Invalid saved RTL-SDR receiver configuration");
     nonnegative(out.elapsed_seconds,"saved elapsed time");nonnegative(out.input_seconds,"saved input time");nonnegative(out.measurement_seconds,"saved measurement time");
     c.lanes.clear();
     Statement lanes(db_,"SELECT * FROM lanes LIMIT 9");
@@ -1269,6 +1309,7 @@ const std::vector<std::string>& export_columns() {
         std::istringstream discovery("session_schema_version,waveform_id,inferred_bandwidth_hz,inferred_spreading_factor,evidence_first_elapsed_seconds,delimiter_elapsed_seconds,delimiter_utc_seconds,waveform_up_match_fraction,waveform_down_match_fraction,contributing_subbands,complete_in_requested_range,association_ambiguous,discovery_method,discovery_enabled,discovery_finished,discovery_failed,discovery_fault,discovery_accepted_input_samples,discovery_rejected_input_samples,discovery_channelized_input_samples,discovery_abandoned_input_samples,discovery_source_queue_drops,discovery_stream_resets,discovery_result_overflows,discovery_gap_overflows,discovery_observations,discovery_subband_index,discovery_output_sample_rate,discovery_processed_output_samples,discovery_abandoned_output_samples,discovery_source_gap_input_samples,discovery_candidate_limit_hits,discovery_track_limit_hits,discovery_gap_id,discovery_gap_first_input_sample,discovery_gap_end_input_sample,discovery_coverage_interpretation");
         while(std::getline(discovery,column,','))result.push_back(column);
         result.push_back("power_elapsed_start_seconds");result.push_back("power_elapsed_end_seconds");
+        result.push_back("rtl_tuner_gain_db");result.push_back("rtl_auto_gain");
         return result;
     }();
     return columns;
@@ -1414,9 +1455,14 @@ void SessionStore::export_csv(const std::string& path,const ExportOptions& opt) 
     session.number("dropped_samples",summary.dropped_samples);session.number("total_receptions",summary.total_receptions);
     session.number("authorized_records",summary.authorized_messages);session.number("incomplete",int(summary.incomplete));
     session.number("activity_threshold_dbfs",summary.config.activity_threshold_dbfs);session.number("sample_rate",summary.config.sample_rate);
-    session.number("survey_span_hz",summary.config.survey_span_hz);session.text("source",summary.config.synthetic?"synthetic":"HackRF");
+    session.number("survey_span_hz",summary.config.survey_span_hz);session.text("source",summary.config.synthetic?"synthetic":receiver_source_name(summary.config));
     session.text("rf_level_unit","uncalibrated dBFS/bin");session.number("frequency_hz",summary.config.center_hz);
-    session.number("lna_gain_db",summary.config.lna_gain);session.number("vga_gain_db",summary.config.vga_gain);session.number("rf_amplifier_enabled",int(summary.config.amplifier));
+    if(!summary.config.synthetic&&summary.config.hardware_receiver==HardwareReceiver::RtlSdr) {
+        session.number("rtl_auto_gain",int(summary.config.rtl_auto_gain));
+        if(!summary.config.rtl_auto_gain)session.number("rtl_tuner_gain_db",summary.config.rtl_gain_tenths_db/10.0);
+    } else {
+        session.number("lna_gain_db",summary.config.lna_gain);session.number("vga_gain_db",summary.config.vga_gain);session.number("rf_amplifier_enabled",int(summary.config.amplifier));
+    }
     session.number("tuning_offset_hz",summary.config.tuning_offset_hz);session.number("tuner_command_hz",tuned_center_hz(summary.config));
     session.number("session_schema_version",schema_version_);
     Statement version(db_,"SELECT version FROM session");if(version.row())session.text("application_version",version.text(0));session.write(output);
@@ -1538,8 +1584,18 @@ void SessionStore::export_geojson(const std::string& path,const ExportOptions& o
     if(!opt.include_receiver_positions)throw std::runtime_error("Select receiver-position export before creating GeoJSON");
     if(opt.coordinate_decimals>7)throw std::runtime_error("Coordinate precision must be 0 through 7");
     ReadSnapshot snapshot(db_);
-    const auto summary=read();(void)summary;
-    PrivateFile output(path);output.write("{\"type\":\"FeatureCollection\",\"features\":[");
+    const auto summary=read();
+    CsvRecord receiver;receiver.text("source",summary.config.synthetic?"synthetic":receiver_source_name(summary.config));
+    receiver.number("sample_rate",summary.config.sample_rate);receiver.number("frequency_hz",summary.config.center_hz);
+    receiver.number("survey_span_hz",summary.config.survey_span_hz);receiver.number("tuning_offset_hz",summary.config.tuning_offset_hz);
+    if(!summary.config.synthetic&&summary.config.hardware_receiver==HardwareReceiver::RtlSdr) {
+        receiver.number("rtl_auto_gain",int(summary.config.rtl_auto_gain));
+        if(!summary.config.rtl_auto_gain)receiver.number("rtl_tuner_gain_db",summary.config.rtl_gain_tenths_db/10.0);
+    } else {
+        receiver.number("lna_gain_db",summary.config.lna_gain);receiver.number("vga_gain_db",summary.config.vga_gain);
+        receiver.number("rf_amplifier_enabled",int(summary.config.amplifier));
+    }
+    PrivateFile output(path);output.write("{\"type\":\"FeatureCollection\",\"receiver\":"+receiver.json()+",\"features\":[");
     bool comma=false;Statement positions(db_,"SELECT * FROM positions ORDER BY rowid");
     while(positions.row()) {
         const auto fix=saved_position(positions);

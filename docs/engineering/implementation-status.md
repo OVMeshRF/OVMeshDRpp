@@ -6,9 +6,9 @@ Version 0.4.0 is experimental desktop survey software. It records frequency-reso
 
 | Area | Implemented behavior | Boundary |
 |---|---|---|
-| Receiver | Direct receive-only HackRF adapter and deterministic synthetic source; center, signed Offset, sample rate, span and gain controls | RTL-SDR is not implemented; sustained operation and usable passband require setup-specific validation |
+| Receiver | Direct receive-only HackRF and RTL-SDR adapters plus deterministic synthetic source; center, signed Offset, sample rate, span and receiver-specific gains | RTL supports 1/2 MS/s, discovery at 2 MS/s within 1.5 MHz; wider sweeping is absent. Sustained operation, model compatibility and usable passband require setup-specific validation |
 | Desktop | Live survey and Analyze workspaces; grouped Settings; fresh sessions; New, Open, Save, Save copy and spectrum/waterfall PNG capture | No automatic RF start or historical-session load on ordinary startup |
-| Preferences | Non-secret receiver/source/display settings, recording folder and explicit opt-outs; preference format 5 reads formats 1–4 | Coordinates, messages, channel keys and historical results are not preference defaults |
+| Preferences | Non-secret receiver/source/display settings, recording folder and explicit opt-outs; preference format 6 reads formats 1–5 | Coordinates, messages, channel keys and historical results are not preference defaults |
 | Measurement | Contiguous complete 4096-sample periodic-Hann FFTs, fine joint activity masks, powers, generic energy events and known gaps | Fixed saved threshold and uncalibrated dBFS; event counts are not packet counts |
 | Live analysis | Full-range per-bin occupancy/power overview with actual frequency edges and observed/busy time | Available without decoded packets or recording; memory-only history cannot later be reconstructed |
 | Saved analysis | Arbitrary frequency/time selection, optional receiver-area filtering, time/position plots and coverage accounting | Selected-bin time union differs from mean frequency-time occupancy; missing positions limit geographic results |
