@@ -47,7 +47,7 @@ Keep a new destination private through the review and compare its remote tree an
 
 ## Reporting and repository settings
 
-Enable and verify [GitHub private vulnerability reporting](https://github.com/OVMeshRF/OVMeshDRpp/security/advisories/new) when publishing the repository. Confirm the private route is available before directing reporters there. Support requests and non-sensitive defects use [GitHub issues](https://github.com/OVMeshRF/OVMeshDRpp/issues); no response-time guarantee is established.
+Enable and verify [GitHub private vulnerability reporting](https://github.com/OVMeshRF/OVMeshDRpp/security/advisories/new) when publishing the repository. Confirm the private route is available before directing reporters there. Community questions and support discussions use the [OVMesh Discord](https://discord.gg/kwKhFamfaU). Track non-sensitive bugs and feature requests in [GitHub issues](https://github.com/OVMeshRF/OVMeshDRpp/issues). No response-time guarantee is established.
 
 Review secret-scanning/push-protection availability, branch controls and integration permissions as part of repository maintenance. Use least privilege and avoid introducing write-capable services, deployment tokens or self-hosted runners without a concrete reviewed need.
 

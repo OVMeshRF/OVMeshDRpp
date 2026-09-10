@@ -26,6 +26,8 @@ OVMeshDR++ is an experimental receive-only RF survey application. Start with the
 - [Roadmap](product/roadmap.md), [development and releases](engineering/development-and-releases.md), and [source-release checklist](operations/github-publication.md).
 - [Governance](governance/project-governance.md) and [documentation policy](governance/documentation-policy.md).
 
+Join the [OVMesh Discord](https://discord.gg/kwKhFamfaU) for community questions and discussion.
+
 Use [Contributing](../CONTRIBUTING.md), [Support](../SUPPORT.md), [Security](../SECURITY.md) and [Community conduct](../CODE_OF_CONDUCT.md) for participation and reporting.
 
 Implemented behavior, synthetic correctness checks and field qualification are separate. A report or screenshot is not proof of calibrated measurements, exhaustive traffic detection, transmitter identity or regulatory compliance.

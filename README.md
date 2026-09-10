@@ -1,5 +1,7 @@
 # OVMeshDR++
 
+**Community & support:** Join the [OVMesh Discord](https://discord.gg/kwKhFamfaU).
+
 **Hardware support:** HackRF One is currently supported. RTL-SDR support is planned by this weekend (September 12–13, 2026).
 
 OVMeshDR++ is a local, receive-only spectrum survey application with an SDR++-inspired desktop interface. Observe a configurable frequency range, save measurements with optional receiver GPS, and explore activity by frequency, time and location. The application runs locally; it has no cloud service, automatic uploader or online map.

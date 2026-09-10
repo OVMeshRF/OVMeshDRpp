@@ -4,6 +4,8 @@ This is an experimental C++20 application, currently version 0.4.0. Use the [pub
 
 Start with the [user guide](docs/user-guide.md), [implementation status](docs/engineering/implementation-status.md), [requirements](docs/product/roadmap.md), [build instructions](docs/operations/deployment.md) and [documentation policy](docs/governance/documentation-policy.md). Follow [community conduct](CODE_OF_CONDUCT.md). Suspected vulnerabilities go through [SECURITY.md](SECURITY.md), not public issues.
 
+Discuss ideas and development questions in the [OVMesh Discord](https://discord.gg/kwKhFamfaU). Use GitHub issues and pull requests to track proposed changes and their review.
+
 ## Development and review
 
 1. Keep one logical scope per branch and preserve existing work.

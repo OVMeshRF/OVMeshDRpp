@@ -8,7 +8,7 @@ The [security and privacy design](docs/security/security-and-privacy.md) describ
 
 ## Reporting a concern
 
-Use [GitHub private vulnerability reporting](https://github.com/OVMeshRF/OVMeshDRpp/security/advisories/new), available under **Security > Report a vulnerability**. Do not post vulnerability details, credentials or private survey data in a public issue. If the private reporting form is unavailable, retain sensitive details until a private route is available.
+Use [GitHub private vulnerability reporting](https://github.com/OVMeshRF/OVMeshDRpp/security/advisories/new), available under **Security > Report a vulnerability**. Do not post vulnerability details, credentials or private survey data in a public issue or Discord channel. If the private reporting form is unavailable, retain sensitive details until a private route is available.
 
 Include a sanitized description, affected document, component or application version, expected and observed behavior, and reproduction conditions where safe. Do not attach channel/private keys, raw IQ, ciphertext, undecoded payloads, private messages, or precise survey routes.
 
