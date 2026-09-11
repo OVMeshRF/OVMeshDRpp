@@ -39,6 +39,24 @@ std::optional<GpsDevice> classify_gps_serial_device(const SerialDeviceMetadata& 
 // Enumerates metadata only. Does not open serial ports, change settings or write bytes.
 GpsDiscovery discover_gps_devices();
 
+// The Semtech USB bridge uses a generic STM32 VID/PID shared by unrelated
+// products. These are candidates for an explicit operator choice, never proof
+// of a RAK board and never an instruction to open a serial port.
+struct ConcentratorDevice {
+    std::string path;
+    std::string label;
+    std::string stable_id;
+};
+struct ConcentratorDiscovery {
+    std::vector<ConcentratorDevice> devices;
+    std::string error;
+};
+std::optional<ConcentratorDevice> classify_concentrator_serial_device(const SerialDeviceMetadata& metadata);
+ConcentratorDiscovery discover_concentrator_devices();
+// An empty, missing or duplicate identity never selects a board automatically.
+std::optional<std::size_t> select_concentrator_device(const std::vector<ConcentratorDevice>& devices,
+                                                    const std::string& preferred_id);
+
 // A missing or duplicated remembered identity never falls back to another device.
 // Without a preference, only one unambiguous recognized GPS may be selected.
 std::optional<std::size_t> select_gps_device(const std::vector<GpsDevice>& devices,

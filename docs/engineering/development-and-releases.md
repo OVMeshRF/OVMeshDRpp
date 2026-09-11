@@ -1,6 +1,6 @@
 # Development and release engineering
 
-Status: version 0.4.0 experimental native implementation. C++20/CMake, owned DSP/GPS handling and pinned source inventories are in use. A local macOS development app and regression suite exist. No public CI, repository, signed binary release or automatic updater is configured.
+Status: version 0.4.0 experimental native implementation. C++20/CMake, owned DSP/GPS handling and pinned source inventories are in use. The [public source repository](https://github.com/OVMeshRF/OVMeshDRpp), a local macOS development app and a regression suite exist. There is no supported signed binary release or application auto-updater; public source availability does not establish CI or platform qualification.
 
 ## Development lifecycle
 
@@ -29,7 +29,7 @@ A development source version is not a supported binary release. Before distribut
 - RF/endurance, GPS and protocol compatibility evidence appropriate to the claims, plus storage/preferences compatibility and rollback instructions.
 - Named security/release/support ownership and realistic supported-version and response policies.
 
-The current macOS development bundle still links host USB libraries. Windows/Linux runtime acceptance, signing and release packaging remain unfinished. No signing key, certificate or release token belongs in Git. Platform signing/notarization uploads require explicit authorization.
+The current macOS development bundle still links host USB libraries. RAK builds must also include the matching `ovmesh-rak-worker` beside the main executable; source/license manifests cover its pinned HAL. Windows/Linux runtime acceptance, signing and release packaging remain unfinished. Windows RAK operation is not implemented. No signing key, certificate or release token belongs in Git. Platform signing/notarization uploads require explicit authorization.
 
 ## Updates and rollback
 

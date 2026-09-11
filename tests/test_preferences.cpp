@@ -64,7 +64,7 @@ void defaults_and_roundtrip(const Fixture& fixture) {
     require(!fs::exists(fs::path(paths.settings_file)), "Directory initialization does not create settings");
     ovmesh::save_preferences(paths, defaults);
     require(ovmesh::load_preferences(paths) == defaults, "Default settings round trip");
-    require(contents(paths.settings_file).starts_with("version=6\n"), "New preferences use version 6");
+    require(contents(paths.settings_file).starts_with("version=7\n"), "New preferences use version 7");
 
     auto changed = defaults;
     const auto alternate = fixture.folder / fs::path(u8"région-測定"); fs::create_directory(alternate);
@@ -109,7 +109,13 @@ void tuning_offset_roundtrip_and_migration(const Fixture& fixture) {
         ovmesh::save_preferences(paths, preferences);
         require(ovmesh::load_preferences(paths) == preferences, "Signed tuning offset round trips without changing other preferences");
     }
-    const auto version6 = contents(paths.settings_file);
+    const auto version7 = contents(paths.settings_file);
+    auto version6 = version7;
+    replace(version6, "version=7\n", "version=6\n");
+    for (size_t at = version6.find("rak_"); at != std::string::npos; at = version6.find("rak_"))
+        version6.erase(at, version6.find('\n', at) - at + 1);
+    write_existing(paths.settings_file, version6);
+    require(ovmesh::load_preferences(paths) == preferences, "Version 6 preserves SDR preferences and adopts unselected RAK defaults");
     auto version5 = version6;
     replace(version5, "version=6\n", "version=5\n");
     replace(version5, "rtl_gain_tenths_db=280\n", "");
@@ -154,12 +160,12 @@ void tuning_offset_roundtrip_and_migration(const Fixture& fixture) {
         "Version 1 loads all retained settings and defaults tuning offset to zero");
     require(contents(paths.settings_file) == legacy, "Loading version 1 does not migrate or rewrite its file");
     ovmesh::save_preferences(paths, loaded_legacy);
-    require(contents(paths.settings_file) == version6 && ovmesh::load_preferences(paths) == preferences,
-        "Explicit save migrates version 1 to version 6 and retains every prior field");
+    require(contents(paths.settings_file) == version7 && ovmesh::load_preferences(paths) == preferences,
+        "Explicit save migrates version 1 to version 7 and retains every prior field");
     write_existing(paths.settings_file, version4);
     ovmesh::save_preferences(paths, ovmesh::load_preferences(paths));
-    require(ovmesh::load_preferences(paths) == discovery_opt_out && contents(paths.settings_file).starts_with("version=6\n"),
-        "Explicit migration to version 6 preserves an older discovery opt-out");
+    require(ovmesh::load_preferences(paths) == discovery_opt_out && contents(paths.settings_file).starts_with("version=7\n"),
+        "Explicit migration to version 7 preserves an older discovery opt-out");
 }
 
 void new_files_do_not_overwrite(const Fixture& fixture) {
@@ -185,7 +191,7 @@ void malformed_settings_preserved(const Fixture& fixture) {
     const auto valid = contents(paths.settings_file);
     std::set<std::string> malformed = {"", valid.substr(0, valid.size() - 1), std::string(32769, 'x'), valid + "unexpected=1\n"};
     for (const auto& [from, to] : {
-            std::pair<std::string, std::string>{"version=6", "version=7"},
+            std::pair<std::string, std::string>{"version=7", "version=8"},
             {"gps_enabled=1", "gps_enabled=true"}, {"recording_enabled=1", "recording_enabled=2"},
             {"gps_baud=9600", "gps_baud=0"}, {"gps_baud=9600", "gps_baud=230400"},
             {"gps_baud=9600", "gps_baud=09600"}, {"gps_baud=9600", "gps_baud=9999999"},
@@ -193,8 +199,8 @@ void malformed_settings_preserved(const Fixture& fixture) {
             {"gps_device_id=", "gps_device_id=0"}, {"gps_device_id=", "gps_device_id=c0af"},
             {"gps_device_id=", "gps_device_id=edb080"}, {"gps_device_id=", "gps_device_id=f4908080"},
             {"gps_device_id=", "gps_enabled=1"}, {"gps_device_id=", "unknown="},
-            {"version=6", "version=1"}, {"version=6", "version=2"}, {"version=6", "version=3"},
-            {"version=6", "version=4"}, {"version=6", "version=5"}, {"tuning_offset_hz=0\n", ""},
+            {"version=7", "version=1"}, {"version=7", "version=2"}, {"version=7", "version=3"},
+            {"version=7", "version=4"}, {"version=7", "version=5"}, {"tuning_offset_hz=0\n", ""},
             {"discover_lora=1", "discover_lora=true"}, {"discover_lora=1", "discover_lora=2"},
             {"discover_lora=1\n", ""}, {"discover_lora=1", "gps_enabled=1"},
             {"compact_recording=1\n", ""}, {"compact_recording=1", "compact_recording=2"},
@@ -278,7 +284,7 @@ void receiver_bounds(const Fixture& fixture) {
     }
     const auto valid = contents(paths.settings_file);
     for (const auto mutate : {
-            +[](ovmesh::DesktopPreferences& p) { p.receiver_source = static_cast<ovmesh::DesktopReceiver>(3); },
+            +[](ovmesh::DesktopPreferences& p) { p.receiver_source = static_cast<ovmesh::DesktopReceiver>(4); },
             +[](ovmesh::DesktopPreferences& p) { p.center_hz = std::numeric_limits<uint64_t>::max(); },
             +[](ovmesh::DesktopPreferences& p) { p.center_hz = 1000000; p.tuning_offset_hz = -1; },
             +[](ovmesh::DesktopPreferences& p) { p.center_hz = 5999750001ULL; },
@@ -321,6 +327,46 @@ void rtl_receiver_roundtrip(const Fixture& fixture) {
         auto invalid = preferences; mutate(invalid);
         rejects([&] { ovmesh::save_preferences(paths, invalid); }, "Unsupported RTL preference is rejected before replacing valid settings");
         require(contents(paths.settings_file) == valid, "Rejected RTL changes preserve the recorded preference file");
+    }
+}
+
+void concentrator_roundtrip(const Fixture& fixture) {
+    const auto paths = fixture.paths("concentrator-profile");
+    auto preferences = ovmesh::load_preferences(paths);
+    preferences.receiver_source = ovmesh::DesktopReceiver::Rak5146;
+    preferences.center_hz = 915000000; preferences.survey_span_hz = 26000000;
+    require(preferences.concentrators.boards.size() == 1 && preferences.concentrators.boards[0].device_path.empty() &&
+        preferences.concentrators.boards[0].device_id.empty(), "Shipped concentrator preferences contain no device identity or path");
+    ovmesh::save_preferences(paths, preferences);
+    require(ovmesh::load_preferences(paths) == preferences, "Unselected RAK setup can be remembered without opening hardware");
+    auto& boards = preferences.concentrators.boards;
+    boards[0].device_path = "/dev/ttyACM90"; boards[0].device_id = "usb:0483:5740:serial:544553544f4e45";
+    boards.push_back(ovmesh::ConcentratorBoardConfig{});
+    boards[1].device_path = "COM91"; boards[1].device_id = "usb:0483:5740:serial:5445535454574f";
+    boards[1].frequency_hz = 908750000; boards[1].bandwidth_hz = 500000;
+    preferences.concentrators.scan_step_hz = 100000;
+    preferences.concentrators.decode_enabled = false;
+    preferences.decode_enabled = false;
+    ovmesh::save_preferences(paths, preferences);
+    require(ovmesh::load_preferences(paths) == preferences, "Two independent board identities and packet/scan settings round trip");
+    const auto valid = contents(paths.settings_file);
+    require(valid.find(boards[0].device_path) == std::string::npos && valid.find(boards[1].device_id) == std::string::npos,
+        "Private board metadata uses bounded preference text encoding");
+    for (const auto mutate : {
+            +[](ovmesh::DesktopPreferences& p) { p.concentrators.boards.clear(); },
+            +[](ovmesh::DesktopPreferences& p) { p.concentrators.boards.resize(3); },
+            +[](ovmesh::DesktopPreferences& p) { p.concentrators.boards[0].device_path = "//invalid.invalid/tty"; },
+            +[](ovmesh::DesktopPreferences& p) { p.concentrators.boards[0].device_id = "usb:1546:01a7:serial:54455354"; },
+            +[](ovmesh::DesktopPreferences& p) { p.concentrators.boards[0].device_id.clear(); },
+            +[](ovmesh::DesktopPreferences& p) { p.concentrators.boards[0].sync_word = 255; },
+            +[](ovmesh::DesktopPreferences& p) { p.concentrators.boards[0].spreading_factor = 13; },
+            +[](ovmesh::DesktopPreferences& p) { p.concentrators.boards[0].bandwidth_hz = 62500; },
+            +[](ovmesh::DesktopPreferences& p) { p.concentrators.scan_samples = 1; },
+            +[](ovmesh::DesktopPreferences& p) { p.concentrators.scan_step_hz = 24999; },
+            +[](ovmesh::DesktopPreferences& p) { p.survey_span_hz = 26000001; }}) {
+        auto invalid = preferences; mutate(invalid);
+        rejects([&] { ovmesh::save_preferences(paths, invalid); }, "Invalid concentrator preferences are rejected");
+        require(contents(paths.settings_file) == valid, "Rejected concentrator settings preserve the previous profile");
     }
 }
 
@@ -386,6 +432,7 @@ int main() {
         malformed_settings_preserved(fixture);
         receiver_bounds(fixture);
         rtl_receiver_roundtrip(fixture);
+        concentrator_roundtrip(fixture);
         unsafe_paths(fixture);
         std::cout << "Desktop preference checks passed\n";
         return 0;

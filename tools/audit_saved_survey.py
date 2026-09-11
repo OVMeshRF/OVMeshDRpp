@@ -66,6 +66,10 @@ def audit(path, ranges, compare_cli=False):
         connection.execute("PRAGMA trusted_schema=OFF")
         connection.execute("BEGIN")
         schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if schema_version == 7:
+            raise ValueError(
+                "Concentrator recordings contain sampled RSSI histograms, not FFT occupancy. "
+                "Use the application's concentrator frequency reports; this SDR audit does not apply.")
         if schema_version not in (4, 5, 6):
             raise ValueError("This spectrum audit requires schema 4, 5 or 6")
         if schema_version == 6:

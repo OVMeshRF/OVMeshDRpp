@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "ovmesh/concentrator.hpp"
+
 #include <cstdint>
 #include <string>
 
@@ -8,7 +10,7 @@ namespace ovmesh {
 
 // Desktop convenience settings only. Never add channel keys, decoded content,
 // coordinates, or an instruction to start RF reception to this file.
-enum class DesktopReceiver : uint8_t { Synthetic = 0, HackRf = 1, RtlSdr = 2 };
+enum class DesktopReceiver : uint8_t { Synthetic = 0, HackRf = 1, RtlSdr = 2, Rak5146 = 3 };
 
 struct DesktopPreferences {
     bool gps_enabled = true;
@@ -28,6 +30,7 @@ struct DesktopPreferences {
     bool amplifier = false;
     int rtl_gain_tenths_db = 280;
     bool rtl_auto_gain = false;
+    ConcentratorConfig concentrators;
     bool mixed_fonts = true;
     bool mobile_position_display = false;
     std::string recording_directory;

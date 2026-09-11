@@ -25,6 +25,18 @@ class AuditChecks(unittest.TestCase):
         with self.assertRaises(ValueError):
             audit.audit(Path('/not-an-approved-survey.sqlite'), [])
 
+    def test_concentrator_rejected_before_fft_queries(self):
+        folder = ROOT / 'build/private-surveys'
+        folder.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='synthetic-concentrator-audit-', dir=folder) as name:
+            path = Path(name) / 'fixture.sqlite'
+            with sqlite3.connect(path) as db:
+                db.execute('PRAGMA user_version=7')
+            before = path.read_bytes()
+            with self.assertRaisesRegex(ValueError, 'sampled RSSI histograms, not FFT occupancy'):
+                audit.audit(path, [])
+            self.assertEqual(before, path.read_bytes())
+
     def test_independent_counts_and_position_coverage(self):
         folder = ROOT / 'build/private-surveys'
         folder.mkdir(parents=True, exist_ok=True)

@@ -3,6 +3,7 @@
 #include "ovmesh/protocol.hpp"
 #include "ovmesh/phy.hpp"
 #include "ovmesh/survey.hpp"
+#include "ovmesh/concentrator.hpp"
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -13,7 +14,7 @@ namespace ovmesh {
 
 struct ReportOptions;
 
-enum class HardwareReceiver { HackRf, RtlSdr };
+enum class HardwareReceiver { HackRf, RtlSdr, Rak5146 };
 
 struct LaneConfig {
     std::string label = "LongFast";
@@ -41,6 +42,7 @@ struct ReceiverConfig {
     int rtl_gain_tenths_db = 280;
     bool rtl_auto_gain = false;
     std::string device_serial;
+    ConcentratorConfig concentrators;
     float activity_threshold_dbfs = -55.0f;
     bool discover_lora = false;
     // New surveys retain fine activity timing but summarize routine power at
@@ -77,6 +79,7 @@ struct Reception {
     std::string lane_label;
     protocol::DecodeResult decoded;
     std::optional<PositionFix> receiver_position;
+    std::optional<ConcentratorPacketMetadata> concentrator;
 };
 
 struct FrequencySummary {
@@ -120,6 +123,7 @@ struct Snapshot {
     bool incomplete = false;
     bool hardware_available = false; // Build capability only; never USB enumeration.
     bool rtl_sdr_available = false; // Build capability only; never USB enumeration.
+    bool rak5146_available = false;
     std::string state = "Idle";
     std::string error;
     std::string session_id;
@@ -148,6 +152,9 @@ struct Snapshot {
     std::vector<SpectrumBurst> recent_spectrum_bursts;
     DiscoveryStatus discovery;
     std::vector<WaveformObservation> waveforms; // Bounded recent observations.
+    uint64_t concentrator_scans = 0, concentrator_rssi_samples = 0;
+    std::vector<ConcentratorHealth> concentrator_health;
+    std::vector<ConcentratorScan> recent_concentrator_scans; // Most recent per board/frequency.
 };
 
 struct ExportOptions {

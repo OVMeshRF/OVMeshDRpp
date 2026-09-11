@@ -10,6 +10,9 @@
 #include "discovery_worker.hpp"
 #include "discovery_observations.hpp"
 #include "rtl_input.hpp"
+#include "rak_process.hpp"
+#include "ovmesh/gps_discovery.hpp"
+#include <openssl/crypto.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -38,6 +41,7 @@
 namespace ovmesh {
 const char* receiver_source_name(const ReceiverConfig& config) noexcept {
     return config.synthetic ? "Synthetic RF" :
+        config.hardware_receiver == HardwareReceiver::Rak5146 ? "RAK5146 USB/LBT" :
         config.hardware_receiver == HardwareReceiver::RtlSdr ? "RTL-SDR" : "HackRF";
 }
 uint64_t tuned_center_hz(const ReceiverConfig& config) {
@@ -62,6 +66,12 @@ struct RawBlock {std::array<int8_t,block_bytes> data{};size_t size=0;uint64_t fi
 
 void validate(const ReceiverConfig& c) {
     (void)tuned_center_hz(c);
+    if(!c.synthetic && c.hardware_receiver==HardwareReceiver::Rak5146) {
+        validate_concentrator_config(c.concentrators,c.center_hz,c.survey_span_hz,c.tuning_offset_hz);
+        if(c.antenna_description.size()>240||c.receiver_description.size()>240||c.survey_notes.size()>2000)
+            throw std::runtime_error("Survey provenance text is too long");
+        return;
+    }
     const bool rtl=!c.synthetic&&c.hardware_receiver==HardwareReceiver::RtlSdr;
     if(!c.synthetic&&c.hardware_receiver!=HardwareReceiver::HackRf&&c.hardware_receiver!=HardwareReceiver::RtlSdr)
         throw std::runtime_error("Unknown hardware receiver");
@@ -135,6 +145,7 @@ struct Engine::Impl {
     RtlAsyncPump rtl_pump;
 #endif
     explicit Impl(SyntheticPacing pacing):synthetic_pacing(pacing) {
+        view.rak5146_available=RakProcess::available();
         for(size_t i=0;i<profiles.size();++i) {
             profiles[i].id="key-"+std::to_string(i);
             profiles[i].restrict_channel_name=false;
@@ -323,6 +334,7 @@ struct Engine::Impl {
         }catch(const std::exception& e){fail(e.what());}
         input_finished=true;wake.notify_all();
     }
+#include "engine_rak.inc"
     void process(ReceiverConfig c) {
         try {
             struct Lane {size_t index;std::unique_ptr<Downconverter> convert;std::unique_ptr<LoRaReceiver> receive;std::vector<Complex> samples;uint64_t delivered=0;double segment_start=0;};
@@ -631,7 +643,8 @@ struct Engine::Impl {
         }
         try {SessionStore verified;verified.open_readonly(saved_path);const auto saved=verified.read();
             std::lock_guard lock(mutex);
-            if(saved.session_id!=view.session_id||saved.delivered_samples!=view.delivered_samples||saved.total_receptions!=view.total_receptions)
+            if(saved.session_id!=view.session_id||saved.delivered_samples!=view.delivered_samples||saved.total_receptions!=view.total_receptions||
+               saved.concentrator_scans!=view.concentrator_scans||saved.concentrator_rssi_samples!=view.concentrator_rssi_samples)
                 throw std::runtime_error("Saved session does not match the current finalized measurements");
             error.clear();return true;
         }catch(const std::exception& e){error=std::string("Cannot verify the saved session: ")+e.what();return false;}
@@ -645,6 +658,8 @@ bool Engine::start(const ReceiverConfig& requested,bool hardware_permission,std:
     std::lock_guard life(impl_->lifecycle);auto& p=*impl_;p.stop_locked();
     auto config=requested;
     try {
+        const bool rak=!config.synthetic && config.hardware_receiver==HardwareReceiver::Rak5146;
+        if(rak){config.discover_lora=false;config.lanes.clear();config.sample_rate=0;}
         validate(config);
         if(!config.synthetic&&!hardware_permission)throw std::runtime_error("Explicit permission is required before opening "+std::string(receiver_source_name(config)));
 #ifndef OVMESH_HAVE_HACKRF
@@ -653,8 +668,21 @@ bool Engine::start(const ReceiverConfig& requested,bool hardware_permission,std:
 #ifndef OVMESH_HAVE_RTLSDR
         if(!config.synthetic&&config.hardware_receiver==HardwareReceiver::RtlSdr)throw std::runtime_error("This build does not include librtlsdr");
 #endif
-        const bool capability=p.view.hardware_available,rtl_capability=p.view.rtl_sdr_available;{
-            std::lock_guard lock(p.mutex);p.view=Snapshot{};p.view.hardware_available=capability;p.view.rtl_sdr_available=rtl_capability;p.view.config=config;p.view.state="Starting";p.view.session_id=std::to_string(static_cast<uint64_t>(utc_now()*1000000));p.view.upstream_loss_unknown=!config.synthetic;p.save_requested=0;p.save_completed=0;p.final_save_confirmed=false;p.saved_path.clear();
+        if(rak) {
+            if(!RakProcess::available())throw std::runtime_error("RAK5146 USB reception requires a macOS or Linux build with the receiver worker enabled");
+            const auto found=discover_concentrator_devices();
+            if(!found.error.empty())throw std::runtime_error("Cannot read local concentrator USB metadata");
+            for(auto& b:config.concentrators.boards) {
+                const auto match=[&](const auto& d){return d.path==b.device_path && (b.device_id.empty() || d.stable_id==b.device_id);};
+                if(std::count_if(found.devices.begin(),found.devices.end(),match)!=1)
+                    throw std::runtime_error("Selected concentrator is missing or its USB identity changed; refresh and select the intended board in Settings");
+                b.device_id=std::find_if(found.devices.begin(),found.devices.end(),match)->stable_id;
+            }
+            validate_concentrator_config(config.concentrators,config.center_hz,config.survey_span_hz,config.tuning_offset_hz);
+        }
+        const bool capability=p.view.hardware_available,rtl_capability=p.view.rtl_sdr_available,rak_capability=p.view.rak5146_available;{
+            std::lock_guard lock(p.mutex);p.view=Snapshot{};p.view.hardware_available=capability;p.view.rtl_sdr_available=rtl_capability;p.view.rak5146_available=rak_capability;p.view.config=config;p.view.state="Starting";p.view.session_id=std::to_string(static_cast<uint64_t>(utc_now()*1000000));p.view.upstream_loss_unknown=!config.synthetic;p.save_requested=0;p.save_completed=0;p.final_save_confirmed=false;p.saved_path.clear();
+            if(rak){p.view.concentrator_health.resize(config.concentrators.boards.size());for(auto& h:p.view.concentrator_health)h.state="Starting";}
             for(const auto& l:config.lanes){LaneHealth h;h.label=l.label;h.frequency_hz=l.frequency_hz;h.state=!l.enabled?"disabled":l.protocol!="Meshtastic"?"unsupported protocol":"searching; one frame at a time";p.view.lane_health.push_back(h);}
             p.fix_history.clear();if(p.current_fix)p.fix_history.push_back(*p.current_fix);
             if(p.current_fix&&p.current_fix->valid)p.view.track.push_back(*p.current_fix);
@@ -671,7 +699,7 @@ bool Engine::start(const ReceiverConfig& requested,bool hardware_permission,std:
                 p.view.discovery.fault="LoRa discovery could not initialize; spectrum recording continues";
             }
         }
-        p.pool.clear();p.pool.resize(pool_blocks);p.head=0;p.tail=0;p.next_sample=0;p.dropped=0;p.input_finished=false;p.started=monotonic_now();p.last_input_arrival=p.started;p.started_utc=utc_now();
+        p.pool.clear();if(!rak)p.pool.resize(pool_blocks);p.head=0;p.tail=0;p.next_sample=0;p.dropped=0;p.input_finished=false;p.started=monotonic_now();p.last_input_arrival=p.started;p.started_utc=utc_now();
 #ifdef OVMESH_HAVE_HACKRF
         if(!config.synthetic&&config.hardware_receiver==HardwareReceiver::HackRf){
             auto require=[](int result){if(result!=HACKRF_SUCCESS)throw std::runtime_error(std::string("HackRF operation failed: ")+hackrf_error_name(static_cast<hackrf_error>(result)));};
@@ -698,7 +726,7 @@ bool Engine::start(const ReceiverConfig& requested,bool hardware_permission,std:
             if(result!=HACKRF_SUCCESS)throw std::runtime_error(std::string("HackRF operation failed: ")+hackrf_error_name(static_cast<hackrf_error>(result)));
         }
 #endif
-        p.worker=std::thread([&p,config]{p.process(config);});if(config.synthetic)p.producer=std::thread([&p,config]{p.simulate(config);});
+        p.worker=std::thread([&p,config,rak]{if(rak)p.process_concentrators(config);else p.process(config);});if(config.synthetic)p.producer=std::thread([&p,config]{p.simulate(config);});
 #ifdef OVMESH_HAVE_RTLSDR
         if(p.rtl_device)p.start_rtl();
 #endif
@@ -768,7 +796,7 @@ void Engine::disconnect_gps(){
     if(!impl_->current_fix||!impl_->current_fix->manual)impl_->clear_live_position_locked("Serial GPS disconnected");
 }
 GpsConnectionStatus Engine::gps_connection_status() const {return impl_->gps.status();}
-bool Engine::open_session(const std::string& path,std::string& error){std::lock_guard life(impl_->lifecycle);impl_->stop_locked();try{SessionStore store;store.open_readonly(path);auto snapshot=store.read();snapshot.config.session_path=path;snapshot.hardware_available=impl_->view.hardware_available;snapshot.rtl_sdr_available=impl_->view.rtl_sdr_available;std::lock_guard lock(impl_->mutex);impl_->view=std::move(snapshot);impl_->saved_path=path;error.clear();return true;}catch(const std::exception& e){error=e.what();return false;}}
+bool Engine::open_session(const std::string& path,std::string& error){std::lock_guard life(impl_->lifecycle);impl_->stop_locked();try{SessionStore store;store.open_readonly(path);auto snapshot=store.read();snapshot.config.session_path=path;snapshot.hardware_available=impl_->view.hardware_available;snapshot.rtl_sdr_available=impl_->view.rtl_sdr_available;snapshot.rak5146_available=impl_->view.rak5146_available;std::lock_guard lock(impl_->mutex);impl_->view=std::move(snapshot);impl_->saved_path=path;error.clear();return true;}catch(const std::exception& e){error=e.what();return false;}}
 bool Engine::save_session(std::string& error) {
     auto& p=*impl_;std::lock_guard life(p.lifecycle);return p.save_locked(error);
 }
@@ -791,17 +819,17 @@ bool Engine::new_session(std::string& error,bool discard_unrecorded) {
     auto& p=*impl_;std::lock_guard life(p.lifecycle);
     bool historical,has_data;
     {std::lock_guard lock(p.mutex);historical=p.view.historical;
-        has_data=p.view.delivered_samples||p.view.total_receptions||p.view.spectrum_tiles;
+        has_data=p.view.delivered_samples||p.view.total_receptions||p.view.spectrum_tiles||p.view.concentrator_scans;
         if(!historical&&p.saved_path.empty()&&(has_data||p.view.running)&&!discard_unrecorded){
             error="This session contains unrecorded measurements. Creating a new session will discard them; explicit discard confirmation is required";return false;
         }
     }
     p.stop_locked();
-    {std::lock_guard lock(p.mutex);has_data=p.view.delivered_samples||p.view.total_receptions||p.view.spectrum_tiles;}
+    {std::lock_guard lock(p.mutex);has_data=p.view.delivered_samples||p.view.total_receptions||p.view.spectrum_tiles||p.view.concentrator_scans;}
     if(!historical&&!p.saved_path.empty()&&has_data&&!p.save_locked(error))return false;
     std::lock_guard lock(p.mutex);
-    const bool capability=p.view.hardware_available,rtl_capability=p.view.rtl_sdr_available;auto config=p.view.config;config.session_path.clear();
-    p.view=Snapshot{};p.view.hardware_available=capability;p.view.rtl_sdr_available=rtl_capability;p.view.config=std::move(config);
+    const bool capability=p.view.hardware_available,rtl_capability=p.view.rtl_sdr_available,rak_capability=p.view.rak5146_available;auto config=p.view.config;config.session_path.clear();
+    p.view=Snapshot{};p.view.hardware_available=capability;p.view.rtl_sdr_available=rtl_capability;p.view.rak5146_available=rak_capability;p.view.config=std::move(config);
     p.view.gps_status=p.live_position_status_locked();
     p.saved_path.clear();p.save_requested=0;p.save_completed=0;p.final_save_confirmed=false;
     p.fix_history.clear();if(p.current_fix)p.fix_history.push_back(*p.current_fix);

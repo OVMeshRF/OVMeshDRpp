@@ -18,6 +18,8 @@ set(OVMESH_LICENSE_FILES
   "third_party/libhackrf-NOTICE.txt|libhackrf public header notice"
   "third_party/rtlsdr/COPYING|librtlsdr GPL version 2 or later"
   "third_party/rtlsdr/AUTHORS|librtlsdr authors"
+  "third_party/sx1302_hal/LICENSE.TXT|Semtech concentrator HAL and TinyMT32 BSD licenses"
+  "third_party/sx1302_hal/PROVENANCE.md|Semtech USB receive subset provenance"
   "third_party/LIBUSB_COPYING.txt|libusb LGPL version 2.1"
 )
 set(OVMESH_NOTICE_CPP "// Generated from checked-in license texts. Do not edit.\nnamespace ovmesh {\nstatic constexpr LicenseNotice bundled_notices[] = {\n")

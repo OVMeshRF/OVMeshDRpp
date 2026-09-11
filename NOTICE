@@ -15,7 +15,9 @@ See LICENSE for the complete GNU General Public License version 3.
 This is an independent application. SDR++ inspired the interface; no
 SDR++ source or application runtime is included in the current inventory.
 Selected SDRangel LoRa logic was adapted, with its original authors and
-license preserved. SDRangel, Meshtastic, MeshCore and SDR++ do not endorse
+license preserved. Selected Semtech SX1302/SX1303 HAL and TinyMT32 sources
+retain their BSD licenses and copyright notices. SDRangel, Meshtastic,
+MeshCore, SDR++, Semtech, RAKwireless and TinyMT's authors do not endorse
 or maintain this application.
 
 Project modifications are documented in CHANGELOG.md and the

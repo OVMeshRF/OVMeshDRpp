@@ -682,6 +682,70 @@ void read_receiver_setup(sqlite3* db, ReceiverConfig& config) {
     config.rtl_gain_tenths_db=static_cast<int>(gain);config.rtl_auto_gain=boolean(receiver,3);
     if(receiver.row())throw std::runtime_error("Multiple RTL-SDR receiver metadata records");
 }
+constexpr const char* concentrator_method="SX1261 sampled RSSI histogram; 33 bins in HAL order; nominal 234300 Hz filter; vendor -11 dB offset; uncalibrated";
+constexpr const char* concentrator_coverage="Samples are not continuous occupancy or packet airtime; host transaction bounds are not RF dwell; unsampled frequencies and intervals are unassessed";
+constexpr const char* concentrator_position="receiver fix associated with host scan completion; not transmitter position or interpolated route";
+const std::map<std::string,std::pair<std::string,std::string>>& concentrator_tables() {
+    static const std::map<std::string,std::pair<std::string,std::string>> tables{
+        {"concentrator_setup",{"id,version,scan_enabled,step_hz,samples,method,coverage,antenna,receiver,notes,decode_enabled","CREATE TABLE concentrator_setup(id INTEGER PRIMARY KEY,version INTEGER,scan_enabled INTEGER,step_hz INTEGER,samples INTEGER,method TEXT,coverage TEXT,antenna TEXT,receiver TEXT,notes TEXT,decode_enabled INTEGER)"}},
+        {"concentrator_profiles",{"board_index,packets_enabled,frequency_hz,bandwidth_hz,spreading_factor,sync_word","CREATE TABLE concentrator_profiles(board_index INTEGER PRIMARY KEY,packets_enabled INTEGER,frequency_hz INTEGER,bandwidth_hz INTEGER,spreading_factor INTEGER,sync_word INTEGER)"}},
+        {"concentrator_scans",{"id,board_index,frequency_hz,filter_hz,rssi_offset_db,utc_start,utc_end,elapsed_start,elapsed_end,sample_count,counts,receiver_fix","CREATE TABLE concentrator_scans(id INTEGER PRIMARY KEY,board_index INTEGER REFERENCES concentrator_profiles(board_index),frequency_hz INTEGER,filter_hz INTEGER,rssi_offset_db REAL,utc_start REAL,utc_end REAL,elapsed_start REAL,elapsed_end REAL,sample_count INTEGER,counts BLOB,receiver_fix INTEGER REFERENCES positions(id))"}},
+        {"concentrator_packets",{"reception_id,board_index,rssi_dbm,hardware_timestamp_us","CREATE TABLE concentrator_packets(reception_id INTEGER PRIMARY KEY REFERENCES receptions(id),board_index INTEGER REFERENCES concentrator_profiles(board_index),rssi_dbm REAL,hardware_timestamp_us INTEGER)"}},
+        {"concentrator_health",{"board_index,state,ready,scans,rssi_samples,receptions,crc_failures,ready_elapsed,last_update_elapsed","CREATE TABLE concentrator_health(board_index INTEGER PRIMARY KEY REFERENCES concentrator_profiles(board_index),state TEXT,ready INTEGER,scans INTEGER,rssi_samples INTEGER,receptions INTEGER,crc_failures INTEGER,ready_elapsed REAL,last_update_elapsed REAL)"}}};
+    return tables;
+}
+void read_concentrator_setup(sqlite3* db,ReceiverConfig& c) {
+    Statement setup(db,"SELECT * FROM concentrator_setup LIMIT 2");
+    if(!setup.row()||setup.integer(0)!=1||setup.integer(1)!=1||setup.text(5)!=concentrator_method||setup.text(6)!=concentrator_coverage)
+        throw std::runtime_error("Unsupported concentrator measurement method");
+    auto& cfg=c.concentrators;cfg.scan_enabled=boolean(setup,2);cfg.scan_step_hz=static_cast<uint32_t>(unsigned_value(setup,3,1000000));cfg.scan_samples=static_cast<unsigned>(unsigned_value(setup,4,2000));
+    c.antenna_description=setup.text(7);c.receiver_description=setup.text(8);c.survey_notes=setup.text(9);cfg.decode_enabled=boolean(setup,10);
+    if(c.antenna_description.size()>512||c.receiver_description.size()>512||c.survey_notes.size()>2048||setup.row())throw std::runtime_error("Invalid concentrator provenance");
+    cfg.boards.clear();Statement profiles(db,"SELECT * FROM concentrator_profiles ORDER BY board_index LIMIT 3");
+    while(profiles.row()) {
+        if(cfg.boards.size()>=2||unsigned_value(profiles,0,1)!=cfg.boards.size())throw std::runtime_error("Invalid concentrator board index");
+        ConcentratorBoardConfig b;b.packets_enabled=boolean(profiles,1);b.frequency_hz=unsigned_value(profiles,2,928000000);
+        b.bandwidth_hz=static_cast<uint32_t>(unsigned_value(profiles,3,500000));b.spreading_factor=static_cast<unsigned>(unsigned_value(profiles,4,12));b.sync_word=static_cast<unsigned>(unsigned_value(profiles,5,255));
+        cfg.boards.push_back(b);
+    }
+    validate_concentrator_config(cfg,c.center_hz,c.survey_span_hz,c.tuning_offset_hz,false);
+}
+void validate_concentrator_scan(const ConcentratorScan& scan,const ReceiverConfig& c) {
+    interval(scan.id,scan.utc_start_seconds,scan.utc_end_seconds,scan.elapsed_start_seconds,scan.elapsed_end_seconds);
+    const double low=double(c.center_hz)-double(c.survey_span_hz)/2+117150,high=double(c.center_hz)+double(c.survey_span_hz)/2-117150;
+    if(!c.concentrators.scan_enabled||scan.board_index>=c.concentrators.boards.size()||scan.frequency_hz<low||scan.frequency_hz>high||
+       scan.filter_bandwidth_hz!=234300||scan.rssi_offset_db!= -11||scan.elapsed_end_seconds-scan.elapsed_start_seconds>5||
+       concentrator_sample_count(scan)!=c.concentrators.scan_samples)
+        throw std::runtime_error("Invalid concentrator scan dimensions, sample count or method");
+    if(scan.receiver_position){if(!scan.receiver_position->valid)throw std::runtime_error("Invalid concentrator receiver fix");validate_fix(*scan.receiver_position);}
+}
+std::string concentrator_scan_sql(const std::string& suffix="ORDER BY s.id") {
+    return "SELECT s.id,s.board_index,s.frequency_hz,s.filter_hz,s.rssi_offset_db,s.utc_start,s.utc_end,s.elapsed_start,s.elapsed_end,s.sample_count,s.counts,p.latitude,p.longitude,p.altitude,p.manual,p.utc,p.monotonic,p.source,p.hdop,p.satellites,s.receiver_fix,p.id FROM concentrator_scans s LEFT JOIN positions p ON p.id=s.receiver_fix "+suffix;
+}
+ConcentratorScan concentrator_scan_from(const Statement& row,const ReceiverConfig& c) {
+    ConcentratorScan scan;scan.id=unsigned_value(row,0,INT64_MAX);scan.board_index=static_cast<unsigned>(unsigned_value(row,1,1));scan.frequency_hz=unsigned_value(row,2,928000000);
+    scan.filter_bandwidth_hz=static_cast<uint32_t>(unsigned_value(row,3,500000));scan.rssi_offset_db=row.real(4);scan.utc_start_seconds=row.real(5);scan.utc_end_seconds=row.real(6);scan.elapsed_start_seconds=row.real(7);scan.elapsed_end_seconds=row.real(8);
+    const auto bytes=row.blob(10,132);if(bytes.size()!=132)throw std::runtime_error("Invalid concentrator histogram encoding");
+    for(size_t i=0;i<33;++i)for(unsigned j=0;j<4;++j)scan.counts[i]|=uint32_t(bytes[4*i+j])<<(8*j);
+    if(unsigned_value(row,9,2000)!=concentrator_sample_count(scan))throw std::runtime_error("Concentrator histogram sample total disagrees");
+    if(!row.null(20)&&(row.null(21)||row.integer(20)!=row.integer(21)))throw std::runtime_error("Missing concentrator receiver fix");
+    scan.receiver_position=read_fix(row,11);validate_concentrator_scan(scan,c);return scan;
+}
+void validate_concentrator_packet(const Reception& r,const ReceiverConfig& c) {
+    if(!c.concentrators.decode_enabled&&(r.decoded.authorized||r.decoded.evidence))
+        throw std::runtime_error("Decoded content is disabled for this concentrator recording");
+    if(!r.concentrator||r.concentrator->board_index>=c.concentrators.boards.size()||!std::isfinite(r.concentrator->rssi_dbm)||r.concentrator->rssi_dbm< -200||r.concentrator->rssi_dbm>50)
+        throw std::runtime_error("Invalid concentrator packet provenance");
+    const auto& b=c.concentrators.boards[r.concentrator->board_index];
+    if(!b.packets_enabled||r.frequency_hz!=b.frequency_hz||r.bandwidth_hz!=b.bandwidth_hz||r.spreading_factor!=b.spreading_factor)
+        throw std::runtime_error("Packet disagrees with configured concentrator service modem");
+}
+void read_concentrator_packet(sqlite3* db,Reception& r,const ReceiverConfig& c) {
+    Statement row(db,"SELECT board_index,rssi_dbm,hardware_timestamp_us FROM concentrator_packets WHERE reception_id=?");row.bind(1,int64_t(r.id));
+    if(!row.row())throw std::runtime_error("Missing concentrator packet provenance");
+    r.concentrator=ConcentratorPacketMetadata{static_cast<unsigned>(unsigned_value(row,0,1)),row.real(1),static_cast<uint32_t>(unsigned_value(row,2,UINT32_MAX))};
+    validate_concentrator_packet(r,c);
+}
 void validate_schema(sqlite3* db, int version) {
     std::map<std::string,std::string> layouts{
         {"session","id,title,version,synthetic,center,sample_rate,span,lna,vga,amp,threshold,complete,elapsed,input_seconds,measurement_seconds,delivered,dropped,receptions,authorized"},
@@ -698,6 +762,7 @@ void validate_schema(sqlite3* db, int version) {
     if(version>=4){layouts.emplace("spectrum_tiles",tile_columns);layouts.emplace("spectrum_events",event_columns);layouts.emplace("coverage_gaps",gap_columns);layouts.emplace("survey_metrology",metrology_columns);}
     if(version>=5){layouts.at("session")+=",discover_lora";layouts.emplace("waveform_observations",waveform_columns);layouts.emplace("discovery_status",discovery_status_columns);layouts.emplace("discovery_bands",discovery_band_columns);layouts.emplace("discovery_gaps",discovery_gap_columns);}
     if(version>=6){layouts.at("spectrum_tiles")=compact_tile_columns;layouts.emplace("power_blocks",power_columns);layouts.at("positions")+=",id";}
+    if(version>=7)for(const auto& [name,definition]:concentrator_tables())layouts.emplace(name,definition.first);
     std::set<std::string> found;
     Statement objects(db,"SELECT type,name,sql FROM sqlite_schema ORDER BY name");
     while(objects.row()) {
@@ -713,6 +778,8 @@ void validate_schema(sqlite3* db, int version) {
             throw std::runtime_error("Unexpected or executable objects in session schema");
         if(version>=6 && ((name=="spectrum_tiles"&&sql!=compact_tile_ddl)||(name=="power_blocks"&&sql!=power_ddl)||(name=="positions"&&sql!=compact_positions_ddl)))
             throw std::runtime_error("Unsupported compact measurement table definition");
+        const auto concentrator_table=concentrator_tables().find(name);
+        if(concentrator_table!=concentrator_tables().end()&&sql!=concentrator_table->second.second)throw std::runtime_error("Unsupported concentrator table definition");
         const auto discovery_table=discovery_tables().find(name);
         if(discovery_table!=discovery_tables().end() && sql!=discovery_table->second)
             throw std::runtime_error("Unsupported discovery table definition");
@@ -727,10 +794,11 @@ void validate_schema(sqlite3* db, int version) {
     if(!rows.row()||rows.integer(0)!=1)throw std::runtime_error("Session must have exactly one metadata record");
     Statement source(db,"SELECT synthetic FROM session");
     if(!source.row())throw std::runtime_error("Session has no receiver source");
-    const auto discriminator=unsigned_value(source,0,version>=5?2:1);
+    const auto discriminator=unsigned_value(source,0,version>=7?3:version>=5?2:1);
     if((discriminator==2)!=found.contains("receiver_setup"))
         throw std::runtime_error("Receiver source and RTL-SDR metadata extension disagree");
     if(discriminator==2) {ReceiverConfig receiver;read_receiver_setup(db,receiver);}
+    if((discriminator==3)!=(version==7))throw std::runtime_error("Concentrator source and schema disagree");
 }
 }
 
@@ -742,7 +810,7 @@ void validate_local_file_path(const std::string& path) {
 SessionStore::~SessionStore(){if(tile_insert_)sqlite3_finalize(tile_insert_);if(db_){if(pending_)sqlite3_exec(db_,"COMMIT;",nullptr,nullptr,nullptr);sqlite3_close_v2(db_);}}
 void SessionStore::execute(const char* sql) const { check(sqlite3_exec(db_,sql,nullptr,nullptr,nullptr)); }
 void SessionStore::begin_batch() {
-    if(!db_||readonly_||(schema_version_!=5&&schema_version_!=6))throw std::runtime_error("Survey is read-only");
+    if(!db_||readonly_||(schema_version_!=5&&schema_version_!=6&&schema_version_!=7))throw std::runtime_error("Survey is read-only");
     if(!pending_){execute("BEGIN IMMEDIATE;");pending_=true;}
 }
 void SessionStore::configure(bool readonly) {
@@ -757,13 +825,15 @@ void SessionStore::configure(bool readonly) {
 }
 void SessionStore::create(const std::string& path,const ReceiverConfig& c,const std::string& id) {
     ensure_local_path(path);if(db_)throw std::runtime_error("Session already open");
+    const bool rak=!c.synthetic&&c.hardware_receiver==HardwareReceiver::Rak5146;
+    if(rak){validate_concentrator_config(c.concentrators,c.center_hz,c.survey_span_hz,c.tuning_offset_hz,false);if(c.discover_lora||c.sample_rate!=0||!c.lanes.empty())throw std::runtime_error("Concentrator configuration must not claim SDR sampling or software discovery");}
     // Validate nominal and corrected tuner frequencies before creating a file.
     (void)tuned_center_hz(c);
-    if(c.sample_rate<1000000 || c.sample_rate>20000000 || !c.survey_span_hz || c.survey_span_hz>c.sample_rate ||
+    if((!rak&&(c.sample_rate<1000000 || c.sample_rate>20000000 || !c.survey_span_hz || c.survey_span_hz>c.sample_rate)) ||
        c.antenna_description.size()>512||c.receiver_description.size()>512||c.survey_notes.size()>2048)
         throw std::runtime_error("Invalid survey configuration or notes");
     const bool rtl=!c.synthetic&&c.hardware_receiver==HardwareReceiver::RtlSdr;
-    if(c.hardware_receiver!=HardwareReceiver::HackRf&&c.hardware_receiver!=HardwareReceiver::RtlSdr)
+    if(c.hardware_receiver!=HardwareReceiver::HackRf&&c.hardware_receiver!=HardwareReceiver::RtlSdr&&!rak)
         throw std::runtime_error("Unsupported survey receiver");
     if(rtl&&((c.sample_rate!=1000000&&c.sample_rate!=2000000)||c.amplifier||
         c.survey_span_hz<500000||c.survey_span_hz>c.sample_rate*4/5||
@@ -791,7 +861,7 @@ void SessionStore::create(const std::string& path,const ReceiverConfig& c,const 
         "CREATE TABLE survey_metrology(fft_size INTEGER,hop_size INTEGER,window TEXT,bin_width REAL,enbw REAL,normalization TEXT,activity_rule TEXT,position_association TEXT,time_association TEXT,antenna TEXT,receiver TEXT,notes TEXT,encoding TEXT);"
         "CREATE INDEX reception_time ON receptions(utc); COMMIT;");
     for(const auto& [name,ddl]:discovery_tables()){(void)name;execute(ddl.c_str());}
-    insert(db_,"session","id,title,version,synthetic,center,sample_rate,span,lna,vga,amp,threshold,tuning_offset_hz,discover_lora",{id,c.session_title,Engine::version(),int64_t(rtl?2:c.synthetic?1:0),int64_t(c.center_hz),int64_t(c.sample_rate),int64_t(c.survey_span_hz),int64_t(c.lna_gain),int64_t(c.vga_gain),int64_t(c.amplifier),double(c.activity_threshold_dbfs),c.tuning_offset_hz,int64_t(c.discover_lora)});
+    insert(db_,"session","id,title,version,synthetic,center,sample_rate,span,lna,vga,amp,threshold,tuning_offset_hz,discover_lora",{id,c.session_title,Engine::version(),int64_t(rak?3:rtl?2:c.synthetic?1:0),int64_t(c.center_hz),int64_t(c.sample_rate),int64_t(c.survey_span_hz),int64_t(c.lna_gain),int64_t(c.vga_gain),int64_t(c.amplifier),double(c.activity_threshold_dbfs),c.tuning_offset_hz,int64_t(c.discover_lora)});
     if(rtl) {
         execute(receiver_setup_ddl);
         insert(db_,"receiver_setup","id,hardware,gain_tenths_db,auto_gain",
@@ -801,11 +871,18 @@ void SessionStore::create(const std::string& path,const ReceiverConfig& c,const 
     insert(db_,"discovery_status",discovery_status_columns,discovery_status_values(initial_discovery));
     for(const auto& l:c.lanes)insert(db_,"lanes","label,channel,protocol,frequency,bw,sf,cr,enabled",{l.label,l.channel_name,l.protocol,int64_t(l.frequency_hz),int64_t(l.bandwidth_hz),int64_t(l.spreading_factor),int64_t(l.coding_rate),int64_t(l.enabled)});
     insert(db_,"survey_metrology",metrology_columns,{int64_t(4096),int64_t(4096),std::string("periodic Hann"),double(c.sample_rate)/4096,double(c.sample_rate)*1.5/4096,std::string(normalization),std::string("per FFT bin power >= fixed session threshold; union across selected bins"),std::string(position_association),std::string("host UTC anchor plus contiguous sample progress; application gaps explicit; upstream loss unknown"),c.antenna_description,c.receiver_description,c.survey_notes,std::string(c.compact_recording?compact_encoding:detailed_encoding)});
-    schema_version_=c.compact_recording?6:5;readonly_=false;recorded_config_=c;
-    if(c.compact_recording) {
+    schema_version_=rak?7:c.compact_recording?6:5;readonly_=false;recorded_config_=c;
+    if(c.compact_recording||rak) {
         execute("DROP TABLE spectrum_tiles; DROP TABLE positions;");execute(compact_positions_ddl);execute(power_ddl);execute(compact_tile_ddl);execute("CREATE INDEX position_identity ON positions(utc,monotonic,source); PRAGMA user_version=6;");
     }
-    std::string query="INSERT INTO spectrum_tiles VALUES(";for(int i=0;i<(c.compact_recording?19:36);++i){if(i)query+=',';query+='?';}query+=')';check(sqlite3_prepare_v2(db_,query.c_str(),-1,&tile_insert_,nullptr));
+    if(rak) {
+        execute("PRAGMA user_version=7; DELETE FROM survey_metrology;");
+        for(const auto& [name,definition]:concentrator_tables()){(void)name;execute(definition.second.c_str());}
+        insert(db_,"concentrator_setup",concentrator_tables().at("concentrator_setup").first,
+            {int64_t(1),int64_t(1),int64_t(c.concentrators.scan_enabled),int64_t(c.concentrators.scan_step_hz),int64_t(c.concentrators.scan_samples),std::string(concentrator_method),std::string(concentrator_coverage),c.antenna_description,c.receiver_description,c.survey_notes,int64_t(c.concentrators.decode_enabled)});
+        for(size_t i=0;i<c.concentrators.boards.size();++i){const auto& b=c.concentrators.boards[i];insert(db_,"concentrator_profiles",concentrator_tables().at("concentrator_profiles").first,{int64_t(i),int64_t(b.packets_enabled),int64_t(b.frequency_hz),int64_t(b.bandwidth_hz),int64_t(b.spreading_factor),int64_t(b.sync_word)});}
+    }
+    std::string query="INSERT INTO spectrum_tiles VALUES(";for(int i=0;i<((c.compact_recording||rak)?19:36);++i){if(i)query+=',';query+='?';}query+=')';check(sqlite3_prepare_v2(db_,query.c_str(),-1,&tile_insert_,nullptr));
     } catch(...) { if(db_)sqlite3_close_v2(db_);db_=nullptr;schema_version_=0;throw; }
 }
 void SessionStore::open_readonly(const std::string& path) {
@@ -815,7 +892,7 @@ void SessionStore::open_readonly(const std::string& path) {
     Statement a(db_,"PRAGMA application_id"),v(db_,"PRAGMA user_version");
     if(!a.row()||a.integer(0)!=application_id||!v.row())throw std::runtime_error("Unsupported OVMeshDRpp session format");
     const auto version=v.integer(0);
-    if(version<1 || version>6)throw std::runtime_error("Unsupported OVMeshDRpp session format");
+    if(version<1 || version>7)throw std::runtime_error("Unsupported OVMeshDRpp session format");
     validate_schema(db_,static_cast<int>(version));
     schema_version_=static_cast<int>(version);
     } catch(...) { if(db_)sqlite3_close_v2(db_);db_=nullptr;schema_version_=0;throw; }
@@ -856,6 +933,8 @@ void SessionStore::save_copy(const std::string& path) const {
 }
 void SessionStore::append(const Reception& r) {
     validate_reception(r);
+    if(schema_version_==7)validate_concentrator_packet(r,recorded_config_);
+    else if(r.concentrator)throw std::runtime_error("Concentrator metadata requires a concentrator recording");
     begin_batch();
     const auto* a=r.decoded.authorized?&*r.decoded.authorized:nullptr;
     if(a&&(!r.crc_valid||!r.header_valid||r.decoded.status!=protocol::Status::decoded))throw std::runtime_error("Content rejected at persistence boundary");
@@ -880,6 +959,7 @@ void SessionStore::append(const Reception& r) {
             };
             details("route_back",a->content.route_back);details("snr_towards",a->content.snr_towards);details("snr_back",a->content.snr_back);
         }
+        if(r.concentrator)insert(db_,"concentrator_packets",concentrator_tables().at("concentrator_packets").first,{int64_t(r.id),int64_t(r.concentrator->board_index),r.concentrator->rssi_dbm,int64_t(r.concentrator->hardware_timestamp_us)});
         execute("RELEASE reception;");
     }
     catch(...){sqlite3_exec(db_,"ROLLBACK TO reception; RELEASE reception;",nullptr,nullptr,nullptr);throw;}
@@ -909,6 +989,7 @@ void SessionStore::append(const PositionFix& f) {
     insert(db_,"positions","utc,latitude,longitude,altitude,manual,source,hdop,satellites,monotonic",{f.utc_seconds,f.latitude,f.longitude,number(f.altitude_m),int64_t(f.manual),f.source,number(f.hdop),int64_t(f.satellites),f.monotonic_seconds});
 }
 void SessionStore::append(const SurveyWindow& window) {
+    if(schema_version_==7)throw std::runtime_error("Concentrator scans cannot create FFT or waveform records");
     validate_window(window);
     // Full-session bins and fine activity already preserve these measurements.
     // The old five-second per-bin copies are intentionally absent in compact mode.
@@ -939,6 +1020,7 @@ void SessionStore::save_power_block() {
     Statement statement(db_,sql);statement.values(values);statement.run();b.dirty=false;
 }
 void SessionStore::append(const SpectrumTile& tile) {
+    if(schema_version_==7)throw std::runtime_error("Concentrator scans cannot create FFT or waveform records");
     validate_tile(tile,recorded_config_);
     if(tile.quality&SurveyPowerAggregated)throw std::runtime_error("Already aggregated power cannot be recorded as a fine input tile");
     if((schema_version_>=6&&tile.id<=previous_tile_id_) || tile.first_sample<previous_tile_end_ || tile.elapsed_start_seconds<previous_tile_elapsed_end_-1e-8)
@@ -970,15 +1052,18 @@ void SessionStore::append(const SpectrumTile& tile) {
     Statement statement(tile_insert_);statement.values(values);statement.run();previous_tile_id_=tile.id;previous_tile_end_=tile.end_sample;previous_tile_elapsed_end_=tile.elapsed_end_seconds;
 }
 void SessionStore::append(const SpectrumEvent& event) {
+    if(schema_version_==7)throw std::runtime_error("Concentrator scans cannot create FFT or waveform records");
     validate_event(event,recorded_config_);std::vector<Value> values={int64_t(event.id),int64_t(event.first_sample),int64_t(event.end_sample),event.utc_start_seconds,event.utc_end_seconds,event.elapsed_start_seconds,event.elapsed_end_seconds,event.lower_hz,event.upper_hz,event.active_seconds,double(event.mean_dbfs),double(event.peak_dbfs),int64_t(event.quality)};
     fix_values(values,event.receiver_start);fix_values(values,event.receiver_end);begin_batch();insert(db_,"spectrum_events",event_columns,values);
 }
 void SessionStore::append(const CoverageGap& gap) {
+    if(schema_version_==7)throw std::runtime_error("Concentrator scan gaps have no SDR sample count");
     validate_gap(gap);begin_batch();
     if(schema_version_>=6){save_power_block();const auto id=power_block_.id;power_block_=PowerBlock{};power_block_.id=id;}
     insert(db_,"coverage_gaps",gap_columns,{int64_t(gap.id),int64_t(gap.missing_samples),gap.utc_start_seconds,gap.utc_end_seconds,gap.elapsed_start_seconds,gap.elapsed_end_seconds,gap.reason});
 }
 void SessionStore::append(const WaveformObservation& w) {
+    if(schema_version_==7)throw std::runtime_error("Concentrator scans cannot create FFT or waveform records");
     validate_waveform(w,recorded_config_);
     begin_batch();
     Statement previous(db_,"SELECT bandwidth_hz,spreading_factor FROM waveform_observations WHERE id=?");previous.bind(1,int64_t(w.id));
@@ -996,16 +1081,42 @@ void SessionStore::append(const WaveformObservation& w) {
     Statement insert_or_update(db_,sql);insert_or_update.values(values);insert_or_update.run();
 }
 void SessionStore::append(const DiscoveryGap& gap) {
+    if(schema_version_==7)throw std::runtime_error("Concentrator scan gaps have no SDR sample count");
     validate_discovery_gap(gap);
     if(!recorded_config_.discover_lora)throw std::runtime_error("Discovery is disabled for this recording");
     begin_batch();insert(db_,"discovery_gaps",discovery_gap_columns,
         {int64_t(gap.id),int64_t(gap.first_input_sample),int64_t(gap.end_input_sample),int64_t(gap.subband_index),gap.reason});
 }
+void SessionStore::append(const ConcentratorScan& scan) {
+    if(schema_version_!=7)throw std::runtime_error("RSSI scans require a concentrator recording");
+    validate_concentrator_scan(scan,recorded_config_);begin_batch();
+    Statement newest(db_,"SELECT id FROM concentrator_scans ORDER BY id DESC LIMIT 1");
+    if(newest.row()&&scan.id<=unsigned_value(newest,0,INT64_MAX))throw std::runtime_error("Concentrator scan identities must increase");
+    Statement last(db_,"SELECT id,elapsed_end FROM concentrator_scans WHERE board_index=? ORDER BY id DESC LIMIT 1");last.bind(1,int64_t(scan.board_index));
+    if(last.row()&&(scan.id<=unsigned_value(last,0,INT64_MAX)||scan.elapsed_start_seconds<last.real(1)))throw std::runtime_error("Concentrator scans overlap or are out of order");
+    Blob counts;counts.reserve(132);for(const auto count:scan.counts)for(unsigned j=0;j<4;++j)counts.push_back(uint8_t(count>>(j*8)));
+    Value fix=nullptr;if(scan.receiver_position)fix=ensure_fix(*scan.receiver_position);
+    insert(db_,"concentrator_scans",concentrator_tables().at("concentrator_scans").first,
+        {int64_t(scan.id),int64_t(scan.board_index),int64_t(scan.frequency_hz),int64_t(scan.filter_bandwidth_hz),scan.rssi_offset_db,scan.utc_start_seconds,scan.utc_end_seconds,scan.elapsed_start_seconds,scan.elapsed_end_seconds,int64_t(concentrator_sample_count(scan)),counts,fix});
+}
 void SessionStore::update(const Snapshot& s,bool final) {
     nonnegative(s.elapsed_seconds,"session elapsed time");nonnegative(s.input_seconds,"session input time");nonnegative(s.measurement_seconds,"session measurement time");
     validate_discovery_status(s.discovery,recorded_config_.discover_lora);
+    if(schema_version_==7&&(s.input_seconds!=0||s.measurement_seconds!=0||s.delivered_samples!=0||s.dropped_samples!=0||!s.frequencies.empty()||!s.lane_health.empty()||s.spectrum_tiles||s.spectrum_events||s.discovery.enabled))
+        throw std::runtime_error("Concentrator scans cannot be reported as continuous SDR measurements");
     begin_batch();
     try {
+        if(schema_version_==7) {
+            if(s.concentrator_health.size()>recorded_config_.concentrators.boards.size())throw std::runtime_error("Too many concentrator health records");
+            execute("DELETE FROM concentrator_health;");
+            for(size_t i=0;i<s.concentrator_health.size();++i) {
+                const auto& h=s.concentrator_health[i];nonnegative(h.ready_elapsed_seconds,"concentrator ready time");nonnegative(h.last_update_elapsed_seconds,"concentrator update time");
+                if(h.ready_elapsed_seconds>1e10||h.last_update_elapsed_seconds>1e10||h.scans>INT64_MAX||h.rssi_samples>INT64_MAX||h.receptions>INT64_MAX||h.crc_failures>INT64_MAX)throw std::runtime_error("Invalid concentrator health counters");
+                // Device error messages can contain USB paths. Persist fixed
+                // health vocabulary, never process diagnostics or identifiers.
+                insert(db_,"concentrator_health",concentrator_tables().at("concentrator_health").first,{int64_t(i),std::string(h.ready?"Receiving":"Not ready"),int64_t(h.ready),int64_t(h.scans),int64_t(h.rssi_samples),int64_t(h.receptions),int64_t(h.crc_failures),h.ready_elapsed_seconds,h.last_update_elapsed_seconds});
+            }
+        }
         Statement q(db_,"UPDATE session SET complete=?,elapsed=?,input_seconds=?,measurement_seconds=?,delivered=?,dropped=?,receptions=?,authorized=?");
         q.values({int64_t(final&&!s.incomplete),s.elapsed_seconds,s.input_seconds,s.measurement_seconds,int64_t(s.delivered_samples),int64_t(s.dropped_samples),int64_t(s.total_receptions),int64_t(s.authorized_messages)});q.run();
         Statement f(db_,"INSERT INTO frequencies VALUES(?,?,?,?,?,?) ON CONFLICT(center) DO UPDATE SET width=excluded.width,mean=excluded.mean,peak=excluded.peak,observed=excluded.observed,active=excluded.active");
@@ -1021,7 +1132,7 @@ void SessionStore::update(const Snapshot& s,bool final) {
             insert(db_,"discovery_bands",discovery_band_columns,{int64_t(band.subband_index),band.center_hz,
                 int64_t(band.processed_samples),int64_t(band.abandoned_samples),int64_t(band.source_gap_input_samples),
                 int64_t(band.candidate_limit_hits),int64_t(band.track_limit_hits)});
-        insert(db_,"coverage","utc,elapsed,input_seconds,measurement_seconds,dropped,state",{0.0,s.elapsed_seconds,s.input_seconds,s.measurement_seconds,int64_t(s.dropped_samples),s.state});
+        insert(db_,"coverage","utc,elapsed,input_seconds,measurement_seconds,dropped,state",{0.0,s.elapsed_seconds,s.input_seconds,s.measurement_seconds,int64_t(s.dropped_samples),schema_version_==7?std::string(final?"Concentrator stopped":"Concentrator receiving"):s.state});
         execute("COMMIT;");pending_=false;
         if(final)sqlite3_wal_checkpoint_v2(db_,nullptr,SQLITE_CHECKPOINT_TRUNCATE,nullptr,nullptr);
     } catch(...){sqlite3_exec(db_,"ROLLBACK;",nullptr,nullptr,nullptr);pending_=false;throw;}
@@ -1033,12 +1144,12 @@ Snapshot SessionStore::read() const {
     if(!s.row())throw std::runtime_error("Session has no metadata");
     auto& c=out.config;
     out.session_id=s.text(0);c.session_title=s.text(1);
-    const auto source=unsigned_value(s,3,schema_version_>=5?2:1);
-    c.synthetic=source==1;c.hardware_receiver=source==2?HardwareReceiver::RtlSdr:HardwareReceiver::HackRf;
+    const auto source=unsigned_value(s,3,schema_version_>=7?3:schema_version_>=5?2:1);
+    c.synthetic=source==1;c.hardware_receiver=source==3?HardwareReceiver::Rak5146:source==2?HardwareReceiver::RtlSdr:HardwareReceiver::HackRf;
     if(source==2)read_receiver_setup(db_,c);
     c.center_hz=unsigned_value(s,4,6000000000ULL);
     c.sample_rate=static_cast<uint32_t>(unsigned_value(s,5,20000000));
-    c.survey_span_hz=static_cast<uint32_t>(unsigned_value(s,6,20000000));
+    c.survey_span_hz=static_cast<uint32_t>(unsigned_value(s,6,source==3?26000000:20000000));
     c.lna_gain=static_cast<unsigned>(unsigned_value(s,7,40));
     c.vga_gain=static_cast<unsigned>(unsigned_value(s,8,62));c.amplifier=boolean(s,9);
     c.activity_threshold_dbfs=static_cast<float>(s.real(10));out.incomplete=!boolean(s,11);
@@ -1048,9 +1159,10 @@ Snapshot SessionStore::read() const {
     c.tuning_offset_hz=schema_version_>=2?s.integer(19):0;
     c.discover_lora=schema_version_>=5?boolean(s,20):false;
     c.compact_recording=schema_version_>=6;
+    if(source==3)read_concentrator_setup(db_,c);
     (void)tuned_center_hz(c);
     if(s.row())throw std::runtime_error("Multiple session metadata records");
-    if(c.center_hz==0 || c.sample_rate==0 || c.survey_span_hz==0 || c.survey_span_hz>c.sample_rate ||
+    if(c.center_hz==0 || (source!=3&&c.sample_rate==0) || c.survey_span_hz==0 || (source!=3&&c.survey_span_hz>c.sample_rate) ||
        c.lna_gain%8!=0 || c.vga_gain%2!=0 || out.session_id.empty() || out.session_id.size()>160 || c.session_title.size()>160)
        throw std::runtime_error("Invalid saved receiver configuration");
     if(source==2&&((c.sample_rate!=1000000&&c.sample_rate!=2000000)||c.amplifier||
@@ -1076,7 +1188,7 @@ Snapshot SessionStore::read() const {
         validate_bin(bin);out.frequencies.push_back(bin);
     }
     Statement packets(db_,std::string("SELECT ")+reception_columns_for(schema_version_)+" FROM receptions ORDER BY id DESC LIMIT 512");
-    while(packets.row()) {auto r=reception_from(packets,schema_version_);read_route(db_,r,schema_version_);out.receptions.push_back(std::move(r));}
+    while(packets.row()) {auto r=reception_from(packets,schema_version_);read_route(db_,r,schema_version_);if(source==3)read_concentrator_packet(db_,r,c);out.receptions.push_back(std::move(r));}
     // The UI is bounded, but saved counts and exports cover the whole database.
     Statement counts(db_,"SELECT count(*),count(profile) FROM receptions");
     if(counts.row()){out.total_receptions=unsigned_value(counts,0,INT64_MAX);out.authorized_messages=unsigned_value(counts,1,INT64_MAX);}
@@ -1095,7 +1207,7 @@ Snapshot SessionStore::read() const {
         nonnegative(l.processed_seconds,"saved decoder observation time");out.lane_health.push_back(l);
     }
     if(!out.track.empty())out.gps_status="Saved receiver positions (historical)";
-    if(schema_version_>=4) {
+    if(schema_version_>=4&&source!=3) {
         if(c.sample_rate<1000000)throw std::runtime_error("Unsupported spectrum sample rate");
         Statement m(db_,"SELECT * FROM survey_metrology LIMIT 2");
         if(!m.row() || unsigned_value(m,0,4096)!=4096 || unsigned_value(m,1,4096)!=4096 || m.text(2)!="periodic Hann" ||
@@ -1128,12 +1240,34 @@ Snapshot SessionStore::read() const {
         // Gap rows are exported from durable history. Snapshot is deliberately
         // bounded and exposes cumulative status, not an unbounded interval list.
     }
+    if(source==3) {
+        if(c.discover_lora||c.sample_rate!=0||!c.lanes.empty()||out.input_seconds!=0||out.measurement_seconds!=0||out.delivered_samples||out.dropped_samples||!out.frequencies.empty()||!out.lane_health.empty())throw std::runtime_error("Concentrator survey contains unsupported continuous-coverage claims");
+        for(const auto* table:{"spectrum_tiles","power_blocks","spectrum_events","survey_windows","window_bins","survey_metrology","waveform_observations","coverage_gaps","discovery_bands","discovery_gaps"}) {
+            Statement empty(db_,std::string("SELECT 1 FROM ")+table+" LIMIT 1");if(empty.row())throw std::runtime_error("Concentrator recording contains incompatible FFT measurements");
+        }
+        out.spectrum_fft_size=0;out.spectrum_bin_width_hz=out.spectrum_enbw_hz=0;
+        Statement scan_counts(db_,"SELECT count(*),coalesce(sum(sample_count),0) FROM concentrator_scans");
+        if(scan_counts.row()){out.concentrator_scans=unsigned_value(scan_counts,0,INT64_MAX/2000);out.concentrator_rssi_samples=unsigned_value(scan_counts,1,INT64_MAX);if(out.concentrator_rssi_samples!=out.concentrator_scans*2000)throw std::runtime_error("Invalid concentrator scan total");}
+        Statement recent(db_,concentrator_scan_sql("WHERE s.id IN (SELECT max(id) FROM concentrator_scans GROUP BY board_index,frequency_hz) ORDER BY s.board_index,s.frequency_hz LIMIT 2081"));
+        while(recent.row()){if(out.recent_concentrator_scans.size()>=2080)throw std::runtime_error("Too many concentrator scan frequencies");out.recent_concentrator_scans.push_back(concentrator_scan_from(recent,c));}
+        Statement board_health(db_,"SELECT * FROM concentrator_health ORDER BY board_index LIMIT 3");
+        while(board_health.row()) {
+            if(out.concentrator_health.size()>=c.concentrators.boards.size()||unsigned_value(board_health,0,1)!=out.concentrator_health.size())throw std::runtime_error("Invalid concentrator health board index");
+            ConcentratorHealth h;h.state=board_health.text(1);h.ready=boolean(board_health,2);
+            if(h.state!=(h.ready?"Receiving":"Not ready"))throw std::runtime_error("Invalid saved concentrator state");
+            h.scans=unsigned_value(board_health,3,INT64_MAX);h.rssi_samples=unsigned_value(board_health,4,INT64_MAX);h.receptions=unsigned_value(board_health,5,INT64_MAX);h.crc_failures=unsigned_value(board_health,6,INT64_MAX);h.ready_elapsed_seconds=board_health.real(7);h.last_update_elapsed_seconds=board_health.real(8);
+            if(h.ready_elapsed_seconds<0||h.ready_elapsed_seconds>1e10||h.last_update_elapsed_seconds<0||h.last_update_elapsed_seconds>1e10)throw std::runtime_error("Invalid saved concentrator health interval");
+            out.concentrator_health.push_back(h);
+        }
+        Statement orphan(db_,"SELECT 1 FROM concentrator_packets p LEFT JOIN receptions r ON r.id=p.reception_id WHERE r.id IS NULL LIMIT 1");if(orphan.row())throw std::runtime_error("Orphan concentrator packet metadata");
+        Statement packet_count(db_,"SELECT count(*) FROM concentrator_packets");if(!packet_count.row()||unsigned_value(packet_count,0,INT64_MAX)!=out.total_receptions)throw std::runtime_error("Missing concentrator packet metadata");
+    }
     return out;
 }
 
 SurveyAnalysis SessionStore::analyze(const SurveyQuery& query) const {
     ReadSnapshot snapshot(db_);
-    SurveyAnalysis result;const auto config=read().config;if(schema_version_<4)return result;result.detailed_available=true;
+    SurveyAnalysis result;const auto config=read().config;if(schema_version_==7)throw std::runtime_error("This concentrator survey contains sampled RSSI histograms, not FFT occupancy. Use the concentrator frequency report.");if(schema_version_<4)return result;result.detailed_available=true;
     for(double value:{query.lower_hz,query.upper_hz,query.elapsed_start,query.elapsed_end})nonnegative(value,"survey query bound");
     if((query.upper_hz>0 && query.upper_hz<=query.lower_hz)||(query.elapsed_end>0 && query.elapsed_end<=query.elapsed_start)||
        !std::isfinite(query.time_bucket_seconds)||query.time_bucket_seconds<0.001||query.time_bucket_seconds>1e10 ||
@@ -1310,6 +1444,8 @@ const std::vector<std::string>& export_columns() {
         while(std::getline(discovery,column,','))result.push_back(column);
         result.push_back("power_elapsed_start_seconds");result.push_back("power_elapsed_end_seconds");
         result.push_back("rtl_tuner_gain_db");result.push_back("rtl_auto_gain");
+        std::istringstream concentrator("concentrator_scan_id,concentrator_board_index,nominal_filter_bandwidth_hz,rssi_offset_db,rssi_sample_count,rssi_histogram_counts_33,quantized_threshold_dbm,sample_exceedance_fraction,concentrator_method,concentrator_coverage,configured_bandwidth_hz,configured_sync_word,packets_enabled,scan_enabled,scan_step_hz,scan_target_samples,concentrator_decode_enabled,packet_rssi_dbm,hardware_timestamp_us,hardware_timestamp_provenance,bandwidth_interpretation,concentrator_ready,concentrator_scans,concentrator_rssi_samples,concentrator_receptions,concentrator_crc_failures,concentrator_ready_elapsed_seconds,concentrator_last_update_elapsed_seconds");
+        while(std::getline(concentrator,column,','))result.push_back(column);
         return result;
     }();
     return columns;
@@ -1352,6 +1488,31 @@ struct CsvRecord {
         return out+'}';
     }
 };
+void concentrator_packet_fields(CsvRecord& row,const Reception& r) {
+    if(!r.concentrator)return;
+    row.number("concentrator_board_index",r.concentrator->board_index);row.number("packet_rssi_dbm",r.concentrator->rssi_dbm);
+    row.number("configured_bandwidth_hz",r.bandwidth_hz);row.text("bandwidth_interpretation","hardware configured modem bandwidth; not measured signal width");
+    row.number("hardware_timestamp_us",r.concentrator->hardware_timestamp_us);row.text("hardware_timestamp_provenance","board-local wrapping microsecond counter; not synchronized across boards or GPS; host reception time is separate");
+    row.text("rf_level_unit","nominal vendor dBm; uncalibrated");
+}
+template<typename Emit>
+void export_concentrator(const SessionStore& store,const Snapshot& summary,const ExportOptions& opt,Emit emit,bool packets) {
+    const auto base=[&](const char* kind){CsvRecord row;row.text("record_type",kind);row.text("session_id",summary.session_id);row.number("session_schema_version",7);row.text("concentrator_method",concentrator_method);row.text("concentrator_coverage",concentrator_coverage);return row;};
+    const auto& cfg=summary.config.concentrators;
+    for(size_t i=0;i<cfg.boards.size();++i) {
+        const auto& b=cfg.boards[i];auto row=base("concentrator_profile");row.number("concentrator_board_index",i);row.number("frequency_hz",b.frequency_hz);row.number("configured_bandwidth_hz",b.bandwidth_hz);row.number("spreading_factor",b.spreading_factor);row.number("configured_sync_word",b.sync_word);row.number("packets_enabled",int(b.packets_enabled));row.number("scan_enabled",int(cfg.scan_enabled));row.number("scan_step_hz",cfg.scan_step_hz);row.number("scan_target_samples",cfg.scan_samples);row.number("concentrator_decode_enabled",int(cfg.decode_enabled));row.text("bandwidth_interpretation","hardware configured modem bandwidth; not measured signal width");emit(row,std::optional<PositionFix>{});
+    }
+    for(size_t i=0;i<summary.concentrator_health.size();++i) {
+        const auto& h=summary.concentrator_health[i];auto row=base("concentrator_health");row.number("concentrator_board_index",i);row.number("concentrator_ready",int(h.ready));row.number("concentrator_scans",h.scans);row.number("concentrator_rssi_samples",h.rssi_samples);row.number("concentrator_receptions",h.receptions);row.number("concentrator_crc_failures",h.crc_failures);row.number("concentrator_ready_elapsed_seconds",h.ready_elapsed_seconds);row.number("concentrator_last_update_elapsed_seconds",h.last_update_elapsed_seconds);emit(row,std::optional<PositionFix>{});
+    }
+    store.visit_concentrator_scans([&](const ConcentratorScan& scan){
+        auto row=base("concentrator_rssi_scan");row.number("concentrator_scan_id",scan.id);row.number("concentrator_board_index",scan.board_index);row.number("frequency_hz",scan.frequency_hz);row.number("tuner_command_hz",int64_t(scan.frequency_hz)+summary.config.tuning_offset_hz);row.number("nominal_filter_bandwidth_hz",scan.filter_bandwidth_hz);row.number("rssi_offset_db",scan.rssi_offset_db);row.number("rssi_sample_count",concentrator_sample_count(scan));
+        std::string counts;for(const auto count:scan.counts){if(!counts.empty())counts+=';';counts+=std::to_string(count);}row.text("rssi_histogram_counts_33",counts);
+        row.number("quantized_threshold_dbm",-87);row.number("sample_exceedance_fraction",concentrator_fraction_above(scan,-87));row.number("window_utc_start_seconds",scan.utc_start_seconds);row.number("window_utc_end_seconds",scan.utc_end_seconds);row.number("window_elapsed_start_seconds",scan.elapsed_start_seconds);row.number("window_elapsed_end_seconds",scan.elapsed_end_seconds);row.text("position_association",concentrator_position);row.text("time_association","host transaction interval; not exact RF sample dwell");row.text("rf_level_unit","nominal vendor dBm; uncalibrated");
+        if(opt.include_receiver_positions&&scan.receiver_position)row.position(*scan.receiver_position,opt);emit(row,opt.include_receiver_positions?scan.receiver_position:std::nullopt);
+    });
+    if(packets)store.visit_receptions([&](const Reception& r){auto row=base("concentrator_reception");row.number("utc_seconds",r.utc_seconds);row.number("elapsed_seconds",r.elapsed_seconds);row.number("frequency_hz",r.frequency_hz);row.number("spreading_factor",r.spreading_factor);row.number("coding_rate",r.coding_rate);row.number("header_valid",int(r.header_valid));row.number("crc_valid",int(r.crc_valid));row.text("classification",r.decoded.classification);row.text("authentication",r.decoded.authentication);concentrator_packet_fields(row,r);if(opt.include_receiver_positions&&r.receiver_position)row.position(*r.receiver_position,opt);emit(row,opt.include_receiver_positions?r.receiver_position:std::nullopt);});
+}
 // Shared evidence serialization prevents the geographic export from losing
 // unlocated observations, subband loss, rejected work, or overflow diagnostics.
 template<typename Emit>
@@ -1415,7 +1576,7 @@ void SessionStore::write_report_file(const std::string& path,
     catch(...) {output.discard();throw;}
 }
 void SessionStore::visit_tiles(const std::function<void(const SpectrumTile&)>& visitor) const {
-    ReadSnapshot snapshot(db_);if(schema_version_<4)throw std::runtime_error("This legacy recording has no fine frequency activity history");
+    ReadSnapshot snapshot(db_);if(schema_version_==7)throw std::runtime_error("Sampled concentrator RSSI is not FFT occupancy");if(schema_version_<4)throw std::runtime_error("This legacy recording has no fine frequency activity history");
     const auto config=read().config;Statement rows(db_,tiles_sql(schema_version_));
     uint64_t previous=0;double elapsed=0;size_t bins=0;double first=0;
     while(rows.row()) {
@@ -1427,6 +1588,12 @@ void SessionStore::visit_tiles(const std::function<void(const SpectrumTile&)>& v
         visitor(tile);
     }
 }
+void SessionStore::visit_concentrator_scans(const std::function<void(const ConcentratorScan&)>& visitor) const {
+    ReadSnapshot snapshot(db_);if(schema_version_!=7)return;
+    const auto config=read().config;std::array<double,2> ends{};
+    Statement rows(db_,concentrator_scan_sql());
+    while(rows.row()) {const auto scan=concentrator_scan_from(rows,config);if(scan.elapsed_start_seconds<ends[scan.board_index])throw std::runtime_error("Saved concentrator scans overlap or are out of order");ends[scan.board_index]=scan.elapsed_end_seconds;visitor(scan);}
+}
 void SessionStore::visit_positions(const std::function<void(const PositionFix&)>& visitor) const {
     ReadSnapshot snapshot(db_);Statement rows(db_,"SELECT * FROM positions ORDER BY rowid");
     while(rows.row())visitor(saved_position(rows));
@@ -1436,8 +1603,8 @@ void SessionStore::visit_waveforms(const std::function<void(const WaveformObserv
     Statement rows(db_,"SELECT * FROM waveform_observations ORDER BY id");while(rows.row())visitor(waveform_from(rows,config));
 }
 void SessionStore::visit_receptions(const std::function<void(const Reception&)>& visitor) const {
-    ReadSnapshot snapshot(db_);Statement rows(db_,std::string("SELECT ")+reception_columns_for(schema_version_)+" FROM receptions ORDER BY id");
-    while(rows.row()){auto reception=reception_from(rows,schema_version_);read_route(db_,reception,schema_version_);visitor(reception);}
+    ReadSnapshot snapshot(db_);const auto config=schema_version_==7?read().config:ReceiverConfig{};Statement rows(db_,std::string("SELECT ")+reception_columns_for(schema_version_)+" FROM receptions ORDER BY id");
+    while(rows.row()){auto reception=reception_from(rows,schema_version_);read_route(db_,reception,schema_version_);if(schema_version_==7)read_concentrator_packet(db_,reception,config);visitor(reception);}
 }
 void SessionStore::visit_gaps(const std::function<void(const CoverageGap&)>& visitor) const {
     ReadSnapshot snapshot(db_);if(schema_version_<4)throw std::runtime_error("This legacy recording has no fine coverage-gap history");
@@ -1447,6 +1614,7 @@ void SessionStore::export_csv(const std::string& path,const ExportOptions& opt) 
     if(opt.coordinate_decimals>7)throw std::runtime_error("Coordinate precision must be 0 through 7");
     ReadSnapshot snapshot(db_);
     const auto summary=read();
+    if(schema_version_==7){visit_concentrator_scans([](const auto&){});visit_receptions([](const auto&){});}
     PrivateFile output(path);
     std::string header;for(const auto& column:export_columns()){if(!header.empty())header+=',';header+=column;}output.write(header+'\n');
     CsvRecord session;session.text("record_type","session");session.text("session_id",summary.session_id);
@@ -1454,20 +1622,22 @@ void SessionStore::export_csv(const std::string& path,const ExportOptions& opt) 
     session.number("measurement_seconds",summary.measurement_seconds);session.number("delivered_samples",summary.delivered_samples);
     session.number("dropped_samples",summary.dropped_samples);session.number("total_receptions",summary.total_receptions);
     session.number("authorized_records",summary.authorized_messages);session.number("incomplete",int(summary.incomplete));
-    session.number("activity_threshold_dbfs",summary.config.activity_threshold_dbfs);session.number("sample_rate",summary.config.sample_rate);
+    if(schema_version_!=7){session.number("activity_threshold_dbfs",summary.config.activity_threshold_dbfs);session.number("sample_rate",summary.config.sample_rate);}
     session.number("survey_span_hz",summary.config.survey_span_hz);session.text("source",summary.config.synthetic?"synthetic":receiver_source_name(summary.config));
-    session.text("rf_level_unit","uncalibrated dBFS/bin");session.number("frequency_hz",summary.config.center_hz);
+    session.text("rf_level_unit",schema_version_==7?"nominal vendor dBm; uncalibrated":"uncalibrated dBFS/bin");session.number("frequency_hz",summary.config.center_hz);
     if(!summary.config.synthetic&&summary.config.hardware_receiver==HardwareReceiver::RtlSdr) {
         session.number("rtl_auto_gain",int(summary.config.rtl_auto_gain));
         if(!summary.config.rtl_auto_gain)session.number("rtl_tuner_gain_db",summary.config.rtl_gain_tenths_db/10.0);
-    } else {
+    } else if(schema_version_!=7) {
         session.number("lna_gain_db",summary.config.lna_gain);session.number("vga_gain_db",summary.config.vga_gain);session.number("rf_amplifier_enabled",int(summary.config.amplifier));
     }
-    session.number("tuning_offset_hz",summary.config.tuning_offset_hz);session.number("tuner_command_hz",tuned_center_hz(summary.config));
+    session.number("tuning_offset_hz",summary.config.tuning_offset_hz);if(schema_version_!=7)session.number("tuner_command_hz",tuned_center_hz(summary.config));
+    if(schema_version_==7&&opt.include_provenance){session.text("antenna_description",summary.config.antenna_description);session.text("receiver_description",summary.config.receiver_description);session.text("survey_notes",summary.config.survey_notes);}
     session.number("session_schema_version",schema_version_);
     Statement version(db_,"SELECT version FROM session");if(version.row())session.text("application_version",version.text(0));session.write(output);
-    if(schema_version_>=5)export_discovery(db_,summary,opt,[&](const CsvRecord& row,const std::optional<PositionFix>&){row.write(output);});
-    if(schema_version_>=4) {
+    if(schema_version_==7)export_concentrator(*this,summary,opt,[&](const CsvRecord& row,const std::optional<PositionFix>&){row.write(output);},false);
+    if(schema_version_>=5&&schema_version_!=7)export_discovery(db_,summary,opt,[&](const CsvRecord& row,const std::optional<PositionFix>&){row.write(output);});
+    if(schema_version_>=4&&schema_version_!=7) {
         CsvRecord metrology;metrology.text("record_type","spectrum_metrology");metrology.text("session_id",summary.session_id);
         metrology.number("fft_size",4096);metrology.number("hop_size",4096);metrology.text("window_function","periodic Hann");metrology.number("bin_width_hz",summary.spectrum_bin_width_hz);metrology.number("enbw_hz",summary.spectrum_enbw_hz);
         metrology.text("normalization",normalization);metrology.text("position_association",position_association);metrology.text("time_association","host UTC anchor + sample progress; activity frame-major LSB-first, contiguous nonoverlapping FFT frames");
@@ -1509,11 +1679,11 @@ void SessionStore::export_csv(const std::string& path,const ExportOptions& opt) 
     }
     Statement packets(db_,std::string("SELECT ")+reception_columns_for(schema_version_)+" FROM receptions ORDER BY id");
     while(packets.row()) {
-        auto r=reception_from(packets,schema_version_);read_route(db_,r,schema_version_);CsvRecord row;
+        auto r=reception_from(packets,schema_version_);read_route(db_,r,schema_version_);if(schema_version_==7)read_concentrator_packet(db_,r,summary.config);CsvRecord row;concentrator_packet_fields(row,r);
         row.text("record_type","reception");row.text("session_id",summary.session_id);row.number("utc_seconds",r.utc_seconds);
         row.number("elapsed_seconds",r.elapsed_seconds);row.number("frequency_hz",r.frequency_hz);row.number("bandwidth_hz",r.bandwidth_hz);
-        row.number("spreading_factor",r.spreading_factor);row.number("coding_rate",r.coding_rate);row.number("duration_seconds",r.duration_seconds);
-        row.number("snr_db",r.snr_db);row.number("frequency_error_hz",r.frequency_error_hz);row.number("header_valid",int(r.header_valid));
+        row.number("spreading_factor",r.spreading_factor);row.number("coding_rate",r.coding_rate);if(!r.concentrator)row.number("duration_seconds",r.duration_seconds);
+        row.number("snr_db",r.snr_db);if(!r.concentrator)row.number("frequency_error_hz",r.frequency_error_hz);row.number("header_valid",int(r.header_valid));
         row.number("crc_valid",int(r.crc_valid));row.text("decode_status",std::string(protocol::status_name(r.decoded.status)));
         row.text("classification",r.decoded.classification);row.text("authentication",r.decoded.authentication);
         if(r.decoded.evidence) {
@@ -1585,13 +1755,14 @@ void SessionStore::export_geojson(const std::string& path,const ExportOptions& o
     if(opt.coordinate_decimals>7)throw std::runtime_error("Coordinate precision must be 0 through 7");
     ReadSnapshot snapshot(db_);
     const auto summary=read();
+    if(schema_version_==7){visit_concentrator_scans([](const auto&){});visit_receptions([](const auto&){});}
     CsvRecord receiver;receiver.text("source",summary.config.synthetic?"synthetic":receiver_source_name(summary.config));
-    receiver.number("sample_rate",summary.config.sample_rate);receiver.number("frequency_hz",summary.config.center_hz);
+    if(schema_version_!=7)receiver.number("sample_rate",summary.config.sample_rate);receiver.number("frequency_hz",summary.config.center_hz);
     receiver.number("survey_span_hz",summary.config.survey_span_hz);receiver.number("tuning_offset_hz",summary.config.tuning_offset_hz);
     if(!summary.config.synthetic&&summary.config.hardware_receiver==HardwareReceiver::RtlSdr) {
         receiver.number("rtl_auto_gain",int(summary.config.rtl_auto_gain));
         if(!summary.config.rtl_auto_gain)receiver.number("rtl_tuner_gain_db",summary.config.rtl_gain_tenths_db/10.0);
-    } else {
+    } else if(schema_version_!=7) {
         receiver.number("lna_gain_db",summary.config.lna_gain);receiver.number("vga_gain_db",summary.config.vga_gain);
         receiver.number("rf_amplifier_enabled",int(summary.config.amplifier));
     }
@@ -1605,7 +1776,7 @@ void SessionStore::export_geojson(const std::string& path,const ExportOptions& o
            <<",\"manual\":"<<(fix.manual?"true":"false")<<",\"source\":"<<json_string(fix.source)<<"}}";
         output.write(row.str());
     }
-    if(schema_version_>=4) {
+    if(schema_version_>=4&&schema_version_!=7) {
         // One RF feature per located measurement tile, with its own endpoint
         // association. Do not use capped display buckets as an export source.
         Statement tiles(db_,tiles_sql(schema_version_));while(tiles.row()) {
@@ -1625,13 +1796,15 @@ void SessionStore::export_geojson(const std::string& path,const ExportOptions& o
             row<<"}}";output.write(row.str());
         }
     }
-    if(schema_version_>=5)export_discovery(db_,summary,opt,[&](const CsvRecord& record,const std::optional<PositionFix>& fix) {
+    const auto feature=[&](const CsvRecord& record,const std::optional<PositionFix>& fix) {
         std::ostringstream row;row.imbue(std::locale::classic());if(comma)row<<',';comma=true;
         row<<"{\"type\":\"Feature\",\"geometry\":";
         if(fix)row<<"{\"type\":\"Point\",\"coordinates\":["<<std::fixed<<std::setprecision(static_cast<int>(opt.coordinate_decimals))<<fix->longitude<<','<<fix->latitude<<"]}";
         else row<<"null";
         row<<",\"properties\":"<<record.json()<<'}';output.write(row.str());
-    });
+    };
+    if(schema_version_==7)export_concentrator(*this,summary,opt,feature,true);
+    else if(schema_version_>=5)export_discovery(db_,summary,opt,feature);
     output.write("]}\n");output.sync();
 }
 }

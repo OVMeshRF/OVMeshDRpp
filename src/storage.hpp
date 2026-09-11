@@ -36,6 +36,8 @@ public:
     // These records contain waveform evidence only, never bytes or packet airtime.
     void append(const WaveformObservation&);
     void append(const DiscoveryGap&);
+    // Sampled SX1261 RSSI scans; never converted into FFT occupancy tiles.
+    void append(const ConcentratorScan&);
     void update(const Snapshot&, bool final = false);
     Snapshot read() const;
     void save_copy(const std::string& new_path) const;
@@ -50,6 +52,7 @@ public:
     void visit_waveforms(const std::function<void(const WaveformObservation&)>&) const;
     void visit_receptions(const std::function<void(const Reception&)>&) const;
     void visit_gaps(const std::function<void(const CoverageGap&)>&) const;
+    void visit_concentrator_scans(const std::function<void(const ConcentratorScan&)>&) const;
     void write_report_file(const std::string& path,
         const std::function<void(const std::function<void(std::string_view)>&)>& generator) const;
     bool is_open() const { return db_ != nullptr; }

@@ -178,6 +178,78 @@ void rtl_receiver_controls(Canvas& canvas) {
         "Displaying historical RTL acquisition does not mutate the next receiver setup");
 }
 
+void concentrator_controls_and_measurements(Canvas& canvas) {
+    Engine engine; DesktopState ui; ui.passive_smoke=true;
+    ui.select_receiver(3);
+    require(ui.config.center_hz==915000000 && ui.config.survey_span_hz==26000000 &&
+        ui.config.hardware_receiver==HardwareReceiver::Rak5146 && !ui.config.amplifier,
+        "RAK selects its swept US915 range without an SDR amplifier");
+    Snapshot snapshot; snapshot.rak5146_available=true;
+    const auto draw=[&] { receiver_controls(engine,ui,snapshot); };
+    canvas.frame(draw); const auto controls=canvas.frame(draw);
+    for(const auto* text:{"RAK5146 USB/LBT","Configure RAK boards...","902.000 - 928.000 MHz","visited sequentially"}) contains(controls,text);
+    for(const auto* text:{"LNA gain","VGA gain","RF amplifier","Sample rate","Tuner gain"})
+        require(controls.find(text)==std::string::npos,"Concentrator controls hide irrelevant SDR settings");
+    ui.concentrator_inventory_loaded=true;
+    const auto setup=canvas.frame([&] { concentrator_settings(engine,ui,snapshot); });
+    for(const auto* text:{"Number of boards","Choose USB concentrator...","generic STM32 identity","Packet frequency / MHz",
+            "Packet bandwidth","Spreading factor","Sync word","Scan RF energy across the survey range"}) contains(setup,text);
+    require(!engine.snapshot().running && engine.gps_connection_status().state==GpsConnectionState::Disconnected,
+        "Concentrator UI rendering opens neither USB nor GPS");
+    contains(setup,"Apply preset"); contains(setup,"Edit the fields below for a custom receive profile.");
+    ui.config.concentrators.boards[0].frequency_hz=907000000;
+    const auto custom=canvas.frame([&] { concentrator_settings(engine,ui,snapshot); });
+    contains(custom,"Manual settings");
+    require(ui.config.concentrators.boards[0].frequency_hz==907000000,
+        "Manual profile edits remain selected across settings frames without a no-op Custom choice");
+    auto applied=ui.config; applied.sample_rate=0; applied.discover_lora=false; applied.lanes.clear();
+    applied.concentrators.boards[0].device_path="fixture-private-path";
+    applied.concentrators.boards[0].device_id="fixture-private-id";
+    auto log=desktop_acquisition_log(applied,0,90,1700000090);
+    for(const auto* text:{"boards=1","scan_enabled=1","samples_per_scan=2000","decode_enabled=1",
+            "board=1 packets_enabled=1 frequency_hz=907000000 bandwidth_hz=250000 sf=11 sync_word=0x2b",
+            "decoding_scope=configured_hardware_profiles"}) contains(log,text);
+    for(const auto* text:{"sample_rate=","lna_gain_db=","fixture-private","paused_spectrum_only"})
+        require(log.find(text)==std::string::npos,"RAK startup log excludes irrelevant SDR values and private USB identities");
+    applied.concentrators.decode_enabled=false;
+    contains(desktop_acquisition_log(applied,0,90,0),"decoding_scope=disabled_packet_metadata_only");
+    applied.concentrators.boards[0].packets_enabled=false;
+    contains(desktop_acquisition_log(applied,0,90,0),"decoding_scope=paused_spectrum_only");
+    applied.hardware_receiver=HardwareReceiver::RtlSdr; applied.sample_rate=2000000; applied.rtl_gain_tenths_db=297;
+    log=desktop_acquisition_log(applied,0,90,0);
+    contains(log,"sample_rate=2000000"); contains(log,"rtl_gain_tenths_db=297");
+    require(log.find("boards=")==std::string::npos,"SDR startup logging preserves applied receiver settings");
+    snapshot.config=ui.config; snapshot.config.sample_rate=0; snapshot.session_id="synthetic-rak-ui";
+    snapshot.config.session_path="fixture-only-not-opened.sqlite";
+    snapshot.historical=true; snapshot.concentrator_scans=9; snapshot.concentrator_rssi_samples=18000;
+    ConcentratorScan scan; scan.frequency_hz=906875000; scan.utc_end_seconds=1700000001.25;
+    scan.elapsed_start_seconds=1; scan.elapsed_end_seconds=1.025; scan.counts[0]=500; scan.counts[32]=1500;
+    snapshot.recent_concentrator_scans={scan};
+    const auto analysis=canvas.frame([&] { compact_analysis_tab(engine,ui,snapshot); });
+    for(const auto* text:{"Generate analysis report...","Export report...","Sampled RF energy","234.3 kHz",
+            "sampled exceedance fractions","25.000","906.875000"}) contains(analysis,text);
+    queue_analysis(ui,snapshot,false);
+    require(!ui.analysis_busy(),"Concentrator Analyze and historical startup never queue an FFT occupancy query");
+    ui.show_analysis_details=true;
+    canvas.full_frame([&] { render(engine,ui,snapshot); });
+    ui.show_analysis_details=false;
+    require(analysis.find("Busy time / selected range")==std::string::npos,"Concentrator scans never masquerade as FFT busy-time observations");
+    prepare_report_export(ui,snapshot); ui.export_kind=1;
+    const auto report=canvas.frame([&] { report_export_panel(engine,ui,snapshot); });
+    contains(report,"Scan readings over time"); contains(report,"One row per scan");
+    require(report.find("Time bucket / seconds")==std::string::npos,"RAK scan reports do not promise interpolated time buckets");
+    ui.export_kind=3; ui.export_path="synthetic.csv";
+    require(!report_export_block_reason(ui,snapshot).empty(),"Unsupported RAK waveform reports are blocked");
+    Reception rx; rx.utc_seconds=1700000001.25; rx.concentrator=ConcentratorPacketMetadata{0,-72,12345};
+    const auto detail=canvas.frame([&] { content_detail(rx); });
+    contains(detail,"RSSI -72.0 dBm (uncalibrated)"); contains(detail,"Board-local timestamp: 12345 us");
+    require(detail.find("Frequency error 0 Hz")==std::string::npos,"Unavailable concentrator frequency error is not reported as zero");
+    snapshot.historical=false; snapshot.rak5146_available=false;
+    contains(canvas.frame(draw),"RAK5146 support is unavailable in this build.");
+    ui.select_receiver(1);
+    require(ui.config.survey_span_hz<=ui.config.sample_rate*4/5,"Returning from RAK restores a valid SDR width");
+}
+
 void save_new_and_historical(Canvas& canvas, const Fixture& fixture) {
     Engine engine; DesktopState ui; ui.initialize_preferences(fixture.path("session-profile"), false);
     prepare_synthetic(ui); ui.start(engine, false); require(!ui.notice_error, ui.notice); measurements(engine);
@@ -398,6 +470,7 @@ int main() {
         fresh_layout_and_settings(canvas, fixture);
         persisted_setup_and_effective_modes(fixture);
         rtl_receiver_controls(canvas);
+        concentrator_controls_and_measurements(canvas);
         save_new_and_historical(canvas, fixture);
         unrecorded_and_pending_feedback(canvas);
         asynchronous_analysis_preserves_selection(canvas, fixture);

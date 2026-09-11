@@ -1,6 +1,6 @@
 # Dependencies and licensing
 
-Status: native prototype inventory, updated 2026-09-10. The combined build uses GNU GPL version 3; original project code is GPL-3.0-or-later. Third-party terms remain intact. Exact pins, grants and notices are in [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md); precautions and limits are in [security intake](../security/security-and-privacy.md).
+Status: experimental native application dependency inventory. The combined build uses GNU GPL version 3; original project code is GPL-3.0-or-later. Third-party terms remain intact. Exact pins, grants and notices are in [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md); precautions and limits are in [security intake](../security/security-and-privacy.md).
 
 | Area | Actual choice | Boundary |
 |---|---|---|
@@ -12,12 +12,15 @@ Status: native prototype inventory, updated 2026-09-10. The combined build uses 
 | Sessions | SQLite amalgamation | Embedded storage, no server/extensions, typed schema; plaintext files |
 | Desktop | Dear ImGui + GLFW + OpenGL | Existing vendored sources/backends and OS graphics; local system-font lookup plus built-in fallback, no font download |
 | USB | libhackrf + reviewed static librtlsdr 2.0.3 + libusb | RTL source pinned in tree; existing host USB transport, no upstream utilities or implicit installation; [RTL intake](../security/rtlsdr-intake.md). Packaging must inventory actual closure |
+| RAK5146 USB/LBT | Selected Semtech sx1302_hal 2.1.0 + bundled TinyMT32 | BSD-licensed sources with pinned original/adopted hashes; isolated local C worker, native POSIX serial API, no libusb dependency, packet forwarder, network listener, MCU flasher or new runtime framework; [provenance](../../third_party/sx1302_hal/PROVENANCE.md) |
 | GPS | Owned NMEA, device discovery and OS serial APIs | Metadata enumeration via macOS IOKit/CoreFoundation, Windows SetupAPI or Linux serial/sysfs; no serial-port traffic probing, gpsd or external GPS package |
 | Desktop preferences | Owned bounded format 6 + OS file APIs | Existing OpenSSL random generation; private atomic receiver/source/display/settings persistence, no settings framework, keys, coordinates or content |
 | Session copy / image capture | Existing SQLite backup API + owned PNG writer | Private new local files; full retained SQLite snapshot or bounded spectrum/waterfall image; no backup framework, image codec package or OS-dialog dependency |
 | Cloud/remote | None | No listener, telemetry, online map, updater or source synchronization |
 
 Using maintained cryptographic and USB implementations avoids disproportionate maintenance risk. Owned DSP/parsing reduces packages but increases testing and update responsibility. GPS setup uses native OS metadata; recognized or remembered enabled GPS may connect on ordinary hardware-oriented startup, while RF stays stopped. Each platform needs its own runtime and dependency-closure validation.
+
+The RAK worker builds on macOS and eligible Linux/glibc 2.34+ systems with safe child-process descriptor closure. It is disabled on Windows and unsupported POSIX configurations; this does not remove the existing SDR build paths. The copied HAL subset preserves its BSD-3-Clause license and TinyMT32 notices, disables transmit entry points and MCU bootloader/reset commands, bounds USB transactions, and suppresses upstream packet/identifier logging. Volatile radio initialization arrays are included; persistent MCU firmware and flashing tools are not. Corresponding source and local changes ship with the source inventory. Linux and full application hardware qualification remain separate from a successful build or isolated macOS checks.
 
 ## Version 0.4.0 desktop assets and session workflow
 

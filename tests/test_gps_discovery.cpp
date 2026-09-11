@@ -78,11 +78,35 @@ void selection() {
     require(ovmesh::classify_gps_serial_device(raw_a)->stable_id != ovmesh::classify_gps_serial_device(raw_b)->stable_id,
         "Identity escaping does not merge distinct serial values");
 }
+
+void concentrator_candidates() {
+    using namespace ovmesh;
+    auto input = fixture();
+    require(!classify_concentrator_serial_device(input), "A GPS is not a concentrator candidate");
+    input.vendor_id = 0x0483; input.product_id = 0x5740; input.product = "Generic STM32 USB serial";
+    const auto first = *classify_concentrator_serial_device(input);
+    require(!classify_gps_serial_device(input)->automatic_candidate, "Concentrator classification does not enable GPS auto-selection");
+    require(!select_concentrator_device({first}, ""), "A sole generic STM32 still requires explicit concentrator selection");
+    require(select_concentrator_device({first}, first.stable_id) == 0, "Explicit unique concentrator identity resolves");
+    auto moved = first; moved.path = "COM31";
+    require(select_concentrator_device({moved}, first.stable_id) == 0, "Remembered USB identity survives a port change");
+    require(!select_concentrator_device({first,moved}, first.stable_id), "Duplicate identities are not silently opened");
+    input.serial = "TEST-SECOND"; input.path = "/dev/ttyACM91";
+    auto second = *classify_concentrator_serial_device(input);
+    require(select_concentrator_device({first,second},second.stable_id) == 1, "Two boards resolve independently");
+    second.path = first.path;
+    require(!select_concentrator_device({first,second},first.stable_id), "Duplicate paths remain ambiguous");
+    require(!select_concentrator_device({},first.stable_id), "A disconnected board never falls back");
+    input.product_id = 0x5741;
+    require(!classify_concentrator_serial_device(input), "Unreviewed STM32 PID is not a candidate");
+    input.product_id = 0x5740; input.path = "//invalid.invalid/tty";
+    require(!classify_concentrator_serial_device(input), "Network serial paths are rejected without access");
+}
 }
 
 int main() {
     try {
-        classification(); selection();
+        classification(); selection(); concentrator_candidates();
         std::cout << "GPS discovery classification and selection tests passed; no devices enumerated or opened\n";
         return EXIT_SUCCESS;
     } catch (const std::exception& error) {

@@ -341,11 +341,57 @@ struct BurstListState {
 };
 
 int receiver_source_index(const ReceiverConfig& config) {
-    return config.synthetic ? 0 : config.hardware_receiver == HardwareReceiver::RtlSdr ? 2 : 1;
+    return config.synthetic ? 0 : config.hardware_receiver == HardwareReceiver::Rak5146 ? 3 :
+        config.hardware_receiver == HardwareReceiver::RtlSdr ? 2 : 1;
+}
+
+bool is_concentrator(const ReceiverConfig& config) { return receiver_source_index(config) == 3; }
+
+std::string desktop_acquisition_log(const ReceiverConfig& applied, size_t key_records,
+                                    double duration_seconds, double deadline_utc_seconds) {
+    std::ostringstream out;
+    out << "Started " << receiver_source_name(applied) << " desktop nominal_center_hz=" << applied.center_hz
+        << " tuning_offset_hz=" << applied.tuning_offset_hz << " tuned_center_hz=" << tuned_center_hz(applied)
+        << " survey_span_hz=" << applied.survey_span_hz;
+    const bool rak = is_concentrator(applied);
+    const bool packets = rak && std::any_of(applied.concentrators.boards.begin(), applied.concentrators.boards.end(),
+        [](const auto& board) { return board.packets_enabled; });
+    if (rak) {
+        out << " boards=" << applied.concentrators.boards.size() << " scan_enabled=" << applied.concentrators.scan_enabled
+            << " scan_step_hz=" << applied.concentrators.scan_step_hz << " samples_per_scan=" << applied.concentrators.scan_samples
+            << " decode_enabled=" << applied.concentrators.decode_enabled;
+    } else {
+        out << " sample_rate=" << applied.sample_rate << " lna_gain_db=" << applied.lna_gain
+            << " vga_gain_db=" << applied.vga_gain << " rf_amplifier=" << applied.amplifier
+            << " rtl_gain_tenths_db=" << applied.rtl_gain_tenths_db << " rtl_auto_gain=" << applied.rtl_auto_gain << " antenna_bias=0";
+    }
+    out << std::fixed << std::setprecision(3) << " duration_seconds=" << duration_seconds
+        << " deadline_utc_seconds=" << deadline_utc_seconds << '\n';
+    if (rak) {
+        for (size_t i = 0; i < applied.concentrators.boards.size(); ++i) {
+            const auto& board = applied.concentrators.boards[i];
+            out << "Desktop configured board=" << i + 1 << " packets_enabled=" << board.packets_enabled
+                << " frequency_hz=" << board.frequency_hz << " bandwidth_hz=" << board.bandwidth_hz
+                << " sf=" << board.spreading_factor << " sync_word=0x" << std::hex << board.sync_word << std::dec << '\n';
+        }
+    } else {
+        for (size_t i = 0; i < applied.lanes.size(); ++i) {
+            const auto& lane = applied.lanes[i];
+            out << "Desktop started lane=" << i + 1 << " enabled=" << lane.enabled << " frequency_hz=" << lane.frequency_hz
+                << " bandwidth_hz=" << lane.bandwidth_hz << " sf=" << static_cast<unsigned>(lane.spreading_factor)
+                << " cr_denominator=" << static_cast<unsigned>(lane.coding_rate) << '\n';
+        }
+    }
+    out << "Desktop keyring configured_records=" << key_records << " waveform_discovery=" << applied.discover_lora
+        << " automatic_decoder_dispatch=0 decoding_scope="
+        << (rak ? !packets ? "paused_spectrum_only" : applied.concentrators.decode_enabled ? "configured_hardware_profiles" : "disabled_packet_metadata_only"
+                : applied.lanes.empty() ? "paused_spectrum_only" : "selected_profiles") << '\n';
+    return out.str();
 }
 
 bool receiver_source_available(int source, const Snapshot& snapshot) {
-    return source == 0 || (source == 1 && snapshot.hardware_available) || (source == 2 && snapshot.rtl_sdr_available);
+    return source == 0 || (source == 1 && snapshot.hardware_available) || (source == 2 && snapshot.rtl_sdr_available) ||
+        (source == 3 && snapshot.rak5146_available);
 }
 
 struct DesktopState {
@@ -425,6 +471,8 @@ struct DesktopState {
     PreferencePaths preference_locations;
     DesktopPreferences preferences;
     GpsDiscovery gps_devices;
+    ConcentratorDiscovery concentrator_devices;
+    bool concentrator_inventory_loaded = false;
     std::optional<size_t> selected_gps;
     bool preferences_active = false;
     bool preferences_ready = false;
@@ -516,18 +564,66 @@ struct DesktopState {
         notice_error = !ok;
         notice_warning = false;
     }
+    void use_launch_detection(const ReceiverConfig& requested) {
+        if (is_concentrator(requested)) {
+            spectrum_only = std::none_of(requested.concentrators.boards.begin(), requested.concentrators.boards.end(),
+                [](const auto& board) { return board.packets_enabled; });
+            decode_enabled = requested.concentrators.decode_enabled;
+        } else {
+            spectrum_only = !requested.discover_lora && requested.lanes.empty();
+            decode_enabled = !requested.lanes.empty();
+        }
+    }
     template<class DiscoverGps = decltype(&discover_gps_devices)>
     void refresh_gps(DiscoverGps discover = discover_gps_devices) {
         gps_devices = discover();
         selected_gps = gps_devices.error.empty() ? select_gps_device(gps_devices.devices, preferences.gps_device_id) : std::nullopt;
     }
+    template<class Discover = decltype(&discover_concentrator_devices)>
+    void refresh_concentrators(Discover discover = discover_concentrator_devices) {
+        concentrator_devices = discover();
+        concentrator_inventory_loaded = true;
+    }
+    // Resolve a saved USB identity or an explicit command-line path. A missing
+    // or duplicate identity is never replaced by an arbitrary matching port.
+    template<class Discover = decltype(&discover_concentrator_devices)>
+    bool resolve_concentrators(Discover discover = discover_concentrator_devices) {
+        refresh_concentrators(discover);
+        if (!concentrator_devices.error.empty()) { feedback(false, concentrator_devices.error); return false; }
+        auto boards = config.concentrators.boards;
+        for (size_t i = 0; i < boards.size(); ++i) {
+            auto selected = select_concentrator_device(concentrator_devices.devices, boards[i].device_id);
+            if (boards[i].device_id.empty() && !boards[i].device_path.empty()) {
+                // A path supplied explicitly on the CLI is a selection, not an
+                // invitation to probe candidates. Resolve its unique metadata.
+                size_t matches = 0;
+                for (const auto& device : concentrator_devices.devices) if (device.path == boards[i].device_path) {
+                    ++matches;
+                    selected = select_concentrator_device(concentrator_devices.devices, device.stable_id);
+                }
+                if (matches != 1) selected.reset();
+            }
+            if (!selected) {
+                feedback(false, "Choose each RAK board in Settings > RAK concentrators. A selected USB identity is missing or ambiguous.");
+                return false;
+            }
+            boards[i].device_path = concentrator_devices.devices[*selected].path;
+            boards[i].device_id = concentrator_devices.devices[*selected].stable_id;
+            for (size_t j = 0; j < i; ++j) if (boards[j].device_path == boards[i].device_path) {
+                feedback(false, "Choose a different USB concentrator for each board."); return false;
+            }
+        }
+        config.concentrators.boards = std::move(boards);
+        return true;
+    }
     // Updates setup only. Selecting a source never enumerates or opens an SDR.
     void select_receiver(int next_source) {
-        if (next_source < 0 || next_source > 2 || next_source == source) return;
+        if (next_source < 0 || next_source > 3 || next_source == source) return;
         const bool hardware_changed = next_source != 0 && next_source != source;
         source = next_source;
         config.synthetic = source == 0;
-        config.hardware_receiver = source == 2 ? HardwareReceiver::RtlSdr : HardwareReceiver::HackRf;
+        config.hardware_receiver = source == 3 ? HardwareReceiver::Rak5146 :
+            source == 2 ? HardwareReceiver::RtlSdr : HardwareReceiver::HackRf;
         if (hardware_changed) {
             device_serial.fill(0);
             config.device_serial.clear();
@@ -539,11 +635,15 @@ struct DesktopState {
             config.amplifier = false;
             if (config.center_hz < 24000000 || config.center_hz > 1766000000ULL)
                 config.center_hz = 906875000;
-        } else if (config.sample_rate < 8000000) {
+        } else if (source == 3) {
+            config.center_hz = 915000000;
+            config.survey_span_hz = 26000000;
+            config.amplifier = false;
+        } else if (config.sample_rate < 8000000 || config.survey_span_hz > config.sample_rate * 4 / 5) {
             config.sample_rate = 16000000;
             config.survey_span_hz = 10000000;
         }
-        feedback(true, source == 2 ?
+        feedback(true, source == 3 ? "RAK selected: swept 902-928 MHz energy survey. Choose the USB boards and packet profiles in Settings." : source == 2 ?
             "RTL-SDR selected: 1.5 MHz survey at 2 MS/s. Check the center frequency; Offset reset for this receiver." :
             "Receiver selected. Check the survey range and Offset before starting.");
     }
@@ -568,7 +668,8 @@ struct DesktopState {
         preferences.mixed_fonts = mixed_fonts;
         preferences.mobile_position_display = position_view_mode == PositionViewMode::Mobile;
         preferences.receiver_source = source == 0 ? DesktopReceiver::Synthetic :
-            source == 2 ? DesktopReceiver::RtlSdr : DesktopReceiver::HackRf;
+            source == 3 ? DesktopReceiver::Rak5146 : source == 2 ? DesktopReceiver::RtlSdr : DesktopReceiver::HackRf;
+        preferences.concentrators = config.concentrators;
         preferences.center_hz = config.center_hz;
         preferences.sample_rate = config.sample_rate;
         preferences.survey_span_hz = config.survey_span_hz;
@@ -622,7 +723,9 @@ struct DesktopState {
             if (restore_receiver) {
                 source = static_cast<int>(preferences.receiver_source);
                 config.synthetic = source == 0;
-                config.hardware_receiver = source == 2 ? HardwareReceiver::RtlSdr : HardwareReceiver::HackRf;
+                config.hardware_receiver = source == 3 ? HardwareReceiver::Rak5146 :
+                    source == 2 ? HardwareReceiver::RtlSdr : HardwareReceiver::HackRf;
+                config.concentrators = preferences.concentrators;
                 config.center_hz = preferences.center_hz;
                 config.sample_rate = preferences.sample_rate;
                 config.survey_span_hz = preferences.survey_span_hz;
@@ -669,8 +772,10 @@ struct DesktopState {
         feedback(ok, ok ? "GPS connected. Waiting for a current position." : error);
         return ok;
     }
-    template<class Receiver, class DiscoverGps = decltype(&discover_gps_devices)>
-    void start(Receiver& engine, bool permission, DiscoverGps discover = discover_gps_devices) {
+    template<class Receiver, class DiscoverGps = decltype(&discover_gps_devices),
+             class DiscoverConcentrators = decltype(&discover_concentrator_devices)>
+    void start(Receiver& engine, bool permission, DiscoverGps discover = discover_gps_devices,
+               DiscoverConcentrators discover_boards = discover_concentrator_devices) {
         if (passive_smoke) {
             feedback(false, "Passive UI checks cannot start reception.");
             return;
@@ -680,7 +785,9 @@ struct DesktopState {
             return;
         }
         config.synthetic = source == 0;
-        config.hardware_receiver = source == 2 ? HardwareReceiver::RtlSdr : HardwareReceiver::HackRf;
+        config.hardware_receiver = source == 3 ? HardwareReceiver::Rak5146 :
+            source == 2 ? HardwareReceiver::RtlSdr : HardwareReceiver::HackRf;
+        if (source == 3 && !resolve_concentrators(discover_boards)) return;
         if (preferences_active && save_session && (session_path.empty() || recording_path_used)) prepare_recording_file();
         if (save_session && session_path.empty()) {
             feedback(false, "Choose a recording location before starting. Recording has not been disabled.");
@@ -709,6 +816,11 @@ struct DesktopState {
         auto effective = config;
         if (spectrum_only) effective.discover_lora = false;
         if (spectrum_only || !decode_enabled) effective.lanes.clear();
+        if (source == 3) {
+            effective.discover_lora = false; effective.lanes.clear();
+            effective.concentrators.decode_enabled = decode_enabled && !spectrum_only;
+            if (spectrum_only) for (auto& board : effective.concentrators.boards) board.packets_enabled = false;
+        }
         // Legacy profiles outside a newly chosen survey range must not prevent
         // range-wide surveying. Preserve their settings for a later session.
         const double lower = double(effective.center_hz) - effective.survey_span_hz * .5;
@@ -1173,7 +1285,13 @@ void content_detail(const Reception& reception) {
     ImGui::Text("%.6f MHz  |  %.1f kHz  |  SF%u  |  CR 4/%u", static_cast<double>(reception.frequency_hz) / 1e6,
                 static_cast<double>(reception.bandwidth_hz) / 1e3, reception.spreading_factor, reception.coding_rate);
     ImGui::Text("PHY header %s  |  PHY CRC %s", reception.header_valid ? "valid" : "invalid / unavailable", reception.crc_valid ? "valid" : "invalid");
-    ImGui::Text("Duration %.3f s  |  Estimated SNR %.1f dB  |  Frequency error %.0f Hz",
+    if (reception.concentrator) {
+        const auto& meta = *reception.concentrator;
+        ImGui::Text("Board %u | RSSI %.1f dBm (uncalibrated) | SNR %.1f dB", meta.board_index+1,meta.rssi_dbm,reception.snr_db);
+        ImGui::Text("Board-local timestamp: %u us (wrapping counter)",meta.hardware_timestamp_us);
+        ImGui::TextDisabled("Frequency and bandwidth are configured modem values, not independent signal-width measurements.");
+        ImGui::TextDisabled("This receiver does not measure packet duration or frequency error here.");
+    } else ImGui::Text("Duration %.3f s  |  Estimated SNR %.1f dB  |  Frequency error %.0f Hz",
                 reception.duration_seconds, reception.snr_db, reception.frequency_error_hz);
     ImGui::TextDisabled("PHY checks establish reception integrity, not sender identity.");
     if (reception.receiver_position && reception.receiver_position->valid) {
@@ -1321,7 +1439,9 @@ void packet_table(DesktopState& ui, const Snapshot& snapshot, float height) {
         }
         ImGui::EndTable();
     }
-    if (snapshot.receptions.empty()) wrapped("No frames received yet. Unknown RF activity remains visible in the spectrum and occupancy measurements.");
+    if (snapshot.receptions.empty()) wrapped(is_concentrator(snapshot.config)
+        ? "No frames received yet. Sampled RF energy has separate measurements; packets require a matching configured modem profile."
+        : "No frames received yet. Unknown RF activity remains visible in the spectrum and occupancy measurements.");
 }
 
 void position_view_controls(DesktopState& ui) {
@@ -1672,6 +1792,10 @@ template<class Bin> std::optional<FrequencyRange> frequency_gesture_range(const 
 }
 
 void queue_analysis(DesktopState& ui, const Snapshot& snapshot, bool reveal_time_plot) {
+    if (is_concentrator(snapshot.config)) {
+        ui.pending_analysis.reset();
+        return; // Sampled RSSI uses its own view and reports, never FFT occupancy.
+    }
     if (snapshot.config.session_path.empty() || snapshot.session_id.empty()) {
         ui.feedback(false, "A saved survey is required for frequency-linked time and GPS analysis.");
         return;
@@ -2381,14 +2505,16 @@ std::string report_export_block_reason(const DesktopState& ui, const Snapshot& s
     if (snapshot.config.session_path.empty()) return "Open a saved survey or record a session before exporting.";
     if (ui.operation_busy()) return "A file operation is in progress.";
     if (ui.export_kind < 0 || ui.export_kind > 7) return "Choose a report type.";
+    if (is_concentrator(snapshot.config) && ui.export_kind == 3)
+        return "RAK records configured LoRa receptions, not software-discovered waveform observations.";
     if ((ui.export_kind == 2 || ui.export_kind == 4) && !ui.export_options.include_receiver_positions)
         return "This report requires Include receiver GPS coordinates.";
     if (ui.export_kind == 5 && !ui.export_options.include_content)
         return "This report requires Include authorized decoded content.";
-    if ((ui.export_kind == 1 || ui.export_kind == 7) && (!std::isfinite(ui.export_time_bucket_seconds) ||
+    if (!is_concentrator(snapshot.config) && (ui.export_kind == 1 || ui.export_kind == 7) && (!std::isfinite(ui.export_time_bucket_seconds) ||
         ui.export_time_bucket_seconds < .001 || ui.export_time_bucket_seconds > 1e10))
         return "Choose a time bucket from 0.001 through 10000000000 seconds.";
-    if ((ui.export_kind == 2 || (ui.export_kind == 7 && ui.export_options.include_receiver_positions)) && (!std::isfinite(ui.export_geographic_cell_m) ||
+    if (!is_concentrator(snapshot.config) && (ui.export_kind == 2 || (ui.export_kind == 7 && ui.export_options.include_receiver_positions)) && (!std::isfinite(ui.export_geographic_cell_m) ||
         ui.export_geographic_cell_m < 10 || ui.export_geographic_cell_m > 10000))
         return "Choose geographic cells from 10 to 10000 meters.";
     if (ui.export_path.empty()) return "Choose an export location.";
@@ -2402,17 +2528,29 @@ std::string report_export_block_reason(const DesktopState& ui, const Snapshot& s
 }
 
 void report_export_panel(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
+    const bool rak = is_concentrator(snapshot.config);
     ImGui::SetNextItemWidth(-1);
-    ImGui::Combo("Report type", &ui.export_kind,
+    if (rak) {
+        constexpr const char* names[] = {"Sampled frequency summary (CSV)","Scan readings over time (CSV)","Scan readings with positions (CSV)",
+            "Unavailable waveform report","Receiver track (CSV)","Authorized content (CSV)","Detailed archive (CSV / GeoJSON)","Analysis report (HTML)"};
+        if (ui.export_kind < 0 || ui.export_kind > 7 || ui.export_kind == 3) ui.export_kind = 0;
+        if (ImGui::BeginCombo("Report type",names[ui.export_kind])) {
+            for (int i = 0; i < 8; ++i) if (i != 3 && ImGui::Selectable(names[i],ui.export_kind==i)) ui.export_kind=i;
+            ImGui::EndCombo();
+        }
+        wrapped("RAK reports preserve sampled RSSI histograms and configured packet-receiver evidence. Sample fractions are not continuous occupancy, calibrated power or measured signal bandwidth.");
+        if (ui.export_kind == 1 || ui.export_kind == 2)
+            wrapped("One row per scan with its full host transaction interval. Positions are recorded receiver fixes; these rows are not resampled into time buckets or geographic cells.");
+    } else ImGui::Combo("Report type", &ui.export_kind,
         "Frequency summary (CSV)\0Time summary (CSV)\0Geographic summary (CSV)\0"
         "Waveform observations (CSV)\0Receiver track (CSV)\0Authorized content (CSV)\0"
         "Detailed archive (CSV / GeoJSON)\0Analysis report (HTML)\0");
     const bool archive = ui.export_kind == 6;
     const bool narrative = ui.export_kind == 7;
-    if (narrative) wrapped("A readable local report of frequency activity, time patterns, optional receiver locations, waveform/decode evidence and measurement limits. Opens in a browser; print to PDF. No cloud service or message text is included.");
+    if (narrative) wrapped(rak ? "A local report of sampled frequency activity, histogram evidence, optional receiver positions, packet reception and limitations. Open in a browser and print to PDF. No cloud service or message text is included." : "A readable local report of frequency activity, time patterns, optional receiver locations, waveform/decode evidence and measurement limits. Opens in a browser; print to PDF. No cloud service or message text is included.");
     if (archive) {
         wrapped("Detailed archive: exports the whole saved session. Analysis frequency, time and geographic filters do not restrict this archive.", amber);
-        wrapped("The archive contains the detail actually recorded; compact recordings cannot recover original 20 ms power samples.");
+        wrapped(rak ? "The archive retains the recorded RSSI histograms and packet metadata. Individual RSSI sample order and IQ were never recorded." : "The archive contains the detail actually recorded; compact recordings cannot recover original 20 ms power samples.");
     } else {
         label("REPORT SELECTION");
         wrapped(ui.export_from_analysis ? "Using the latest completed analysis selection, captured when this export window opened."
@@ -2428,12 +2566,12 @@ void report_export_panel(Engine& engine, DesktopState& ui, const Snapshot& snaps
         if (ImGui::Button("Use full session for report")) {
             ui.export_query = SurveyQuery{}; ui.export_from_analysis = false;
         }
-        if (ui.export_kind == 1 || narrative) {
+        if (!rak && (ui.export_kind == 1 || narrative)) {
             ImGui::SetNextItemWidth(150);
             ImGui::InputDouble("Time bucket / seconds", &ui.export_time_bucket_seconds, 0, 0, "%.3f");
             wrapped("One summary per requested time bucket. Reports fail explicitly if the selected scope exceeds their row limit; they do not silently coarsen time.");
         }
-        if (ui.export_kind == 2 || (narrative && ui.export_options.include_receiver_positions)) {
+        if (!rak && (ui.export_kind == 2 || (narrative && ui.export_options.include_receiver_positions))) {
             ImGui::SetNextItemWidth(150);
             ImGui::InputDouble("Geographic cell / meters", &ui.export_geographic_cell_m, 0, 0, "%.1f");
             wrapped("Geographic summaries group receiver observations into approximate meter cells. The default is 100 m. This grouping does not change original GPS fixes or imply transmitter locations.");
@@ -2453,7 +2591,7 @@ void report_export_panel(Engine& engine, DesktopState& ui, const Snapshot& snaps
         int decimals = static_cast<int>(ui.export_options.coordinate_decimals);
         if (ImGui::SliderInt("Coordinate decimal places", &decimals, 0, 7)) ui.export_options.coordinate_decimals = static_cast<unsigned>(decimals);
         wrapped("Coordinate rounding affects this export only. It is not anonymization and is separate from geographic cell grouping.", amber);
-        if (ui.export_kind == 2)
+        if (!rak && ui.export_kind == 2)
             wrapped("Rounded cell coordinates may coincide at low precision. Stable cell identifiers distinguish the groups; increase decimal places when finer exported coordinates are needed.");
     }
     if (!narrative && ui.export_options.include_content) wrapped("Decoded text and sender-reported positions may be private. Receiver GPS controls do not redact locations mentioned in message text.", amber);
@@ -2836,6 +2974,20 @@ void receiver_diagnostics(const Snapshot& snapshot, bool show_by_default) {
 
 
 void report_receiver_stop(const Snapshot& final, bool expired) {
+        if (!final.config.synthetic && final.config.hardware_receiver == HardwareReceiver::Rak5146) {
+            std::printf("Desktop RAK receive stopped timed_out=%u error=%u elapsed_seconds=%.3f scans=%llu rssi_samples=%llu receptions=%llu authorized_content=%llu\n",
+                expired ? 1u : 0u, final.error.empty() ? 0u : 1u, final.elapsed_seconds,
+                static_cast<unsigned long long>(final.concentrator_scans), static_cast<unsigned long long>(final.concentrator_rssi_samples),
+                static_cast<unsigned long long>(final.total_receptions), static_cast<unsigned long long>(final.authorized_messages));
+            for (size_t i = 0; i < final.concentrator_health.size(); ++i) {
+                const auto& h = final.concentrator_health[i];
+                std::printf("Desktop final board=%zu scans=%llu rssi_samples=%llu receptions=%llu crc_failures=%llu\n", i + 1,
+                    static_cast<unsigned long long>(h.scans), static_cast<unsigned long long>(h.rssi_samples),
+                    static_cast<unsigned long long>(h.receptions), static_cast<unsigned long long>(h.crc_failures));
+            }
+            std::fflush(stdout);
+            return;
+        }
         std::printf("Desktop spectrum groups=%llu raw_fragments=%llu\n",
             static_cast<unsigned long long>(final.spectrum_bursts),static_cast<unsigned long long>(final.spectrum_events));
         std::printf("Desktop receive stopped timed_out=%u error=%u elapsed_seconds=%.3f input_seconds=%.3f measurement_seconds=%.3f delivered_samples=%llu dropped_samples=%llu upstream_loss_unknown=%u receptions=%llu authorized_content=%llu\n",
@@ -2935,8 +3087,7 @@ int run_desktop(Engine& engine, int maximum_frames, bool auto_demo,
     if (launch_config) {
         ui.config = *launch_config;
         ui.source = receiver_source_index(*launch_config);
-        ui.spectrum_only = !launch_config->discover_lora && launch_config->lanes.empty();
-        ui.decode_enabled = !launch_config->lanes.empty();
+        ui.use_launch_detection(*launch_config);
         ui.prepared_run = prepare_only;
         ui.passive_smoke = maximum_frames > 0 && !auto_demo;
         ui.timed_duration = duration_seconds;
@@ -2970,21 +3121,10 @@ int run_desktop(Engine& engine, int maximum_frames, bool auto_demo,
 #endif
             std::printf("Desktop control pid=%ld until_stopped=%u recording=%u stop_signal=%s window_stays_open_after_stop=%u\n",
                 static_cast<long>(process_id), until_stopped ? 1u : 0u, ui.save_session ? 1u : 0u, until_stopped && external_stop_supported ? "SIGINT" : "none", until_stopped ? 1u : 0u);
-            std::printf("Started %s desktop nominal_center_hz=%llu tuning_offset_hz=%lld tuned_center_hz=%llu sample_rate=%u survey_span_hz=%u lna_gain_db=%u vga_gain_db=%u rf_amplifier=%u rtl_gain_tenths_db=%d rtl_auto_gain=%u antenna_bias=0 duration_seconds=%.3f deadline_utc_seconds=%.3f\n",
-                receiver_source_name(ui.config),
-                static_cast<unsigned long long>(ui.config.center_hz), static_cast<long long>(ui.config.tuning_offset_hz),
-                static_cast<unsigned long long>(tuned_center_hz(ui.config)), ui.config.sample_rate, ui.config.survey_span_hz,
-                ui.config.lna_gain, ui.config.vga_gain, ui.config.amplifier ? 1u : 0u,
-                ui.config.rtl_gain_tenths_db, ui.config.rtl_auto_gain ? 1u : 0u, until_stopped ? 0 : duration_seconds, utc_deadline);
-            for (size_t i = 0; i < ui.config.lanes.size(); ++i) {
-                const auto& lane = ui.config.lanes[i];
-                std::printf("Desktop started lane=%zu enabled=%u frequency_hz=%llu bandwidth_hz=%u sf=%u cr_denominator=%u\n",
-                    i + 1, lane.enabled ? 1u : 0u, static_cast<unsigned long long>(lane.frequency_hz),
-                    lane.bandwidth_hz, static_cast<unsigned>(lane.spreading_factor), static_cast<unsigned>(lane.coding_rate));
-            }
-            std::printf("Desktop keyring configured_records=%zu waveform_discovery=%u automatic_decoder_dispatch=0 decoding_scope=%s\n",
-                engine.configured_key_count(), ui.config.discover_lora ? 1u : 0u,
-                ui.config.lanes.empty() ? "paused_spectrum_only" : "selected_profiles");
+            const auto applied = engine.snapshot().config;
+            const auto acquisition_log = desktop_acquisition_log(applied, engine.configured_key_count(),
+                until_stopped ? 0 : duration_seconds, utc_deadline);
+            std::fputs(acquisition_log.c_str(), stdout);
             std::fflush(stdout);
         };
         if (prepare_only) {
@@ -3008,8 +3148,7 @@ int run_desktop(Engine& engine, int maximum_frames, bool auto_demo,
         if (launch_config) {
             // Explicit command-line acquisition choices win over preferences.
             ui.config = *launch_config;
-            ui.spectrum_only = !launch_config->discover_lora && launch_config->lanes.empty();
-            ui.decode_enabled = !launch_config->lanes.empty();
+            ui.use_launch_detection(*launch_config);
         }
         // Explicit launch recording destinations take precedence for this run.
         if (launch_config && !launch_config->session_path.empty()) {
@@ -3039,7 +3178,7 @@ int run_desktop(Engine& engine, int maximum_frames, bool auto_demo,
         copy_text(ui.survey_notes, initial.config.survey_notes);
         ui.focus_analysis = true;
         queue_analysis(ui, initial, false);
-        std::printf("Saved survey opened read-only; analysis queued. No radio or GPS access.\n");
+        std::printf("Saved survey opened read-only. No radio or GPS access.\n");
         std::fflush(stdout);
     }
     int frame = 0;

@@ -228,6 +228,66 @@ struct StartupReceiver {
     void stop() { running=false; }
 };
 
+void concentrator_selection_and_start(const Fixture& fixture) {
+    DesktopState ui; ui.initialize_preferences(fixture.path("rak-setup-profile"),false); ui.select_receiver(3);
+    ui.gps_enabled=false;
+    const ConcentratorDevice a{"/dev/ttyACM90","Synthetic concentrator A","usb:0483:5740:serial:5445535441"};
+    const ConcentratorDevice b{"COM91","Synthetic concentrator B","usb:0483:5740:serial:5445535442"};
+    auto inventory=[&] { return ConcentratorDiscovery{{a,b},""}; };
+    const auto gps=[]() -> GpsDiscovery { throw std::runtime_error("GPS inventory is disabled in this fixture"); };
+    StartupReceiver receiver;
+    ui.start(receiver,true,gps,inventory);
+    require(ui.notice_error && receiver.rf_starts==0,"No generic STM32 opens without explicit board selection");
+    auto& boards=ui.config.concentrators.boards;
+    boards[0].device_path="/dev/ttyACM99"; boards[0].device_id=a.stable_id;
+    boards.push_back(ConcentratorBoardConfig{});
+    boards[1].device_path=b.path; boards[1].device_id=b.stable_id;
+    boards[1].frequency_hz=908750000; boards[1].bandwidth_hz=500000;
+    ui.decode_enabled=false;
+    ui.start(receiver,true,gps,inventory);
+    require(!ui.notice_error && receiver.rf_starts==1 && receiver.requested.concentrators.boards[0].device_path==a.path &&
+        receiver.requested.concentrators.boards[1].device_path==b.path,"Explicit board identities are rechecked and moved ports resolve separately");
+    require(!receiver.requested.discover_lora && receiver.requested.lanes.empty() &&
+        !receiver.requested.concentrators.decode_enabled && receiver.requested.concentrators.boards[0].packets_enabled,
+        "Concentrator packet metadata remains enabled when payload decoding is off");
+    ui.spectrum_only=true; receiver={}; ui.start(receiver,true,gps,inventory);
+    require(receiver.rf_starts==1 && !receiver.requested.concentrators.boards[0].packets_enabled &&
+        !receiver.requested.concentrators.boards[1].packets_enabled && ui.config.concentrators.boards[0].packets_enabled,
+        "Spectrum only suppresses effective packet reception and preserves saved profiles");
+    ui.persist_preferences(); require(ui.preferences_error.empty(),ui.preferences_error);
+    DesktopState restored; restored.initialize_preferences(fixture.path("rak-setup-profile"),false);
+    require(restored.source==3 && restored.config.concentrators==ui.config.concentrators && !restored.concentrator_inventory_loaded,
+        "Fresh launch restores private concentrator setup without enumeration or reception");
+    for(const auto& devices:std::vector<ConcentratorDiscovery>{{{a,a,b},""},{{b},""},{{a,b},"Synthetic inventory failure"}}) {
+        receiver={};ui.start(receiver,true,gps,[&] {return devices;});
+        require(receiver.rf_starts==0 && ui.notice_error,"Missing, duplicate or incomplete board inventory prevents all USB startup");
+    }
+    DesktopState explicit_path; explicit_path.select_receiver(3);
+    explicit_path.config.concentrators.boards[0].device_path=a.path;
+    explicit_path.config.lanes.clear(); explicit_path.config.discover_lora=false;
+    explicit_path.use_launch_detection(explicit_path.config);
+    require(!explicit_path.spectrum_only && explicit_path.decode_enabled,
+        "An explicit RAK launch preserves packet/decode choices despite having no SDR lanes");
+    explicit_path.config.concentrators.decode_enabled=false;
+    explicit_path.use_launch_detection(explicit_path.config);
+    require(!explicit_path.spectrum_only && !explicit_path.decode_enabled,
+        "RAK metadata-only packet reception remains distinct from spectrum-only mode");
+    receiver={};explicit_path.start(receiver,true,gps,inventory);
+    require(receiver.rf_starts==1 && receiver.requested.concentrators.boards[0].device_id==a.stable_id &&
+        receiver.requested.concentrators.boards[0].packets_enabled,
+        "Explicit CLI path resolves only its matching unique metadata and preserves requested packets");
+    explicit_path.config.concentrators.boards[0].packets_enabled=false;
+    explicit_path.use_launch_detection(explicit_path.config);
+    require(explicit_path.spectrum_only,"Explicit scan-only launch remains spectrum only");
+    explicit_path.config.concentrators.boards[0].device_id.clear();
+    explicit_path.config.concentrators.boards[0].device_path="/dev/ttyACM98";
+    receiver={};explicit_path.start(receiver,true,gps,inventory);
+    require(receiver.rf_starts==0,"Missing explicit path never falls back to another candidate");
+    ui.config.concentrators.boards[1].device_id=a.stable_id;
+    receiver={};ui.start(receiver,true,gps,inventory);
+    require(receiver.rf_starts==0,"The same board cannot be selected twice");
+}
+
 void optional_gps_startup(const Fixture& fixture) {
     // Plausible POSIX and Windows path syntax reaches the real selection
     // checks; only StartupReceiver sees these strings, never a serial API.
@@ -381,7 +441,7 @@ void frequency_summary_rendering() {
 }
 int main() {
     try {
-        Fixture fixture;defaults_folder_and_optouts(fixture);receiver_offset_survives_restart(fixture);rtl_setup_survives_restart(fixture);consecutive_recordings(fixture);
+        Fixture fixture;defaults_folder_and_optouts(fixture);receiver_offset_survives_restart(fixture);rtl_setup_survives_restart(fixture);concentrator_selection_and_start(fixture);consecutive_recordings(fixture);
         unavailable_settings_or_folder(fixture);optional_gps_startup(fixture);frequency_summary_rendering();
         std::cout<<"Desktop setup and recording integration passed; explicit fixtures only, no windows or USB opened\n";
         return 0;
