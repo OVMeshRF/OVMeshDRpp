@@ -1,12 +1,13 @@
 # Receiver and platform compatibility
 
-OVMeshDR++ provides direct, receive-only USB adapters for **HackRF One and RTL-SDR**, plus an experimental **RAK5146 USB/LBT** concentrator adapter. Select the receiver in the main dropdown while stopped. HackRF and RTL-SDR use the spectrum/waterfall workflow. RAK uses sampled RSSI scans and configured packet reception, with its own recording and reporting semantics. Optional receiver GPS is a separate input. This is experimental source support, with the validation limits below.
+OVMeshDR++ provides direct, receive-only USB adapters for **HackRF One and RTL-SDR**, plus an experimental **RAK5146 USB/LBT** concentrator adapter. **HackRF One is the recommended hardware for wider RF surveys**, with the wider configured span shown below. Select the receiver in the main dropdown while stopped. HackRF and RTL-SDR use the spectrum/waterfall workflow. RAK uses sampled RSSI scans and configured packet reception, with its own recording and reporting semantics. Optional receiver GPS is a separate input. This is experimental source support, with the validation limits below.
 
 ## Receiver capabilities in this build
 
 | Capability | HackRF One | RTL-SDR |
 |---|---|---|
 | Application sample rates | 8, 10, 12, 16 or 20 MS/s | 1 or 2 MS/s |
+| Default survey setup | 10 MHz span at 16 MS/s | 1.5 MHz span at 2 MS/s |
 | Maximum configured spectrum span | 80% of sample rate; up to 16 MHz at 20 MS/s | 0.8 MHz at 1 MS/s; 1.6 MHz at 2 MS/s |
 | Experimental LoRa discovery | Available within supported range/rate settings; processing capacity must be checked | Requires 2 MS/s and a span no wider than 1.5 MHz |
 | Main gain controls | LNA, VGA and RF amplifier | Tuner gain, manual or automatic; actual applied manual gain is recorded |
