@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Prevent system OpenSSL pkg-config metadata from adding an unintended Zlib dependency to the reviewed local crypto build; check Perl's Time::Piece prerequisite before setup starts.
+
 - Add explicit local OpenSSL setup for native Linux/macOS and actionable CMake checks for missing, mismatched or insufficiently hardened crypto dependencies. Normal builds remain offline.
 - Add a direct RTL-SDR receiver choice, receiver-specific controls, saved setup and acquisition provenance. Initial RTL LoRa discovery uses 2 MS/s over a guarded 1.5 MHz span; spectrum-only reception also supports 1 MS/s.
 - Include the pinned minimal librtlsdr source and allocation-failure checks; builds remain offline.

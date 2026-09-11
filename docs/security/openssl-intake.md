@@ -46,6 +46,8 @@ Normal CMake configuration selects the prepared local prefix by default, or an e
 
 ## Build configuration
 
+The helper's probe and application share the same prefix-only `OpenSSL::Crypto` target. System `openssl.pc` metadata is not consulted for this archive: it can describe dependencies such as Zlib that are deliberately absent from the reviewed configuration. Platform thread/dynamic-loader libraries remain explicit, and pkg-config remains available independently for USB adapters.
+
 Build static `libcrypto` with its default provider available for AES-128/256-CTR.
 Disable shared libraries, DSO loading, engines, dynamic modules, automatic
 configuration loading, applications, sockets, HTTP, TLS/DTLS/QUIC, compression and

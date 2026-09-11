@@ -12,6 +12,8 @@ RTL-SDR needs libusb 1.0 development files. Its selected driver sources are incl
 
 ## Prepare the local crypto dependency
 
+Perl must include `Time::Piece`; the helper checks this before downloading or building. Some distributions split it into a separate package. On Fedora, install `perl-Time-Piece` through the distribution package manager. This is a build prerequisite, not an application dependency.
+
 From the checkout directory, explicitly download and build the pinned source:
 
 ```sh
@@ -50,6 +52,19 @@ For a CLI-only compile, add `-DOVMESH_BUILD_DESKTOP=OFF`; this removes the deskt
 Before starting real reception, close Gqrx or other software using the same dongle, select **RTL-SDR / USB** or **HackRF One / USB**, and review the [receiver limits and USB requirements](hardware-compatibility.md). Ordinary startup keeps RF stopped. Linux device permissions and a conflicting DVB driver are separate from an OpenSSL build error; the application does not change them automatically.
 
 ## If configuration still fails
+
+An older setup could report that `OpenSSL::Crypto` refers to missing `ZLIB::ZLIB`, even after successfully compiling OpenSSL. CMake was importing unrelated system `openssl.pc` dependencies into the local `no-zlib` archive. Update the checkout; the helper and application now share a prefix-only crypto target. Installing Zlib is not required for this configuration.
+
+If that failure happened during the final probe, the compiled headers and library remain in the reported work directory's `staged` folder. After updating the checkout, they can be reused without recompiling OpenSSL:
+
+```sh
+cmake --fresh -S . -B build/native -DCMAKE_BUILD_TYPE=Release \
+  -DOPENSSL_ROOT_DIR="$PWD/build/deps/openssl-build-REPLACE_WITH_WORK_ID/staged"
+cmake --build build/native --parallel 4
+ctest --test-dir build/native --output-on-failure
+```
+
+Replace the work-directory placeholder with the directory reported by the helper. Configuration checks its headers and linkage; CTest must still pass the runtime crypto checks before using the build.
 
 Report the exact error, Linux distribution/version, architecture, compiler and CMake versions, and whether the local setup helper completed. A missing prefix, mismatched version, stale cache, missing hardening, and a missing USB development package have different remedies. Do not send private survey files, keys, serial numbers or GPS information. Use [community support](../../SUPPORT.md).
 
