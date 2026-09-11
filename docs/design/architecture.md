@@ -19,6 +19,11 @@ flowchart LR
     W --> DB[Local SQLite session]
     DB --> U[Analysis and reviewed exports]
     S --> V[Live spectrum and waterfall]
+    C[One or two RAK5146 USB concentrators] --> H[Isolated receive-only HAL workers]
+    H --> Q[Configured CRC-checked LoRa frames]
+    Q --> K
+    H --> A[Sampled RSSI histograms]
+    A --> W
 ```
 
 **Waveform discovery does not automatically feed the payload decoder.** Discovery searches for compatible LoRa preambles and infers frequency, bandwidth and spreading factor. Payload processing still requires explicit frequency/BW/SF profiles. Discovering and decoding compatible traffic anywhere in the supplied span remains an unfinished integration requirement. Unknown activity still contributes spectrum measurements.
@@ -31,6 +36,7 @@ flowchart LR
 | Spectrum processor | Complete accepted FFT intervals, frequency-resolved powers/activity masks, energy events and live display values | Uncalibrated dBFS; finite resolution and a fixed activity threshold |
 | Waveform discovery | Shared channelization and bounded background processing for LoRa preamble/BW/SF observations | Separate queue/processing losses; no exhaustive detection or protocol identity guarantee |
 | Profile decoders | Channel extraction, synchronization, symbol decoding and PHY checks for configured lanes | Weak-signal, clock/timing and CRC-performance gaps remain |
+| RAK concentrator workers | One isolated process per selected USB board; configured service-modem reception and auxiliary RSSI sweeps | Sampled energy, not IQ or continuous occupancy; one packet profile per board; no automatic channel discovery |
 | Protocol and keys | Native Meshtastic wire handling, finite explicit survey keyring and bounded generated protobuf decoding | No implicit keys, MeshCore decoder, recipient PKI or authenticated channel-sender identity |
 | Session writer | Allowlisted typed records, SQLite transactions and versioned recording formats | No opaque undecoded payload or raw-IQ field; session files are plaintext |
 | GPS provider | Local device metadata, selected NMEA connection, fix validity and acquisition-time association | Receiver location only; a connection is not a valid fix or a measured accuracy guarantee |
@@ -40,13 +46,15 @@ flowchart LR
 
 Spectrum processing and waveform discovery have separate bounded work paths. The discovery workers process transient complex samples and return bounded observations; they do not directly access SQLite, keys, GPS or UI state. Receiver positions attach using acquisition timing. Queue rejection, abandoned processing and acquisition gaps are recorded separately, so uninterrupted spectrum transport cannot be mistaken for uninterrupted discovery.
 
-Native components share one process. Bounded buffers and checked parsing reduce exposure but do not isolate a faulty library from the application process. See [security and privacy](../security/security-and-privacy.md).
+The SDR, protocol, storage and UI components share one process. Each optional RAK board instead has a separate HAL worker with bounded local IPC, strict record parsing, deadlines and explicit shutdown. Its process boundary contains HAL global state and failures but is not an operating-system security sandbox. Bounded buffers and checked parsing reduce exposure without guaranteeing isolation from every native-code defect. See [security and privacy](../security/security-and-privacy.md).
 
 Receiver configuration changes require stopping reception and starting a new session. Multiple mutable configuration epochs within one saved session are not implemented. Key changes use a stop/drain/clear boundary; there is no asynchronous key-policy service or persistent key vault. Ordinary startup creates a fresh workspace with RF stopped; an enabled recognized or remembered GPS may connect automatically. Demo, historical and managed modes remain isolated from ordinary preferences.
 
 ## Persistence and analysis
 
 The session writer selects Compact schema 6 by default or Detailed schema 5. Both retain fine joint activity masks and original GPS associations. Compact storage shares power means/maxima over at most one second and records that wider support. It cannot reconstruct discarded subsecond power history. See [data and retention](data-model-and-retention.md).
+
+RAK sessions use schema 7 with complete RSSI histograms, configured packet profiles, receiver metadata and board health. Their analysis path never invents FFT coverage or busy time from sampled RSSI. See [concentrator measurements](concentrator-measurements.md).
 
 Analysis and reporting read a consistent SQLite snapshot. Frequency selection combines recorded activity masks using time unions, while location filters use associated receiver fixes. The live frequency summary is available without disk recording; detailed retrospective queries require saved history. UI and CLI use shared query/report logic. CSV, GeoJSON and HTML reports expose scope, coverage and relevant privacy choices. Measurement definitions are in the [spectrum specification](spectrum-measurement-record.md).
 

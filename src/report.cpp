@@ -124,10 +124,11 @@ struct Context {
     std::vector<std::string> metadata() const {
         const auto& c = summary.config;
         const bool rtl=!c.synthetic&&c.hardware_receiver==HardwareReceiver::RtlSdr;
+        const bool rak=!c.synthetic&&c.hardware_receiver==HardwareReceiver::Rak5146;
         std::vector<std::string> result{text(summary.session_id),std::to_string(schema),text(c.synthetic ? "synthetic" : receiver_source_name(c)),
-            integer(c.sample_rate),integer(c.center_hz),schema>=2?number(double(c.tuning_offset_hz)):"",rtl?"":integer(c.lna_gain),
-            rtl?"":integer(c.vga_gain),rtl?"":integer(c.amplifier),number(c.activity_threshold_dbfs),schema>=4?number(summary.spectrum_bin_width_hz):"",
-            schema>=4?number(summary.spectrum_enbw_hz):"",integer(summary.incomplete),integer(options.query.geographic_filter),integer(summary.dropped_samples),number(lower),number(upper),
+            rak?"":integer(c.sample_rate),integer(c.center_hz),schema>=2?number(double(c.tuning_offset_hz)):"",(rtl||rak)?"":integer(c.lna_gain),
+            (rtl||rak)?"":integer(c.vga_gain),(rtl||rak)?"":integer(c.amplifier),rak?"":number(c.activity_threshold_dbfs),(schema>=4&&!rak)?number(summary.spectrum_bin_width_hz):"",
+            (schema>=4&&!rak)?number(summary.spectrum_enbw_hz):"",integer(summary.incomplete),integer(options.query.geographic_filter),integer(summary.dropped_samples),number(lower),number(upper),
             rtl&&!c.rtl_auto_gain?number(c.rtl_gain_tenths_db/10.0):"",rtl?integer(c.rtl_auto_gain):""};
         if (options.privacy.include_provenance) append(result,{text(c.antenna_description),text(c.receiver_description),text(c.survey_notes)});
         return result;
@@ -409,7 +410,10 @@ void track_report(const SessionStore& store,const Context& c,Csv& csv) {
     // GPS fixes carry original UTC and monotonic clocks, not session elapsed.
     // Use the recorded acquisition UTC anchor, never wall clock at export time.
     std::optional<double> utc_anchor;
-    store.visit_tiles([&](const SpectrumTile& tile){if(!utc_anchor)utc_anchor=tile.utc_start_seconds-tile.elapsed_start_seconds;});
+    if(c.schema==7) {
+        store.visit_concentrator_scans([&](const ConcentratorScan& scan){if(!utc_anchor)utc_anchor=scan.utc_start_seconds-scan.elapsed_start_seconds;});
+        if(!utc_anchor)store.visit_receptions([&](const Reception& r){if(!utc_anchor)utc_anchor=r.utc_seconds-r.elapsed_seconds;});
+    } else store.visit_tiles([&](const SpectrumTile& tile){if(!utc_anchor)utc_anchor=tile.utc_start_seconds-tile.elapsed_start_seconds;});
     if(!utc_anchor)throw std::runtime_error("Receiver-track filtering requires a saved acquisition time anchor");
     std::vector<std::string> header{"elapsed_s","time_association"};
     append(header,position_header());append(header,c.metadata_header());csv.header(header);
@@ -429,7 +433,7 @@ void content_report(const SessionStore& store,const Context& c,Csv& csv) {
         "next_hop","relay_node","want_ack","via_mqtt","want_response","request_id","reply_id","signature_present",
         "content_kind","text","node_id","long_name","short_name","sender_latitude","sender_longitude","sender_altitude_m",
         "voltage","temperature","humidity","battery_percent","channel_utilization","air_util_tx","reported_time","hardware_model","role",
-        "routing_error","routing_variant","route","route_back","snr_towards_db_x4","snr_back_db_x4"};
+        "routing_error","routing_variant","route","route_back","snr_towards_db_x4","snr_back_db_x4","concentrator_board_index","packet_rssi_dbm_uncalibrated","board_hardware_timestamp_us","bandwidth_interpretation","hardware_timestamp_provenance"};
     if(c.options.privacy.include_receiver_positions)append(header,position_header());append(header,c.metadata_header());csv.header(header);
     store.visit_receptions([&](const Reception& r){
         if(!r.crc_valid||r.decoded.status!=protocol::Status::decoded||!r.decoded.authorized||!c.selected(r.frequency_hz,r.bandwidth_hz,r.elapsed_seconds,r.receiver_position))return;
@@ -440,10 +444,76 @@ void content_report(const SessionStore& store,const Context& c,Csv& csv) {
             text(p.kind),text(p.text),text(p.node_id),text(p.long_name),text(p.short_name),optional_coordinate(p.latitude,c.options.privacy.coordinate_decimals),optional_coordinate(p.longitude,c.options.privacy.coordinate_decimals),optional_number(p.altitude),
             optional_number(p.voltage),optional_number(p.temperature),optional_number(p.humidity),optional_number(p.battery_percent),optional_number(p.channel_utilization),optional_number(p.air_util_tx),
             optional_number(p.reported_time),optional_number(p.hardware_model),optional_number(p.role),optional_number(p.routing_error),c.schema>=3?text(p.routing_variant):"",list(p.route),c.schema>=3?list(p.route_back):"",c.schema>=3?list(p.snr_towards):"",c.schema>=3?list(p.snr_back):""};
+        if(r.concentrator)append(row,{integer(r.concentrator->board_index),number(r.concentrator->rssi_dbm),integer(r.concentrator->hardware_timestamp_us),text("hardware configured modem bandwidth; not measured signal width"),text("board-local wrapping microsecond counter; not synchronized across boards or GPS")});
+        else append(row,std::vector<std::string>(5));
         if(c.options.privacy.include_receiver_positions)append(row,position_fields(r.receiver_position,c.options.privacy));append(row,c.metadata());csv.write(row);
     });
 }
 #include "analysis_report.hpp"
+
+// Concentrator scans have a different observation denominator from SDR FFTs.
+// Never pass them through AggregateReport or manufacture unobserved time rows.
+constexpr const char* rak_method="SX1261 sampled RSSI; nominal 234300 Hz filter; vendor -11 dB offset; uncalibrated; 4 dB quantized histogram";
+constexpr const char* rak_limit="Sample exceedance is not continuous occupancy or packet airtime. Host transaction bounds are not exact RF dwell. Frequencies and times without samples are unassessed. Included boundary scans retain their whole histograms.";
+struct RakAggregate {
+    uint64_t scans=0,samples=0,above=0,boundaries=0,missing_gps=0;
+    double first=1e10,last=0,utc_first=1e15,utc_last=0;
+    std::array<uint64_t,33> counts{};
+    std::optional<PositionFix> last_fix;
+    void add(const ConcentratorScan& s,bool boundary) {
+        const auto n=concentrator_sample_count(s);
+        if(samples>uint64_t(INT64_MAX)-n)throw std::runtime_error("Concentrator report sample total exceeds supported bounds");
+        ++scans;samples+=n;above+=uint64_t(std::llround(concentrator_fraction_above(s,-87)*double(n)));
+        boundaries+=boundary?1:0;missing_gps+=s.receiver_position?0:1;
+        first=std::min(first,s.elapsed_start_seconds);last=std::max(last,s.elapsed_end_seconds);utc_first=std::min(utc_first,s.utc_start_seconds);utc_last=std::max(utc_last,s.utc_end_seconds);
+        for(size_t i=0;i<33;++i)counts[i]+=s.counts[i];if(s.receiver_position)last_fix=s.receiver_position;
+    }
+};
+bool rak_selected(const ConcentratorScan& s,const Context& c) {
+    return double(s.frequency_hz)+117150>c.lower&&double(s.frequency_hz)-117150<c.upper&&
+        s.elapsed_end_seconds>c.options.query.elapsed_start&&s.elapsed_start_seconds<c.end&&in_region(s.receiver_position,c.options.query);
+}
+bool rak_boundary(const ConcentratorScan& s,const Context& c) {
+    return double(s.frequency_hz)-117150<c.lower||double(s.frequency_hz)+117150>c.upper||
+        s.elapsed_start_seconds<c.options.query.elapsed_start||s.elapsed_end_seconds>c.end;
+}
+void rak_csv_report(const SessionStore& store,const Context& c,Csv& csv) {
+    const bool grouped=c.options.kind==ReportKind::FrequencySummary;
+    std::vector<std::string> header{"record_type","board_index","frequency_hz","nominal_filter_bandwidth_hz","scans","rssi_samples","quantized_threshold_dbm","sample_exceedance_pct","host_elapsed_start_s","host_elapsed_end_s","host_utc_start_s","host_utc_end_s","boundary_scans","scans_without_receiver_fix","histogram_counts_33","configured_packet_frequency_hz","configured_packet_bandwidth_hz","configured_packet_sf","configured_packet_sync_word","packets_enabled","decode_enabled","method","coverage_interpretation","position_association","session_id","recording_schema_version","source","requested_lower_hz","requested_upper_hz","requested_elapsed_start_s","requested_elapsed_end_s","geographic_filter_applied","scan_step_hz","offset_hz","recording_incomplete"};
+    if(c.options.privacy.include_receiver_positions)append(header,position_header());
+    if(c.options.privacy.include_provenance)append(header,{"antenna_description","receiver_description","survey_notes"});
+    csv.header(header);
+    const auto write=[&](unsigned board,uint64_t frequency,const RakAggregate& a) {
+        const auto& profile=c.summary.config.concentrators.boards.at(board);
+        std::string counts;for(const auto count:a.counts){if(!counts.empty())counts+=';';counts+=integer(count);}
+        std::vector<std::string> row{text(grouped?"concentrator_frequency_summary":"concentrator_scan"),integer(board),integer(frequency),integer(234300),integer(a.scans),integer(a.samples),number(-87),percent(double(a.above),double(a.samples)),number(a.first),number(a.last),number(a.utc_first),number(a.utc_last),integer(a.boundaries),integer(a.missing_gps),text(counts),integer(profile.frequency_hz),integer(profile.bandwidth_hz),integer(profile.spreading_factor),integer(profile.sync_word),integer(profile.packets_enabled),integer(c.summary.config.concentrators.decode_enabled),text(rak_method),text(rak_limit),text(grouped?"last included receiver fix; not representative of whole frequency summary":"receiver fix at host scan completion; no transmitter position"),text(c.summary.session_id),integer(7),text("rak5146"),number(c.lower),number(c.upper),number(c.options.query.elapsed_start),c.options.query.elapsed_end>0?number(c.end):"",integer(c.options.query.geographic_filter),integer(c.summary.config.concentrators.scan_step_hz),number(double(c.summary.config.tuning_offset_hz)),integer(c.summary.incomplete)};
+        if(c.options.privacy.include_receiver_positions)append(row,position_fields(a.last_fix,c.options.privacy));
+        if(c.options.privacy.include_provenance)append(row,{text(c.summary.config.antenna_description),text(c.summary.config.receiver_description),text(c.summary.config.survey_notes)});
+        csv.write(row);
+    };
+    std::map<std::pair<unsigned,uint64_t>,RakAggregate> groups;
+    store.visit_concentrator_scans([&](const ConcentratorScan& s){if(!rak_selected(s,c))return;
+        if(grouped){auto key=std::pair{s.board_index,s.frequency_hz};if(!groups.contains(key)&&groups.size()>=aggregate_limit)throw std::runtime_error("Too many concentrator frequency groups");groups[key].add(s,rak_boundary(s,c));}
+        else{RakAggregate a;a.add(s,rak_boundary(s,c));write(s.board_index,s.frequency_hz,a);}
+    });
+    for(const auto& [key,a]:groups)write(key.first,key.second,a);
+}
+void rak_html_report(const SessionStore& store,const Context& c,const std::function<void(std::string_view)>& emit) {
+    std::map<std::pair<unsigned,uint64_t>,RakAggregate> groups;
+    store.visit_concentrator_scans([&](const ConcentratorScan& s){if(!rak_selected(s,c))return;auto key=std::pair{s.board_index,s.frequency_hz};if(!groups.contains(key)&&groups.size()>=aggregate_limit)throw std::runtime_error("Too many concentrator report frequencies");groups[key].add(s,rak_boundary(s,c));});
+    emit("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Concentrator RF survey</title><style>body{font:16px system-ui;max-width:1200px;margin:2em auto;padding:1em}table{border-collapse:collapse;width:100%}th,td{padding:.5em;border-bottom:1px solid #bbb;text-align:left}small{color:#444}</style><h1>Concentrator RF survey</h1>");
+    emit("<p>"+html_escape(c.summary.session_id)+"</p><p>"+html_escape(rak_method)+".</p><p>"+html_escape(rak_limit)+"</p><p>Sample threshold: <strong>-87 dBm</strong>, a 4 dB histogram boundary. This nominal vendor power scale has not been calibrated. Scan centers describe overlapping receiver filters; their sample counts must not be added as independent band occupancy.</p>");
+    emit("<p>Requested frequency interval: "+human_number(c.lower/1e6,6)+"–"+human_number(c.upper/1e6,6)+" MHz. Requested elapsed interval: "+human_number(c.options.query.elapsed_start)+"–"+(c.options.query.elapsed_end>0?human_number(c.end):std::string("end"))+" s. Recording "+(c.summary.incomplete?std::string("incomplete"):std::string("completed"))+".</p>");
+    emit("<p>Scan step: "+integer(c.summary.config.concentrators.scan_step_hz)+" Hz. Offset: "+number(double(c.summary.config.tuning_offset_hz))+" Hz; physical tune commands add this offset to the nominal scan centers. Geographic filter: "+std::string(c.options.query.geographic_filter?"applied":"none")+".</p>");
+    if(c.options.privacy.include_provenance)emit("<p>Antenna: "+html_escape(c.summary.config.antenna_description)+"<br>Receiver: "+html_escape(c.summary.config.receiver_description)+"<br>Notes: "+html_escape(c.summary.config.survey_notes)+"</p>");
+    emit("<h2>Configured packet receivers</h2><p>These are configured modem settings, not measured signal bandwidths. Packet decoding covers these profiles only; RSSI scanning does not identify protocols.</p><ul>");
+    for(size_t i=0;i<c.summary.config.concentrators.boards.size();++i){const auto& b=c.summary.config.concentrators.boards[i];emit("<li>Board "+integer(i+1)+": "+human_number(double(b.frequency_hz)/1e6,6)+" MHz, "+integer(b.bandwidth_hz)+" Hz, SF"+integer(b.spreading_factor)+", sync word "+integer(b.sync_word)+"; packets "+(b.packets_enabled?"enabled":"disabled")+".</li>");}
+    emit("</ul><p>Authorized payload decoding "+std::string(c.summary.config.concentrators.decode_enabled?"enabled":"disabled")+". Keys and device paths are not included.</p><h2>Samples by frequency</h2><table><thead><tr><th>Board</th><th>Center MHz</th><th>Scans / samples</th><th>Samples at or above -87 dBm</th><th>Host elapsed interval (s)</th><th>Host UTC interval</th><th>Boundary scans</th><th>RSSI histogram</th>");
+    if(c.options.privacy.include_receiver_positions)emit("<th>Last included receiver fix</th>");emit("</tr></thead><tbody>");
+    for(const auto& [key,a]:groups){emit("<tr><td>"+integer(key.first+1)+"</td><td>"+human_number(double(key.second)/1e6,6)+"</td><td>"+integer(a.scans)+" / "+integer(a.samples)+"</td><td>"+human_percent(double(a.above),double(a.samples))+"</td><td>"+human_number(a.first)+"–"+human_number(a.last)+"</td><td>"+html_escape(human_utc(a.utc_first))+"–"+html_escape(human_utc(a.utc_last))+"</td><td>"+integer(a.boundaries)+"</td><td><details><summary>33 bins</summary><pre>");
+        for(unsigned i=0;i<33;++i){const std::string band=i==0?">= -11":i==32?"< -135":"["+number(concentrator_bin_lower_dbm(i))+", "+number(concentrator_bin_lower_dbm(i-1))+")";emit(html_escape(band)+" dBm: "+integer(a.counts[i])+"\n");}emit("</pre></details></td>");if(c.options.privacy.include_receiver_positions)emit("<td>"+(a.last_fix?human_number(a.last_fix->latitude,c.options.privacy.coordinate_decimals)+", "+human_number(a.last_fix->longitude,c.options.privacy.coordinate_decimals):std::string("Unavailable"))+"</td>");emit("</tr>");}
+    emit("</tbody></table><p>Empty selections have no recorded samples, not proven quiet airwaves. A last receiver fix describes one scan endpoint, not every sample in its frequency summary. The detailed CSV preserves all 33 histogram bins and per-scan intervals. No external map, script or network resource is used.</p></html>");
+}
 }
 
 const char* report_kind_name(ReportKind kind) {
@@ -467,6 +537,11 @@ void export_survey_report(const SessionStore& store,const std::string& path,cons
         throw std::runtime_error("Choose .html for an analysis report or .csv for a data report");
     store.write_report_file(path,[&](const std::function<void(std::string_view)>& emit){
         const Context context(options,store.read(),store.schema_version());Csv csv{emit};
+        if(context.summary.config.hardware_receiver==HardwareReceiver::Rak5146&&!context.summary.config.synthetic) {
+            if(options.kind==ReportKind::Analysis){rak_html_report(store,context,emit);return;}
+            if(options.kind==ReportKind::FrequencySummary||options.kind==ReportKind::TimeSummary||options.kind==ReportKind::GeographicSummary){rak_csv_report(store,context,csv);return;}
+            if(options.kind==ReportKind::Waveforms)throw std::runtime_error("Concentrator surveys do not contain software waveform-discovery observations");
+        }
         switch(options.kind) {
             case ReportKind::FrequencySummary:case ReportKind::TimeSummary:case ReportKind::GeographicSummary: {
                 AggregateReport report{context};store.visit_tiles([&](const SpectrumTile& tile){report.consume(tile);});

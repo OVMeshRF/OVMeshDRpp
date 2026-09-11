@@ -1,6 +1,6 @@
 # Data model and retention
 
-Status: retention policy with default schema-6 compact recording and optional schema-5 detailed recording. Both preserve the joint activity introduced in schema 4 and waveform records from schema 5. The application records a usable range for arbitrary frequency/bin, elapsed-time and GPS-region analysis. [Implementation status](../engineering/implementation-status.md) separates implementation from validation. This document makes no new live-validation claim.
+Status: SDR retention uses default schema-6 compact recording or optional schema-5 detailed recording. Both preserve the joint activity introduced in schema 4 and waveform records from schema 5. RAK5146 uses separate schema-7 sampled RSSI records, with no fabricated FFT occupancy. The application records a supplied range for frequency, elapsed-time and GPS-region analysis within each receiver's measurement limits. [Implementation status](../engineering/implementation-status.md) separates implementation from validation. This document makes no new live-validation claim.
 
 ## Record families
 
@@ -31,6 +31,12 @@ The schema-4 through schema-6 binary fields have a specific measurement purpose:
 Retain successfully decrypted, validated content from configured authorized profiles when explicitly configured by the operator. Record authentication status honestly. Do not retain content on missing/wrong-key, malformed, ambiguous, or unsupported outcomes.
 
 For undecoded traffic, retain only necessary RF measurements, categorical structural/validation facts, and approved reporting metadata. Exact identifiers from unowned traffic are not needed by default; adding any such field requires an explicit purpose/privacy review.
+
+## Concentrator schema 7
+
+RAK5146 recordings use source discriminator 3 and a versioned extension for board receive profiles, completed 33-bin RSSI histograms, packet RSSI/board timestamps and health counters. The fixed 2,000-sample histograms use a nominal 234,300 Hz filter and uncalibrated vendor power offset; sample exceedance is not continuous occupancy or packet airtime. Host scan intervals and optional full-precision receiver-fix references are retained. USB device paths and identities are excluded from session storage.
+
+The FFT tables/metrology remain empty for this source. Detailed CSV, GeoJSON and concentrator reports retain the measurement's method and limitations. Hardware-configured packet bandwidth stays distinct from measured transmitter width. Existing SDR files are read without migration. See [concentrator measurements](concentrator-measurements.md) for exact encoding, validation, threshold, privacy and report-selection semantics.
 
 ## Compact schema 6
 
@@ -64,9 +70,9 @@ Unencrypted content is not eligible for persistence merely because it is readabl
 
 ## Desktop convenience settings
 
-Versioned desktop preferences are separate from the survey schema. Format 6 stores recording/GPS switches and folder, GPS identity/baud, receiver source/frequency/rate/span, HackRF gains/amplifier, RTL tuner gain and automatic-gain mode, signed Offset, Compact/Detailed mode, discovery/decoding/Spectrum-only choices, typography and position-display mode. Ordinary startup opens a fresh workspace with RF stopped. New preferences enable recording and GPS, enable waveform discovery, arm authorized decoding with an empty keyring, and use Compact recording with zero Offset. Explicit opt-outs persist. GPS auto-connect is limited to the enabled uniquely recognized or remembered selected device.
+Versioned desktop preferences are separate from the survey schema. Format 7 stores recording/GPS switches and folder, GPS identity/baud, receiver source/frequency/rate/span, HackRF gains/amplifier, RTL tuner gain and automatic-gain mode, signed Offset, Compact/Detailed mode, discovery/decoding/Spectrum-only choices, typography and position-display mode. It adds the RAK source, one or two explicitly selected local USB path/identity pairs, per-board packet profiles, and scan/decode settings. These USB identities remain local preferences and are excluded from RAK survey records. Ordinary startup opens a fresh workspace with RF stopped. New preferences enable recording and GPS, enable waveform discovery, arm authorized decoding with an empty keyring, and use Compact recording with zero Offset. Explicit opt-outs persist. GPS auto-connect is limited to the enabled uniquely recognized or remembered selected device.
 
-Preference formats 1–5 remain readable. Existing fields and opt-outs survive migration; absent fields use documented defaults, and the next save writes format 6. These settings contain no keys, decoded content, coordinates or export privacy choices. Offset applies to the receiver setup, resets when switching receiver type, and does not rewrite historical survey records. Every new recorded survey receives a new filename; restarting does not append to or overwrite an earlier session. Platform storage locations and private-file behavior are in [deployment](../operations/deployment.md).
+Preference formats 1–6 remain readable. Existing fields and opt-outs survive migration; absent fields use documented defaults, and the next save writes format 7. These settings contain no keys, decoded content, coordinates or export privacy choices. Offset applies to the receiver setup, resets when switching receiver type, and does not rewrite historical survey records. Every new recorded survey receives a new filename; restarting does not append to or overwrite an earlier session. Platform storage locations and private-file behavior are in [deployment](../operations/deployment.md).
 
 Malformed preferences are left untouched. Live frequency summaries use current engine aggregates and do not create historical data when recording is disabled. Saved detailed queries use recorded spectrum measurements and, for schemas 5–6, waveform evidence; explicit refresh is required.
 

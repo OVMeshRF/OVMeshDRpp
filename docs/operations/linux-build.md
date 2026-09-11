@@ -6,7 +6,9 @@ OVMeshDR++ is a C++20 application. It does not need a Python virtual environment
 
 Use your distribution's trusted package manager to provide a C++20 compiler and C development environment, CMake 3.24 or newer, make, Perl 5, Python 3.9+, and pkg-config. Desktop builds also need OpenGL and X11 development files, including RandR, Xinerama, Xcursor and XInput headers. See [GLFW's Linux build prerequisites](https://www.glfw.org/docs/latest/compile_guide.html#compile_deps). Native Wayland is disabled; use X11 or XWayland.
 
-RTL-SDR needs libusb 1.0 development files. Its selected driver sources are included. HackRF additionally needs libhackrf development files. You can build only the RTL adapter with `-DOVMESH_ENABLE_HACKRF=OFF`. The build reports missing receiver dependencies; successfully compiling the UI does not establish that a USB adapter was included.
+RTL-SDR needs libusb 1.0 development files. Its selected driver sources are included. HackRF additionally needs libhackrf development files. To build the RTL adapter without the other hardware adapters, use `-DOVMESH_ENABLE_HACKRF=OFF -DOVMESH_ENABLE_RAK5146=OFF`. The build reports missing receiver dependencies; successfully compiling the UI does not establish that a USB adapter was included.
+
+Experimental RAK5146 USB/LBT support builds the included minimal Semtech HAL into a separate local worker. It uses USB CDC serial access and does not require a packet forwarder or additional Python package. Linux must provide the child-descriptor isolation checked by CMake (available in glibc 2.34+); otherwise the RAK worker is disabled while other adapters remain available. Use `-DOVMESH_ENABLE_RAK5146=OFF` to omit it. Keep `ovmesh-rak-worker` beside the application executable. See [RAK setup](rak5146.md); Linux live concentrator operation is not yet qualified.
 
 **Do not replace the operating system's OpenSSL to satisfy this project.** The application uses a separate static libcrypto with a reviewed version and build configuration. A system `openssl version` result describes a command-line tool; it does not establish which development headers/library CMake found or whether the required configuration is present.
 
@@ -49,7 +51,7 @@ To make another local crypto build without replacing an existing prefix, use `--
 
 For a CLI-only compile, add `-DOVMESH_BUILD_DESKTOP=OFF`; this removes the desktop OpenGL/X11 build requirement. USB capabilities remain independently selectable. `build/native/ovmesh-cli --help` does not open hardware.
 
-Before starting real reception, close Gqrx or other software using the same dongle, select **RTL-SDR / USB** or **HackRF One / USB**, and review the [receiver limits and USB requirements](hardware-compatibility.md). Ordinary startup keeps RF stopped. Linux device permissions and a conflicting DVB driver are separate from an OpenSSL build error; the application does not change them automatically.
+Before starting real reception, close other software using the selected device and review the [receiver limits and USB requirements](hardware-compatibility.md). For an SDR, select **RTL-SDR / USB** or **HackRF One / USB**. For concentrators, select **RAK5146 USB/LBT**, then explicitly choose one or two known USB candidates in Settings. Ordinary startup keeps RF stopped. Linux serial/USB permissions and a conflicting RTL DVB driver are separate from an OpenSSL build error; the application does not change them automatically. Use the distribution's documented device-access policy, not a root application launch or blanket device permissions.
 
 ## If configuration still fails
 

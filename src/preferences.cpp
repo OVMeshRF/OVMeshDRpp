@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ovmesh/preferences.hpp"
 #include "ovmesh/local_paths.hpp"
+#include "ovmesh/gps_discovery.hpp"
 
 #include <openssl/rand.h>
 #include <array>
@@ -256,7 +257,7 @@ void validate_preferences(const DesktopPreferences& preferences) {
     if (preferences.tuning_offset_hz < -100000 || preferences.tuning_offset_hz > 100000)
         throw std::runtime_error("Receiver tuning offset must be between -100000 and 100000 Hz");
     if (preferences.receiver_source != DesktopReceiver::Synthetic && preferences.receiver_source != DesktopReceiver::HackRf &&
-        preferences.receiver_source != DesktopReceiver::RtlSdr)
+        preferences.receiver_source != DesktopReceiver::RtlSdr && preferences.receiver_source != DesktopReceiver::Rak5146)
         throw std::runtime_error("Unsupported preferred receiver");
     if (preferences.center_hz < 1000000 || preferences.center_hz > 6000000000ULL)
         throw std::runtime_error("Preferred center frequency must be between 1 MHz and 6 GHz");
@@ -270,11 +271,12 @@ void validate_preferences(const DesktopPreferences& preferences) {
         if (preferences.sample_rate != 1000000 && preferences.sample_rate != 2000000)
             throw std::runtime_error("RTL-SDR preferred sample rate must be 1 or 2 MS/s");
         if (preferences.amplifier) throw std::runtime_error("RTL-SDR has no HackRF RF amplifier control");
-    } else switch (preferences.sample_rate) {
+    } else if (preferences.receiver_source != DesktopReceiver::Rak5146) switch (preferences.sample_rate) {
         case 8000000: case 10000000: case 12000000: case 16000000: case 20000000: break;
         default: throw std::runtime_error("Unsupported preferred sample rate");
     }
-    if (preferences.survey_span_hz < 500000 || preferences.survey_span_hz > preferences.sample_rate * 4 / 5)
+    if (preferences.receiver_source != DesktopReceiver::Rak5146 &&
+        (preferences.survey_span_hz < 500000 || preferences.survey_span_hz > preferences.sample_rate * 4 / 5))
         throw std::runtime_error("Preferred survey span must be 0.5 MHz through 80% of sample rate");
     if (preferences.center_hz < preferences.survey_span_hz / 2 ||
         preferences.center_hz + preferences.survey_span_hz / 2 > 6000000000ULL)
@@ -283,6 +285,22 @@ void validate_preferences(const DesktopPreferences& preferences) {
         throw std::runtime_error("Preferred LNA must be 0-40 dB in 8 dB steps; VGA 0-62 dB in 2 dB steps");
     if (preferences.rtl_gain_tenths_db < -100 || preferences.rtl_gain_tenths_db > 600)
         throw std::runtime_error("Preferred RTL-SDR tuner gain must be -10 through 60 dB");
+    for (const auto& board : preferences.concentrators.boards) {
+        if (!valid_text(board.device_path, 1024) || !valid_text(board.device_id, 2048))
+            throw std::runtime_error("Invalid concentrator device preference");
+        if (board.device_path.empty() != board.device_id.empty())
+            throw std::runtime_error("Concentrator selection requires both a path and an identity");
+        if (!board.device_id.empty() && !board.device_id.starts_with("usb:0483:5740:"))
+            throw std::runtime_error("Invalid concentrator USB identity");
+        if (!board.device_path.empty()) {
+            SerialDeviceMetadata metadata;
+            metadata.path = board.device_path; metadata.vendor_id = 0x0483; metadata.product_id = 0x5740;
+            if (!classify_concentrator_serial_device(metadata)) throw std::runtime_error("Invalid local concentrator serial path");
+        }
+    }
+    const bool rak = preferences.receiver_source == DesktopReceiver::Rak5146;
+    validate_concentrator_config(preferences.concentrators, rak ? preferences.center_hz : 915000000,
+        rak ? preferences.survey_span_hz : 26000000, rak ? preferences.tuning_offset_hz : 0, false);
 }
 
 DesktopPreferences parse(const std::string& text) {
@@ -293,7 +311,7 @@ DesktopPreferences parse(const std::string& text) {
     while (start < text.size()) {
         const auto end = text.find('\n', start);
         const auto equal = text.find('=', start);
-        if (end == std::string::npos || equal == std::string::npos || equal >= end || equal == start || fields.size() >= 22)
+        if (end == std::string::npos || equal == std::string::npos || equal >= end || equal == start || fields.size() >= 41)
             throw std::runtime_error("Malformed desktop settings");
         if (!fields.emplace(text.substr(start, equal - start), text.substr(equal + 1, end - equal - 1)).second)
             throw std::runtime_error("Duplicate desktop preference");
@@ -302,7 +320,7 @@ DesktopPreferences parse(const std::string& text) {
     for (const auto* name : {"version", "gps_enabled", "recording_enabled", "recording_directory", "gps_device_id", "gps_baud"})
         if (!fields.contains(name)) throw std::runtime_error("Missing desktop preference");
     const auto& version = fields.at("version");
-    if (version != "1" && version != "2" && version != "3" && version != "4" && version != "5" && version != "6")
+    if (version != "1" && version != "2" && version != "3" && version != "4" && version != "5" && version != "6" && version != "7")
         throw std::runtime_error("Unsupported desktop settings version");
     if ((version == "1" && fields.size() != 6) ||
         (version == "2" && (fields.size() != 7 || !fields.contains("tuning_offset_hz"))) ||
@@ -310,13 +328,13 @@ DesktopPreferences parse(const std::string& text) {
         (version == "4" && (fields.size() != 9 || !fields.contains("tuning_offset_hz") ||
             !fields.contains("discover_lora") || !fields.contains("compact_recording"))))
         throw std::runtime_error("Missing or unknown desktop preference");
-    if (version == "5" || version == "6") {
-        if (fields.size() != (version == "6" ? 22 : 20)) throw std::runtime_error("Missing or unknown desktop preference");
+    if (version == "5" || version == "6" || version == "7") {
+        if (version != "7" && fields.size() != (version == "6" ? 22 : 20)) throw std::runtime_error("Missing or unknown desktop preference");
         for (const auto* name : {"tuning_offset_hz", "discover_lora", "compact_recording", "spectrum_only", "receiver_source",
                 "center_hz", "sample_rate", "survey_span_hz", "lna_gain", "vga_gain", "amplifier", "mixed_fonts",
                 "mobile_position_display", "decode_enabled"})
             if (!fields.contains(name)) throw std::runtime_error("Missing or unknown desktop preference");
-        if (version == "6" && (!fields.contains("rtl_gain_tenths_db") || !fields.contains("rtl_auto_gain")))
+        if (version != "5" && (!fields.contains("rtl_gain_tenths_db") || !fields.contains("rtl_auto_gain")))
             throw std::runtime_error("Missing RTL-SDR desktop preference");
     }
     auto boolean = [&](const char* name) {
@@ -332,8 +350,8 @@ DesktopPreferences parse(const std::string& text) {
     };
     DesktopPreferences result;
     result.gps_enabled = boolean("gps_enabled"); result.recording_enabled = boolean("recording_enabled");
-    if (version == "3" || version == "4" || version == "5" || version == "6") result.discover_lora = boolean("discover_lora");
-    if (version == "4" || version == "5" || version == "6") result.compact_recording = boolean("compact_recording");
+    if (version >= "3") result.discover_lora = boolean("discover_lora");
+    if (version >= "4") result.compact_recording = boolean("compact_recording");
     result.recording_directory = hex_decode(fields.at("recording_directory"), maximum_path_size);
     result.gps_device_id = hex_decode(fields.at("gps_device_id"), maximum_device_id_size);
     const auto& baud = fields.at("gps_baud");
@@ -344,12 +362,13 @@ DesktopPreferences parse(const std::string& text) {
         result.gps_baud = result.gps_baud * 10 + static_cast<unsigned>(digit - '0');
     }
     if (version != "1") integer("tuning_offset_hz", result.tuning_offset_hz);
-    if (version == "5" || version == "6") {
+    if (version == "5" || version == "6" || version == "7") {
         const auto& source = fields.at("receiver_source");
-        if (source != "synthetic" && source != "hackrf" && !(version == "6" && source == "rtl_sdr"))
+        if (source != "synthetic" && source != "hackrf" && !(version >= "6" && source == "rtl_sdr") &&
+            !(version == "7" && source == "rak5146"))
             throw std::runtime_error("Unsupported preferred receiver");
         result.receiver_source = source == "hackrf" ? DesktopReceiver::HackRf :
-            source == "rtl_sdr" ? DesktopReceiver::RtlSdr : DesktopReceiver::Synthetic;
+            source == "rtl_sdr" ? DesktopReceiver::RtlSdr : source == "rak5146" ? DesktopReceiver::Rak5146 : DesktopReceiver::Synthetic;
         integer("center_hz", result.center_hz);
         integer("sample_rate", result.sample_rate);
         integer("survey_span_hz", result.survey_span_hz);
@@ -361,9 +380,31 @@ DesktopPreferences parse(const std::string& text) {
         result.mixed_fonts = boolean("mixed_fonts");
         result.mobile_position_display = boolean("mobile_position_display");
     }
-    if (version == "6") {
+    if (version == "6" || version == "7") {
         integer("rtl_gain_tenths_db", result.rtl_gain_tenths_db);
         result.rtl_auto_gain = boolean("rtl_auto_gain");
+    }
+    if (version == "7") {
+        unsigned count = 0;
+        integer("rak_board_count", count);
+        if (count < 1 || count > 2 || fields.size() != 27 + count * 7)
+            throw std::runtime_error("Missing or unknown concentrator preference");
+        result.concentrators.scan_enabled = boolean("rak_scan_enabled");
+        result.concentrators.decode_enabled = boolean("rak_decode_enabled");
+        integer("rak_scan_step_hz", result.concentrators.scan_step_hz);
+        integer("rak_scan_samples", result.concentrators.scan_samples);
+        result.concentrators.boards.resize(count);
+        for (unsigned i = 0; i < count; ++i) {
+            const auto prefix = "rak_" + std::to_string(i) + "_";
+            auto& board = result.concentrators.boards[i];
+            board.device_path = hex_decode(fields.at(prefix + "path"), 1024);
+            board.device_id = hex_decode(fields.at(prefix + "id"), 2048);
+            board.packets_enabled = boolean((prefix + "packets").c_str());
+            integer((prefix + "frequency_hz").c_str(), board.frequency_hz);
+            integer((prefix + "bandwidth_hz").c_str(), board.bandwidth_hz);
+            integer((prefix + "sf").c_str(), board.spreading_factor);
+            integer((prefix + "sync_word").c_str(), board.sync_word);
+        }
     }
     validate_preferences(result);
     return result;
@@ -371,7 +412,7 @@ DesktopPreferences parse(const std::string& text) {
 
 std::string serialize(const DesktopPreferences& preferences) {
     validate_preferences(preferences);
-    return std::string("version=6\ngps_enabled=") + (preferences.gps_enabled ? "1" : "0") +
+    std::string result = std::string("version=7\ngps_enabled=") + (preferences.gps_enabled ? "1" : "0") +
         "\nrecording_enabled=" + (preferences.recording_enabled ? "1" : "0") +
         "\nrecording_directory=" + hex_encode(preferences.recording_directory) +
         "\ngps_device_id=" + hex_encode(preferences.gps_device_id) +
@@ -382,7 +423,8 @@ std::string serialize(const DesktopPreferences& preferences) {
         "\ndecode_enabled=" + (preferences.decode_enabled ? "1" : "0") +
         "\nspectrum_only=" + (preferences.spectrum_only ? "1" : "0") +
         "\nreceiver_source=" + (preferences.receiver_source == DesktopReceiver::HackRf ? "hackrf" :
-            preferences.receiver_source == DesktopReceiver::RtlSdr ? "rtl_sdr" : "synthetic") +
+            preferences.receiver_source == DesktopReceiver::RtlSdr ? "rtl_sdr" :
+            preferences.receiver_source == DesktopReceiver::Rak5146 ? "rak5146" : "synthetic") +
         "\ncenter_hz=" + std::to_string(preferences.center_hz) +
         "\nsample_rate=" + std::to_string(preferences.sample_rate) +
         "\nsurvey_span_hz=" + std::to_string(preferences.survey_span_hz) +
@@ -393,6 +435,24 @@ std::string serialize(const DesktopPreferences& preferences) {
         "\nmobile_position_display=" + (preferences.mobile_position_display ? "1" : "0") +
         "\nrtl_gain_tenths_db=" + std::to_string(preferences.rtl_gain_tenths_db) +
         "\nrtl_auto_gain=" + (preferences.rtl_auto_gain ? "1" : "0") + "\n";
+    result += "rak_board_count=" + std::to_string(preferences.concentrators.boards.size()) +
+        "\nrak_scan_enabled=" + (preferences.concentrators.scan_enabled ? std::string("1") : std::string("0")) +
+        "\nrak_decode_enabled=" + (preferences.concentrators.decode_enabled ? std::string("1") : std::string("0")) +
+        "\nrak_scan_step_hz=" + std::to_string(preferences.concentrators.scan_step_hz) +
+        "\nrak_scan_samples=" + std::to_string(preferences.concentrators.scan_samples) + "\n";
+    for (size_t i = 0; i < preferences.concentrators.boards.size(); ++i) {
+        const auto prefix = "rak_" + std::to_string(i) + "_";
+        const auto& board = preferences.concentrators.boards[i];
+        result += prefix + "path=" + hex_encode(board.device_path) + "\n" +
+            prefix + "id=" + hex_encode(board.device_id) + "\n" +
+            prefix + "packets=" + (board.packets_enabled ? "1" : "0") + "\n" +
+            prefix + "frequency_hz=" + std::to_string(board.frequency_hz) + "\n" +
+            prefix + "bandwidth_hz=" + std::to_string(board.bandwidth_hz) + "\n" +
+            prefix + "sf=" + std::to_string(board.spreading_factor) + "\n" +
+            prefix + "sync_word=" + std::to_string(board.sync_word) + "\n";
+    }
+    if (result.size() > maximum_settings_size) throw std::runtime_error("Desktop settings exceed their size limit");
+    return result;
 }
 
 bool read_settings(const PreferencePaths& paths, std::string& text) {

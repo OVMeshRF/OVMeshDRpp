@@ -1,6 +1,6 @@
 # Survey methodology and analysis
 
-Status: methodology for the implemented spectrum measurement and retrospective reporting workflow. See [measurement definitions and limits](spectrum-measurement-record.md); later recommendations and protocol discovery remain separate.
+Status: methodology for the implemented spectrum measurement and retrospective reporting workflow. The FFT occupancy sections apply to HackRF/RTL-SDR. RAK5146 follows the separate [sampled concentrator measurement contract](concentrator-measurements.md); the shared planning, provenance and privacy principles still apply. Later recommendations and protocol discovery remain separate.
 
 ## Session preparation
 
@@ -49,9 +49,11 @@ The Survey & GPS and Analyze geographic plots share a display-only choice. **Sta
 
 Use equal physical metre scaling on both axes, latitude-aware longitude distances, dateline wrapping and a metric/feet distance bar. Keep the shorter displayed dimension at least 100 metres to prevent minor position variation from filling the chart. Dateline wrapping applies to rendering only; current geographic filter rectangles do not wrap. Analyze point colors represent the selected raw or outside-center RF busy-time metric, separate from position quality; unavailable comparisons are labeled accordingly. Plot modes and reference markers do not smooth or snap observations, modify stored fixes or RF association, or change export/retention behavior. Synthetic scale and rendering validation is recorded separately from any field positioning accuracy evidence.
 
-## Future scanning
+## Sampled scanning and future extensions
 
-Continuous reception is the agreed baseline. Wider scanning, if added, must retain visit/dwell timing and frequency gaps. Packet-decoding dwell must allow the targeted frame duration; a rapid energy sweep cannot promise complete packets. Consider sampling bias from periodic visits and periodic emitters.
+Continuous reception remains the SDR baseline. The RAK auxiliary scanner now visits configured frequencies sequentially and retains all histogram counters, host operation intervals and eligible receiver-fix associations. Its sample-exceedance fraction cannot be substituted for observed/busy time, and the host interval is not exact RF dwell. Two boards split scan centers while their service modems receive only their configured packet profiles. Missing visits and intervals between visits remain unknown.
+
+Future wider SDR scanning or concentrator profile scheduling must retain visit/dwell timing and frequency gaps. Packet-decoding dwell must allow the targeted frame duration; a rapid energy sweep cannot promise complete packets. Consider sampling bias from periodic visits and periodic emitters. Do not pool uncalibrated RAK RSSI and SDR dBFS into one receiver-independent congestion score.
 
 ## RF planning and regulatory context
 

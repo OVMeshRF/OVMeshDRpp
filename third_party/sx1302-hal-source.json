@@ -1,0 +1,338 @@
+{
+  "name": "Semtech sx1302_hal USB receive subset",
+  "version": "2.1.0",
+  "revision": "4b42025d1751e04632c0b04160e0d29dbbb222a5",
+  "source": "https://github.com/Lora-net/sx1302_hal",
+  "archive_sha256": "c0f9727361ed704d13b5f1521511f4ad2dcfb0a43e58f3fbd390456ee692ade6",
+  "upstream_signature_verified": false,
+  "license": "BSD-3-Clause; Semtech and TinyMT32 notices retained",
+  "selection": "USB HAL, volatile radio firmware arrays and TinyMT32; no packet forwarder, networking, GPS reader, MCU flash image, upstream scripts or SPI/I2C implementations",
+  "modifications": "See sx1302_hal/PROVENANCE.md",
+  "files": [
+    {
+      "path": "LICENSE.TXT",
+      "sha256": "c2e5aab8fbb007c6ad5188406a785b727c017e49ff84fa4e884c41ecdfbcff30",
+      "upstream_sha256": "c2e5aab8fbb007c6ad5188406a785b727c017e49ff84fa4e884c41ecdfbcff30"
+    },
+    {
+      "path": "PROVENANCE.md",
+      "sha256": "53f8226e889da8945ecade38a88c11407d2c7b475917771e14eb9055bc448c4c",
+      "upstream_sha256": null
+    },
+    {
+      "path": "compat/no_external_bus.c",
+      "sha256": "383872546a2bf5bd5909e650611d482e243b608660282a2de6dbc4c83c03a3a0",
+      "upstream_sha256": null
+    },
+    {
+      "path": "compat/quiet_log.h",
+      "sha256": "8cfe3918bd62f6d21716949b41adf8bbc232ae628d3e2e55c087281417126ca1",
+      "upstream_sha256": null
+    },
+    {
+      "path": "libloragw/inc/config.h",
+      "sha256": "bb18d26ff985c8a9e715c7f7f6e6f986e6646820d2b77a907db093029d480f92",
+      "upstream_sha256": null
+    },
+    {
+      "path": "libloragw/inc/loragw_ad5338r.h",
+      "sha256": "935e07df2625e3322d3f3b23986a6bc4f0ae8972e1e4f7199aed4780f2631b1e",
+      "upstream_sha256": "935e07df2625e3322d3f3b23986a6bc4f0ae8972e1e4f7199aed4780f2631b1e"
+    },
+    {
+      "path": "libloragw/inc/loragw_agc_params.h",
+      "sha256": "2d2961980396af9ec98a752a45f7b8319dd29b3c31024a810ebc82b71eb79480",
+      "upstream_sha256": "2d2961980396af9ec98a752a45f7b8319dd29b3c31024a810ebc82b71eb79480"
+    },
+    {
+      "path": "libloragw/inc/loragw_aux.h",
+      "sha256": "ae05362c172ae830debddc557d744dcf835f8cf07d8b6769bd6d550800e5e082",
+      "upstream_sha256": "ae05362c172ae830debddc557d744dcf835f8cf07d8b6769bd6d550800e5e082"
+    },
+    {
+      "path": "libloragw/inc/loragw_cal.h",
+      "sha256": "0604e802b97f7314ec66c7087d04f6c497cbc23fa4d4fd8b9c826ebc680b2bcc",
+      "upstream_sha256": "0604e802b97f7314ec66c7087d04f6c497cbc23fa4d4fd8b9c826ebc680b2bcc"
+    },
+    {
+      "path": "libloragw/inc/loragw_com.h",
+      "sha256": "3346686cd912070275813c8c10ed38ce79fdfd6cb69dd9ae2043b4476e8a45f7",
+      "upstream_sha256": "3346686cd912070275813c8c10ed38ce79fdfd6cb69dd9ae2043b4476e8a45f7"
+    },
+    {
+      "path": "libloragw/inc/loragw_debug.h",
+      "sha256": "f7829d11b73e712c77aa17abe9f0f48d102104ef25e353992864d8914e5911db",
+      "upstream_sha256": "f7829d11b73e712c77aa17abe9f0f48d102104ef25e353992864d8914e5911db"
+    },
+    {
+      "path": "libloragw/inc/loragw_gps.h",
+      "sha256": "aecbd2cc9753c10bcf68df8443e55c27b1378f6c14aaffa7d2955dbab434d878",
+      "upstream_sha256": "aecbd2cc9753c10bcf68df8443e55c27b1378f6c14aaffa7d2955dbab434d878"
+    },
+    {
+      "path": "libloragw/inc/loragw_hal.h",
+      "sha256": "8900221c53749353b4a95d70f6c24005bc466a1ff91ee07eb2af1ec2af5870cd",
+      "upstream_sha256": "8900221c53749353b4a95d70f6c24005bc466a1ff91ee07eb2af1ec2af5870cd"
+    },
+    {
+      "path": "libloragw/inc/loragw_i2c.h",
+      "sha256": "58123570e2a863d0e382d4682c136eefbef798cebd789b90b68049c2976f019f",
+      "upstream_sha256": "58123570e2a863d0e382d4682c136eefbef798cebd789b90b68049c2976f019f"
+    },
+    {
+      "path": "libloragw/inc/loragw_lbt.h",
+      "sha256": "d4f7522bc057f0fd1c25be4c2c62ce9dcfd4ba4f1123348141b28dfa9dfa1e0f",
+      "upstream_sha256": "d4f7522bc057f0fd1c25be4c2c62ce9dcfd4ba4f1123348141b28dfa9dfa1e0f"
+    },
+    {
+      "path": "libloragw/inc/loragw_mcu.h",
+      "sha256": "98ce661e04f4783e9fa05d4f04269f96321af8d299debe3f3020a786a70c729a",
+      "upstream_sha256": "40ebbe869e93c428dbd0c582e3ebef3cdcd715e067a55a0b9ca483a5e6faa040"
+    },
+    {
+      "path": "libloragw/inc/loragw_reg.h",
+      "sha256": "ffe2fc0d266acebb3e43f3ff2506c8bcfd1141207be9cdb2547714aaf3240376",
+      "upstream_sha256": "ffe2fc0d266acebb3e43f3ff2506c8bcfd1141207be9cdb2547714aaf3240376"
+    },
+    {
+      "path": "libloragw/inc/loragw_spi.h",
+      "sha256": "b23d6fe959d4ca04a9b1911063bd505524a3fb60890c4e82203e59b2a5d55333",
+      "upstream_sha256": "b23d6fe959d4ca04a9b1911063bd505524a3fb60890c4e82203e59b2a5d55333"
+    },
+    {
+      "path": "libloragw/inc/loragw_stts751.h",
+      "sha256": "6354eed997ca83c3fae0ec23eaf96242c568bdf2d27ef1a1d4e387244370221d",
+      "upstream_sha256": "6354eed997ca83c3fae0ec23eaf96242c568bdf2d27ef1a1d4e387244370221d"
+    },
+    {
+      "path": "libloragw/inc/loragw_sx1250.h",
+      "sha256": "fb98a725fd2bf9f93b137e8c6f7d159ef473d43f3d9d1605a73db3ef1d2b73bd",
+      "upstream_sha256": "fb98a725fd2bf9f93b137e8c6f7d159ef473d43f3d9d1605a73db3ef1d2b73bd"
+    },
+    {
+      "path": "libloragw/inc/loragw_sx125x.h",
+      "sha256": "b71b4700188615e3007a8401f4ac601509f7322499a2d62a5cd6baff130a035d",
+      "upstream_sha256": "b71b4700188615e3007a8401f4ac601509f7322499a2d62a5cd6baff130a035d"
+    },
+    {
+      "path": "libloragw/inc/loragw_sx1261.h",
+      "sha256": "07c781b8ecea24b49f760d112108512cb6071624456b986c333980b6ea8e4d5d",
+      "upstream_sha256": "07c781b8ecea24b49f760d112108512cb6071624456b986c333980b6ea8e4d5d"
+    },
+    {
+      "path": "libloragw/inc/loragw_sx1302.h",
+      "sha256": "9f779c019cc28075da2b02dc160da86679855653f77d80e488e8797141759c46",
+      "upstream_sha256": "9f779c019cc28075da2b02dc160da86679855653f77d80e488e8797141759c46"
+    },
+    {
+      "path": "libloragw/inc/loragw_sx1302_rx.h",
+      "sha256": "54ccaa012a87b6a0d38d5dc5787dc45e3fb29513eeee77f138d922ec2f62f988",
+      "upstream_sha256": "54ccaa012a87b6a0d38d5dc5787dc45e3fb29513eeee77f138d922ec2f62f988"
+    },
+    {
+      "path": "libloragw/inc/loragw_sx1302_timestamp.h",
+      "sha256": "acea4927c5a816c36a51f39d4c066229a92c55d05e72b2f75622868a2b7fc727",
+      "upstream_sha256": "acea4927c5a816c36a51f39d4c066229a92c55d05e72b2f75622868a2b7fc727"
+    },
+    {
+      "path": "libloragw/inc/loragw_usb.h",
+      "sha256": "8c53d181e3d19363439b2590533c0af169104cd51a95771d9387a353c0b40cba",
+      "upstream_sha256": "8c53d181e3d19363439b2590533c0af169104cd51a95771d9387a353c0b40cba"
+    },
+    {
+      "path": "libloragw/inc/sx1250_com.h",
+      "sha256": "bbc64fd839ba47c7cd5f3023e9690cb1473ba3e02a9eb2580e5d328e29b8e394",
+      "upstream_sha256": "bbc64fd839ba47c7cd5f3023e9690cb1473ba3e02a9eb2580e5d328e29b8e394"
+    },
+    {
+      "path": "libloragw/inc/sx1250_defs.h",
+      "sha256": "9f115d50f3e8818a89aee5c1a78a429edffcdb835c88d6988f0b01a66db8fc53",
+      "upstream_sha256": "9f115d50f3e8818a89aee5c1a78a429edffcdb835c88d6988f0b01a66db8fc53"
+    },
+    {
+      "path": "libloragw/inc/sx1250_spi.h",
+      "sha256": "949874e7f8f137c4cac2e9f45c75cdcaf5a973f7c00451ec8584a54a2dc54c88",
+      "upstream_sha256": "949874e7f8f137c4cac2e9f45c75cdcaf5a973f7c00451ec8584a54a2dc54c88"
+    },
+    {
+      "path": "libloragw/inc/sx1250_usb.h",
+      "sha256": "333bb7580714ce35bbcf15c865e3314b61af26163cdada4a0c86989776f52005",
+      "upstream_sha256": "333bb7580714ce35bbcf15c865e3314b61af26163cdada4a0c86989776f52005"
+    },
+    {
+      "path": "libloragw/inc/sx125x_com.h",
+      "sha256": "f0d89bd90aa0fa5109cea2840bbea0cf36f850910bb4120e5cbde6b9eda7a8bc",
+      "upstream_sha256": "f0d89bd90aa0fa5109cea2840bbea0cf36f850910bb4120e5cbde6b9eda7a8bc"
+    },
+    {
+      "path": "libloragw/inc/sx125x_spi.h",
+      "sha256": "c5984d59c612d1d90329f9473718638a0228d9a085559feb9207a99764581e64",
+      "upstream_sha256": "c5984d59c612d1d90329f9473718638a0228d9a085559feb9207a99764581e64"
+    },
+    {
+      "path": "libloragw/inc/sx1261_com.h",
+      "sha256": "9fe52b9df54b30676212c1f91e643e386b5a866de52b0c5b63370bfc6ff91da2",
+      "upstream_sha256": "9fe52b9df54b30676212c1f91e643e386b5a866de52b0c5b63370bfc6ff91da2"
+    },
+    {
+      "path": "libloragw/inc/sx1261_defs.h",
+      "sha256": "a9ad620ce27f40ab175fffd9fc06839e8e24a37cf4d50eda0f5fcd8c6ffd6c03",
+      "upstream_sha256": "a9ad620ce27f40ab175fffd9fc06839e8e24a37cf4d50eda0f5fcd8c6ffd6c03"
+    },
+    {
+      "path": "libloragw/inc/sx1261_spi.h",
+      "sha256": "1f3a6a2b9261e9ca3df58ca2c01952b502608936e8343b716dcf7ebd3dabfe4b",
+      "upstream_sha256": "1f3a6a2b9261e9ca3df58ca2c01952b502608936e8343b716dcf7ebd3dabfe4b"
+    },
+    {
+      "path": "libloragw/inc/sx1261_usb.h",
+      "sha256": "1e5c265bc52ecd7607d77ea21049b74dd145c4d70bdb2978bff0f271b3d2ad93",
+      "upstream_sha256": "1e5c265bc52ecd7607d77ea21049b74dd145c4d70bdb2978bff0f271b3d2ad93"
+    },
+    {
+      "path": "libloragw/src/agc_fw_sx1250.var",
+      "sha256": "65a223658376a8b72c83b6dd21b936fe1efc29d8c077c54db6b660fc20a5965f",
+      "upstream_sha256": "65a223658376a8b72c83b6dd21b936fe1efc29d8c077c54db6b660fc20a5965f"
+    },
+    {
+      "path": "libloragw/src/agc_fw_sx1257.var",
+      "sha256": "a0d4af30b7928358ee4d696b5f086e0dfa3f66ee6dc9ddbec1bb605f1464afee",
+      "upstream_sha256": "a0d4af30b7928358ee4d696b5f086e0dfa3f66ee6dc9ddbec1bb605f1464afee"
+    },
+    {
+      "path": "libloragw/src/arb_fw.var",
+      "sha256": "a19a06f41c22e2468fdc8184d4056451440b1c913a07897f72df4050c560899f",
+      "upstream_sha256": "a19a06f41c22e2468fdc8184d4056451440b1c913a07897f72df4050c560899f"
+    },
+    {
+      "path": "libloragw/src/cal_fw.var",
+      "sha256": "e9b8e98d2a23723f1c6866886be0455b89d8c98b5dddbd5f7a4212ab90340c9d",
+      "upstream_sha256": "e9b8e98d2a23723f1c6866886be0455b89d8c98b5dddbd5f7a4212ab90340c9d"
+    },
+    {
+      "path": "libloragw/src/loragw_ad5338r.c",
+      "sha256": "f32e91dc4343e178c63b9075b973ba94dc4fc457184fc95b791de388b644dff6",
+      "upstream_sha256": "f32e91dc4343e178c63b9075b973ba94dc4fc457184fc95b791de388b644dff6"
+    },
+    {
+      "path": "libloragw/src/loragw_aux.c",
+      "sha256": "27f074f853f040770c876709d118fbcdc7178a8afc55bd094b23eef93a2df988",
+      "upstream_sha256": "0976e982e76a7e06a3eac72e6157e7099d7bb98811e36e8da4bb740c96b2eac2"
+    },
+    {
+      "path": "libloragw/src/loragw_cal.c",
+      "sha256": "7f79eb80dcf2f133adad2ba535bffdbcf3427c6ada51bceb8958fd79d5d16155",
+      "upstream_sha256": "7f79eb80dcf2f133adad2ba535bffdbcf3427c6ada51bceb8958fd79d5d16155"
+    },
+    {
+      "path": "libloragw/src/loragw_com.c",
+      "sha256": "8ff84f1371f59e721a506fcd8d836f58c1c4e6fdf84066a8af14da292ab9023b",
+      "upstream_sha256": "8ff84f1371f59e721a506fcd8d836f58c1c4e6fdf84066a8af14da292ab9023b"
+    },
+    {
+      "path": "libloragw/src/loragw_debug.c",
+      "sha256": "2bf6451a97458bff47370493e8bc2fad89b0263941c4f2f81b92a947a250171c",
+      "upstream_sha256": "2bf6451a97458bff47370493e8bc2fad89b0263941c4f2f81b92a947a250171c"
+    },
+    {
+      "path": "libloragw/src/loragw_hal.c",
+      "sha256": "a9f53db923458795dbb375b0131cfdff334c5d1c70c31937ec7c43c31d35ec5e",
+      "upstream_sha256": "74201ecdcce27477285f24d625947bb43a2af8fd63bbab36d9b2bf41b9436a03"
+    },
+    {
+      "path": "libloragw/src/loragw_lbt.c",
+      "sha256": "4db55927d363e5cf6d0a9da98b2cadc56593e9775bb1bc9c79a23645be1964a4",
+      "upstream_sha256": "4db55927d363e5cf6d0a9da98b2cadc56593e9775bb1bc9c79a23645be1964a4"
+    },
+    {
+      "path": "libloragw/src/loragw_mcu.c",
+      "sha256": "a1a2c1ad8e52c62572a07cfd7fb09771d97e7bb03b722132360dea9bae9898f8",
+      "upstream_sha256": "2939bfab7b86b36fb06c318110142357322630584a4b51b834953e43b9301724"
+    },
+    {
+      "path": "libloragw/src/loragw_reg.c",
+      "sha256": "597cc23007db7174b41bb2394e710d495719fe37d19902da9d777e4c03df2f73",
+      "upstream_sha256": "60398198dba8340c3966120b115747829db81daa70fa80906af824eafcfff7f1"
+    },
+    {
+      "path": "libloragw/src/loragw_stts751.c",
+      "sha256": "4f5a67f3e9e6a36212e3931685f20a846c7e857e25be47b576df69fe8b5decb6",
+      "upstream_sha256": "4f5a67f3e9e6a36212e3931685f20a846c7e857e25be47b576df69fe8b5decb6"
+    },
+    {
+      "path": "libloragw/src/loragw_sx1250.c",
+      "sha256": "e693467dbc1e55dfce5a328f59a256a075d71097f515719b34d790e0a3066cc7",
+      "upstream_sha256": "e693467dbc1e55dfce5a328f59a256a075d71097f515719b34d790e0a3066cc7"
+    },
+    {
+      "path": "libloragw/src/loragw_sx125x.c",
+      "sha256": "d73c37e29bb6db1afa23bfaf71ba77061ce2f48eeb87c5dd1e394b8fa9d1ffe9",
+      "upstream_sha256": "d73c37e29bb6db1afa23bfaf71ba77061ce2f48eeb87c5dd1e394b8fa9d1ffe9"
+    },
+    {
+      "path": "libloragw/src/loragw_sx1261.c",
+      "sha256": "b94dd29f943d680708d9bc9e9b478511faeb8ed66685ff88042faffe725c8d05",
+      "upstream_sha256": "51af264be3f95feac5011eef7847c3190ff865fa3c6053972a0583027ef23264"
+    },
+    {
+      "path": "libloragw/src/loragw_sx1302.c",
+      "sha256": "e57548138946583b83c5fd86f15a66a444a81e2dc18049da96cdbf4fdc968e55",
+      "upstream_sha256": "cd708a090b005543948a267c4ffde474535ce225b7f9c4d932c0ce99ebde564d"
+    },
+    {
+      "path": "libloragw/src/loragw_sx1302_rx.c",
+      "sha256": "a9b78b2c961122d656038a042fe312c27106f4260b5c808642a9ae02dc6b47b0",
+      "upstream_sha256": "49f8bfbdf0f1f73aa1709cf0fe736be404f290f9c5302e966206e2e613b862ac"
+    },
+    {
+      "path": "libloragw/src/loragw_sx1302_timestamp.c",
+      "sha256": "90af4c86c0c39f21f0d216bf2a9937d2b541e310bae11d5321fe9b34b476be3b",
+      "upstream_sha256": "0ef3426fd19d45c71afb6daf963dabde652cf84839b330de19fa6073cf6016ce"
+    },
+    {
+      "path": "libloragw/src/loragw_usb.c",
+      "sha256": "6e3865257c5a4558bbefb6dcc1167930a0dafa0db47f12eb8dd15296b7eed326",
+      "upstream_sha256": "17581b8fbb123d9bfc7e65f1a99234f3cee738bab86e6054e254de36829ad58a"
+    },
+    {
+      "path": "libloragw/src/sx1250_com.c",
+      "sha256": "c5ab71987eca9c825eb9588c969fbfd6e47fb44af58f2e52f681ce3e9ba0a0d0",
+      "upstream_sha256": "c5ab71987eca9c825eb9588c969fbfd6e47fb44af58f2e52f681ce3e9ba0a0d0"
+    },
+    {
+      "path": "libloragw/src/sx1250_usb.c",
+      "sha256": "37d723823ba21553cadc6a33fe0f8f529a0482bf20c2f3fa727e4379fa80f03d",
+      "upstream_sha256": "37d723823ba21553cadc6a33fe0f8f529a0482bf20c2f3fa727e4379fa80f03d"
+    },
+    {
+      "path": "libloragw/src/sx125x_com.c",
+      "sha256": "1e82a7d9de995dcbf1390854f4b4290adecd0aeaeeaa25f7b98fc1c717f4fd81",
+      "upstream_sha256": "1e82a7d9de995dcbf1390854f4b4290adecd0aeaeeaa25f7b98fc1c717f4fd81"
+    },
+    {
+      "path": "libloragw/src/sx1261_com.c",
+      "sha256": "fa319425c357e01ad5388e494e2bf71af8b88e408317706486f5b46078044860",
+      "upstream_sha256": "fa319425c357e01ad5388e494e2bf71af8b88e408317706486f5b46078044860"
+    },
+    {
+      "path": "libloragw/src/sx1261_pram.var",
+      "sha256": "6f7b0d967bb547f4b2b353d3cde502b0c9ca917aa98f6faf7508c02ef4a34e33",
+      "upstream_sha256": "6f7b0d967bb547f4b2b353d3cde502b0c9ca917aa98f6faf7508c02ef4a34e33"
+    },
+    {
+      "path": "libloragw/src/sx1261_usb.c",
+      "sha256": "de225dbee0c5428a7d1e678da784f355b839f0e02892404f224ae77845ae1b93",
+      "upstream_sha256": "0e2dc33f899b23f77a634a0af62866e21f92ef53426cb6cdb3b1007daadb8ccc"
+    },
+    {
+      "path": "libtools/inc/tinymt32.h",
+      "sha256": "17b6a76e20a3d24d6fdcabd815ea4ac50e267c292b9e88f202eee9ee56cbf622",
+      "upstream_sha256": "17b6a76e20a3d24d6fdcabd815ea4ac50e267c292b9e88f202eee9ee56cbf622"
+    },
+    {
+      "path": "libtools/src/tinymt32.c",
+      "sha256": "badf80e01e4e79c3d029aa39711b93d9edb858891a4e750e2434b1a1d6704d6d",
+      "upstream_sha256": "badf80e01e4e79c3d029aa39711b93d9edb858891a4e750e2434b1a1d6704d6d"
+    }
+  ]
+}

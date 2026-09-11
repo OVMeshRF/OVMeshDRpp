@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add experimental one/two-board RAK5146 USB/LBT reception, sampled RSSI scans, separate recording/reporting and a pinned receive-only Semtech HAL worker for macOS and eligible Linux builds. Concentrator scans do not provide SDR IQ, a waterfall or continuous occupancy; Windows RAK support is unavailable.
+
 - Allow RF reception when optional automatic GPS is missing, ambiguous or cannot connect; show a warning, preserve recording, and invalidate an unavailable earlier serial source.
 
 - Separate portable engine correctness fixtures from optional real-time throughput checks, preserving sample-loss and decoding assertions on slower hosts.

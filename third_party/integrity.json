@@ -2,68 +2,16 @@
   "purpose": "Reviewed local vendored file hashes; not an upstream signature",
   "files": [
     {
-      "path": "third_party/imgui/LICENSE.txt",
-      "sha256": "173506a2d6f7fb67990d257fb2507f188690eca39060c39469ae7bef43aae2a3"
+      "path": "third_party/LIBUSB_COPYING.txt",
+      "sha256": "5df07007198989c622f5d41de8d703e7bef3d0e79d62e24332ee739a452af62a"
     },
     {
-      "path": "third_party/imgui/backends/imgui_impl_glfw.cpp",
-      "sha256": "41b11f71c17e05a748d4eaf8905a5fe6924d3ac42f69230feec4e585fd84900f"
+      "path": "third_party/SQLITE_NOTICE.txt",
+      "sha256": "2722076e1e0a52bd30a7255473b25182cda0d6171e1cb7905bcdb9c4efc4de6f"
     },
     {
-      "path": "third_party/imgui/backends/imgui_impl_glfw.h",
-      "sha256": "ec95fe696c025dbf5fe6d24b958d7531d8cfbac0cb306a5435899d3526f64c4e"
-    },
-    {
-      "path": "third_party/imgui/backends/imgui_impl_opengl3.cpp",
-      "sha256": "415001ebde1124337de5ded44aa42dc0ab458531049b7ca5b8b358514555af5d"
-    },
-    {
-      "path": "third_party/imgui/backends/imgui_impl_opengl3.h",
-      "sha256": "f8b452e0af80969e7d2a5c55c5bef42055f0686404e92bbd9d7ccc8a20754e7a"
-    },
-    {
-      "path": "third_party/imgui/backends/imgui_impl_opengl3_loader.h",
-      "sha256": "d3aa3e1f3d23c8c88817832e17d8dd0f2d0b599ae28430067c3fad563b8b7cd5"
-    },
-    {
-      "path": "third_party/imgui/imconfig.h",
-      "sha256": "5755e1b8d6ab0d7811a9d7cac0f509878b51fc5ee77e09bd0f235bcb414971e7"
-    },
-    {
-      "path": "third_party/imgui/imgui.cpp",
-      "sha256": "5a1e5128c0305f50b6556a77f71fde35836505883b74c1d6ae44723243f1e8de"
-    },
-    {
-      "path": "third_party/imgui/imgui.h",
-      "sha256": "0d8db1045db01d908853adfd26ae07c5bc5ab4789d4515f6ea34234a69ade0ca"
-    },
-    {
-      "path": "third_party/imgui/imgui_draw.cpp",
-      "sha256": "83d30419a8e06a5f0a8692ee6de186f7ecfddecdc33769e76244837e2975b400"
-    },
-    {
-      "path": "third_party/imgui/imgui_internal.h",
-      "sha256": "efba9bccc971cc49ec3da3168968ba412c7ea89745c104a7f5c004c8349bc71f"
-    },
-    {
-      "path": "third_party/imgui/imgui_tables.cpp",
-      "sha256": "b5deabe5b569ab712c11b6556562a646bf88327320fc60a451071b2a36498d72"
-    },
-    {
-      "path": "third_party/imgui/imgui_widgets.cpp",
-      "sha256": "a8a0b2f65caa5711467d9e3ca4028fded48329ea65e11ec92a968293dc2aa231"
-    },
-    {
-      "path": "third_party/imgui/imstb_rectpack.h",
-      "sha256": "889b396795202d1457560a797a7242e96f6f132d4b88ca2d69be58bf05e1771f"
-    },
-    {
-      "path": "third_party/imgui/imstb_textedit.h",
-      "sha256": "a985f5fa0ed97353d493b497961e9eef52082edcd045cf6954b69990ec9d0741"
-    },
-    {
-      "path": "third_party/imgui/imstb_truetype.h",
-      "sha256": "c51a0f7e7ea760f2366bd3752635ec58e21fccfec4a832501639990ba6ce0528"
+      "path": "third_party/UI_ADDITIONAL_NOTICES.txt",
+      "sha256": "cf27cab5933f08fe52481c91898a62bd75374878d4481c53a76bcc965384769c"
     },
     {
       "path": "third_party/glfw/CMake/GenerateMappings.cmake",
@@ -370,76 +318,72 @@
       "sha256": "03d975ce3cec2ad05dc39114d5537422f1d12f6dbf3d2de46d6b800fd439b0bc"
     },
     {
-      "path": "third_party/sqlite/sqlite3.c",
-      "sha256": "b1dd5d74ec7f29055a6684fa06fb3c2f6821c87dd38f9a458dfd2e8a1db28189"
+      "path": "third_party/imgui/LICENSE.txt",
+      "sha256": "173506a2d6f7fb67990d257fb2507f188690eca39060c39469ae7bef43aae2a3"
     },
     {
-      "path": "third_party/sqlite/sqlite3.h",
-      "sha256": "919e7f2e8ed1d8f56ac17b412b8971c76aa5d1a879752cc6058f75e7d5910e1d"
+      "path": "third_party/imgui/backends/imgui_impl_glfw.cpp",
+      "sha256": "41b11f71c17e05a748d4eaf8905a5fe6924d3ac42f69230feec4e585fd84900f"
     },
     {
-      "path": "third_party/sdrangel/LICENSE",
-      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+      "path": "third_party/imgui/backends/imgui_impl_glfw.h",
+      "sha256": "ec95fe696c025dbf5fe6d24b958d7531d8cfbac0cb306a5435899d3526f64c4e"
     },
     {
-      "path": "third_party/sdrangel/PROVENANCE.md",
-      "sha256": "84f3d90b120dcbe6bf9e16fa61811197500a3eb7bb75d51465575137b04788ca"
+      "path": "third_party/imgui/backends/imgui_impl_opengl3.cpp",
+      "sha256": "415001ebde1124337de5ded44aa42dc0ab458531049b7ca5b8b358514555af5d"
     },
     {
-      "path": "third_party/sdrangel/lora_codec.hpp",
-      "sha256": "69f3348976c491ff472b9348224d5e78421c2d9b39fff0c3c371da4ac015f3af"
+      "path": "third_party/imgui/backends/imgui_impl_opengl3.h",
+      "sha256": "f8b452e0af80969e7d2a5c55c5bef42055f0686404e92bbd9d7ccc8a20754e7a"
     },
     {
-      "path": "third_party/openssl/LICENSE.txt",
-      "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+      "path": "third_party/imgui/backends/imgui_impl_opengl3_loader.h",
+      "sha256": "d3aa3e1f3d23c8c88817832e17d8dd0f2d0b599ae28430067c3fad563b8b7cd5"
     },
     {
-      "path": "third_party/openssl/intake_smoke.c",
-      "sha256": "4361dc162b251fd41df31019e88a7084155631679e75730cc3543d68e76f72c3"
+      "path": "third_party/imgui/imconfig.h",
+      "sha256": "5755e1b8d6ab0d7811a9d7cac0f509878b51fc5ee77e09bd0f235bcb414971e7"
     },
     {
-      "path": "third_party/nanopb/LICENSE.txt",
-      "sha256": "e2f2fc8fe3faa7dcb09dbe995db48c6ec5c1f72705db915101e4a83fed44f66d"
+      "path": "third_party/imgui/imgui.cpp",
+      "sha256": "5a1e5128c0305f50b6556a77f71fde35836505883b74c1d6ae44723243f1e8de"
     },
     {
-      "path": "third_party/nanopb/PROVENANCE.md",
-      "sha256": "d93a39b8a5ab28962cb5e69ad5ac6dfca84e47849c701e1f79acb9702e64287e"
+      "path": "third_party/imgui/imgui.h",
+      "sha256": "0d8db1045db01d908853adfd26ae07c5bc5ab4789d4515f6ea34234a69ade0ca"
     },
     {
-      "path": "third_party/nanopb/generator/nanopb_generator.py",
-      "sha256": "67d3c5e6de1e5dbd9f45bb4e5b7055d888d1afd6d6e1690791ab8607b6c6b738"
+      "path": "third_party/imgui/imgui_draw.cpp",
+      "sha256": "83d30419a8e06a5f0a8692ee6de186f7ecfddecdc33769e76244837e2975b400"
     },
     {
-      "path": "third_party/nanopb/generator/proto/__init__.py",
-      "sha256": "b387c9a6a553ed2184cf8c67243bb26b27bd46baf44465f0d5ffeb139c365105"
+      "path": "third_party/imgui/imgui_internal.h",
+      "sha256": "efba9bccc971cc49ec3da3168968ba412c7ea89745c104a7f5c004c8349bc71f"
     },
     {
-      "path": "third_party/nanopb/generator/proto/_utils.py",
-      "sha256": "6d091e256cdda09002c357da4901d259078fe1ef53a010392a251dd1107d6313"
+      "path": "third_party/imgui/imgui_tables.cpp",
+      "sha256": "b5deabe5b569ab712c11b6556562a646bf88327320fc60a451071b2a36498d72"
     },
     {
-      "path": "third_party/nanopb/generator/proto/nanopb.proto",
-      "sha256": "1a50d0822c5ba4395297755b11864af952053be3e0dc44c860f988b1b73c3c55"
+      "path": "third_party/imgui/imgui_widgets.cpp",
+      "sha256": "a8a0b2f65caa5711467d9e3ca4028fded48329ea65e11ec92a968293dc2aa231"
     },
     {
-      "path": "third_party/nanopb/pb.h",
-      "sha256": "e0db84a27e0d41a2d2d347b8c879e30ceb856d36dc192cce0f1124f833c67bc2"
+      "path": "third_party/imgui/imstb_rectpack.h",
+      "sha256": "889b396795202d1457560a797a7242e96f6f132d4b88ca2d69be58bf05e1771f"
     },
     {
-      "path": "third_party/nanopb/pb_common.c",
-      "sha256": "8d2ec28baaaf2b7a5e90e4cb2fa9700d21cef7f826f051a637c30b7a1e6a0516"
+      "path": "third_party/imgui/imstb_textedit.h",
+      "sha256": "a985f5fa0ed97353d493b497961e9eef52082edcd045cf6954b69990ec9d0741"
     },
     {
-      "path": "third_party/nanopb/pb_common.h",
-      "sha256": "6495a691aca68d6973f2274b5dd54b74fbb57f6b019c45fff255a857fe1abcfd"
+      "path": "third_party/imgui/imstb_truetype.h",
+      "sha256": "c51a0f7e7ea760f2366bd3752635ec58e21fccfec4a832501639990ba6ce0528"
     },
     {
-      "path": "third_party/nanopb/pb_decode.c",
-      "sha256": "f5b425beaa207251e531c8ce2c86c9b6867e2920ed59cc1b125332af0c147632"
-    },
-    {
-      "path": "third_party/nanopb/pb_decode.h",
-      "sha256": "fcac5f7680fe6e870157e4bcf34d5162bdd4fff0d7db3cad1122f2ad24a6da87"
+      "path": "third_party/libhackrf-NOTICE.txt",
+      "sha256": "20815d286012fde9da01b51d7b53b1168307cb7e83372fde1d45d959aba59822"
     },
     {
       "path": "third_party/meshtastic/LICENSE",
@@ -638,20 +582,56 @@
       "sha256": "3e1d4630ae57bce43a88f282fe6f32cbc664e6331aac41325bc2d0cf03db5add"
     },
     {
-      "path": "third_party/LIBUSB_COPYING.txt",
-      "sha256": "5df07007198989c622f5d41de8d703e7bef3d0e79d62e24332ee739a452af62a"
+      "path": "third_party/nanopb/LICENSE.txt",
+      "sha256": "e2f2fc8fe3faa7dcb09dbe995db48c6ec5c1f72705db915101e4a83fed44f66d"
     },
     {
-      "path": "third_party/SQLITE_NOTICE.txt",
-      "sha256": "2722076e1e0a52bd30a7255473b25182cda0d6171e1cb7905bcdb9c4efc4de6f"
+      "path": "third_party/nanopb/PROVENANCE.md",
+      "sha256": "d93a39b8a5ab28962cb5e69ad5ac6dfca84e47849c701e1f79acb9702e64287e"
     },
     {
-      "path": "third_party/UI_ADDITIONAL_NOTICES.txt",
-      "sha256": "cf27cab5933f08fe52481c91898a62bd75374878d4481c53a76bcc965384769c"
+      "path": "third_party/nanopb/generator/nanopb_generator.py",
+      "sha256": "67d3c5e6de1e5dbd9f45bb4e5b7055d888d1afd6d6e1690791ab8607b6c6b738"
     },
     {
-      "path": "third_party/libhackrf-NOTICE.txt",
-      "sha256": "20815d286012fde9da01b51d7b53b1168307cb7e83372fde1d45d959aba59822"
+      "path": "third_party/nanopb/generator/proto/__init__.py",
+      "sha256": "b387c9a6a553ed2184cf8c67243bb26b27bd46baf44465f0d5ffeb139c365105"
+    },
+    {
+      "path": "third_party/nanopb/generator/proto/_utils.py",
+      "sha256": "6d091e256cdda09002c357da4901d259078fe1ef53a010392a251dd1107d6313"
+    },
+    {
+      "path": "third_party/nanopb/generator/proto/nanopb.proto",
+      "sha256": "1a50d0822c5ba4395297755b11864af952053be3e0dc44c860f988b1b73c3c55"
+    },
+    {
+      "path": "third_party/nanopb/pb.h",
+      "sha256": "e0db84a27e0d41a2d2d347b8c879e30ceb856d36dc192cce0f1124f833c67bc2"
+    },
+    {
+      "path": "third_party/nanopb/pb_common.c",
+      "sha256": "8d2ec28baaaf2b7a5e90e4cb2fa9700d21cef7f826f051a637c30b7a1e6a0516"
+    },
+    {
+      "path": "third_party/nanopb/pb_common.h",
+      "sha256": "6495a691aca68d6973f2274b5dd54b74fbb57f6b019c45fff255a857fe1abcfd"
+    },
+    {
+      "path": "third_party/nanopb/pb_decode.c",
+      "sha256": "f5b425beaa207251e531c8ce2c86c9b6867e2920ed59cc1b125332af0c147632"
+    },
+    {
+      "path": "third_party/nanopb/pb_decode.h",
+      "sha256": "fcac5f7680fe6e870157e4bcf34d5162bdd4fff0d7db3cad1122f2ad24a6da87"
+    },
+    {
+      "path": "third_party/openssl/LICENSE.txt",
+      "sha256": "7d5450cb2d142651b8afa315b5f238efc805dad827d91ba367d8516bc9d49e7a"
+    },
+    {
+      "path": "third_party/openssl/intake_smoke.c",
+      "sha256": "4361dc162b251fd41df31019e88a7084155631679e75730cc3543d68e76f72c3"
     },
     {
       "path": "third_party/rtlsdr/AUTHORS",
@@ -720,6 +700,286 @@
     {
       "path": "third_party/rtlsdr/src/tuner_r82xx.c",
       "sha256": "4d890206ebdb4dff18bcf872a21f084200ba3190470965a864b661146ebbf6e3"
+    },
+    {
+      "path": "third_party/sdrangel/LICENSE",
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    {
+      "path": "third_party/sdrangel/PROVENANCE.md",
+      "sha256": "84f3d90b120dcbe6bf9e16fa61811197500a3eb7bb75d51465575137b04788ca"
+    },
+    {
+      "path": "third_party/sdrangel/lora_codec.hpp",
+      "sha256": "69f3348976c491ff472b9348224d5e78421c2d9b39fff0c3c371da4ac015f3af"
+    },
+    {
+      "path": "third_party/sqlite/sqlite3.c",
+      "sha256": "b1dd5d74ec7f29055a6684fa06fb3c2f6821c87dd38f9a458dfd2e8a1db28189"
+    },
+    {
+      "path": "third_party/sqlite/sqlite3.h",
+      "sha256": "919e7f2e8ed1d8f56ac17b412b8971c76aa5d1a879752cc6058f75e7d5910e1d"
+    },
+    {
+      "path": "third_party/sx1302_hal/LICENSE.TXT",
+      "sha256": "c2e5aab8fbb007c6ad5188406a785b727c017e49ff84fa4e884c41ecdfbcff30"
+    },
+    {
+      "path": "third_party/sx1302_hal/PROVENANCE.md",
+      "sha256": "53f8226e889da8945ecade38a88c11407d2c7b475917771e14eb9055bc448c4c"
+    },
+    {
+      "path": "third_party/sx1302_hal/compat/no_external_bus.c",
+      "sha256": "383872546a2bf5bd5909e650611d482e243b608660282a2de6dbc4c83c03a3a0"
+    },
+    {
+      "path": "third_party/sx1302_hal/compat/quiet_log.h",
+      "sha256": "8cfe3918bd62f6d21716949b41adf8bbc232ae628d3e2e55c087281417126ca1"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/config.h",
+      "sha256": "bb18d26ff985c8a9e715c7f7f6e6f986e6646820d2b77a907db093029d480f92"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_ad5338r.h",
+      "sha256": "935e07df2625e3322d3f3b23986a6bc4f0ae8972e1e4f7199aed4780f2631b1e"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_agc_params.h",
+      "sha256": "2d2961980396af9ec98a752a45f7b8319dd29b3c31024a810ebc82b71eb79480"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_aux.h",
+      "sha256": "ae05362c172ae830debddc557d744dcf835f8cf07d8b6769bd6d550800e5e082"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_cal.h",
+      "sha256": "0604e802b97f7314ec66c7087d04f6c497cbc23fa4d4fd8b9c826ebc680b2bcc"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_com.h",
+      "sha256": "3346686cd912070275813c8c10ed38ce79fdfd6cb69dd9ae2043b4476e8a45f7"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_debug.h",
+      "sha256": "f7829d11b73e712c77aa17abe9f0f48d102104ef25e353992864d8914e5911db"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_gps.h",
+      "sha256": "aecbd2cc9753c10bcf68df8443e55c27b1378f6c14aaffa7d2955dbab434d878"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_hal.h",
+      "sha256": "8900221c53749353b4a95d70f6c24005bc466a1ff91ee07eb2af1ec2af5870cd"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_i2c.h",
+      "sha256": "58123570e2a863d0e382d4682c136eefbef798cebd789b90b68049c2976f019f"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_lbt.h",
+      "sha256": "d4f7522bc057f0fd1c25be4c2c62ce9dcfd4ba4f1123348141b28dfa9dfa1e0f"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_mcu.h",
+      "sha256": "98ce661e04f4783e9fa05d4f04269f96321af8d299debe3f3020a786a70c729a"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_reg.h",
+      "sha256": "ffe2fc0d266acebb3e43f3ff2506c8bcfd1141207be9cdb2547714aaf3240376"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_spi.h",
+      "sha256": "b23d6fe959d4ca04a9b1911063bd505524a3fb60890c4e82203e59b2a5d55333"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_stts751.h",
+      "sha256": "6354eed997ca83c3fae0ec23eaf96242c568bdf2d27ef1a1d4e387244370221d"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_sx1250.h",
+      "sha256": "fb98a725fd2bf9f93b137e8c6f7d159ef473d43f3d9d1605a73db3ef1d2b73bd"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_sx125x.h",
+      "sha256": "b71b4700188615e3007a8401f4ac601509f7322499a2d62a5cd6baff130a035d"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_sx1261.h",
+      "sha256": "07c781b8ecea24b49f760d112108512cb6071624456b986c333980b6ea8e4d5d"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_sx1302.h",
+      "sha256": "9f779c019cc28075da2b02dc160da86679855653f77d80e488e8797141759c46"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_sx1302_rx.h",
+      "sha256": "54ccaa012a87b6a0d38d5dc5787dc45e3fb29513eeee77f138d922ec2f62f988"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_sx1302_timestamp.h",
+      "sha256": "acea4927c5a816c36a51f39d4c066229a92c55d05e72b2f75622868a2b7fc727"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/loragw_usb.h",
+      "sha256": "8c53d181e3d19363439b2590533c0af169104cd51a95771d9387a353c0b40cba"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/sx1250_com.h",
+      "sha256": "bbc64fd839ba47c7cd5f3023e9690cb1473ba3e02a9eb2580e5d328e29b8e394"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/sx1250_defs.h",
+      "sha256": "9f115d50f3e8818a89aee5c1a78a429edffcdb835c88d6988f0b01a66db8fc53"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/sx1250_spi.h",
+      "sha256": "949874e7f8f137c4cac2e9f45c75cdcaf5a973f7c00451ec8584a54a2dc54c88"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/sx1250_usb.h",
+      "sha256": "333bb7580714ce35bbcf15c865e3314b61af26163cdada4a0c86989776f52005"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/sx125x_com.h",
+      "sha256": "f0d89bd90aa0fa5109cea2840bbea0cf36f850910bb4120e5cbde6b9eda7a8bc"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/sx125x_spi.h",
+      "sha256": "c5984d59c612d1d90329f9473718638a0228d9a085559feb9207a99764581e64"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/sx1261_com.h",
+      "sha256": "9fe52b9df54b30676212c1f91e643e386b5a866de52b0c5b63370bfc6ff91da2"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/sx1261_defs.h",
+      "sha256": "a9ad620ce27f40ab175fffd9fc06839e8e24a37cf4d50eda0f5fcd8c6ffd6c03"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/sx1261_spi.h",
+      "sha256": "1f3a6a2b9261e9ca3df58ca2c01952b502608936e8343b716dcf7ebd3dabfe4b"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/inc/sx1261_usb.h",
+      "sha256": "1e5c265bc52ecd7607d77ea21049b74dd145c4d70bdb2978bff0f271b3d2ad93"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/agc_fw_sx1250.var",
+      "sha256": "65a223658376a8b72c83b6dd21b936fe1efc29d8c077c54db6b660fc20a5965f"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/agc_fw_sx1257.var",
+      "sha256": "a0d4af30b7928358ee4d696b5f086e0dfa3f66ee6dc9ddbec1bb605f1464afee"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/arb_fw.var",
+      "sha256": "a19a06f41c22e2468fdc8184d4056451440b1c913a07897f72df4050c560899f"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/cal_fw.var",
+      "sha256": "e9b8e98d2a23723f1c6866886be0455b89d8c98b5dddbd5f7a4212ab90340c9d"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_ad5338r.c",
+      "sha256": "f32e91dc4343e178c63b9075b973ba94dc4fc457184fc95b791de388b644dff6"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_aux.c",
+      "sha256": "27f074f853f040770c876709d118fbcdc7178a8afc55bd094b23eef93a2df988"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_cal.c",
+      "sha256": "7f79eb80dcf2f133adad2ba535bffdbcf3427c6ada51bceb8958fd79d5d16155"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_com.c",
+      "sha256": "8ff84f1371f59e721a506fcd8d836f58c1c4e6fdf84066a8af14da292ab9023b"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_debug.c",
+      "sha256": "2bf6451a97458bff47370493e8bc2fad89b0263941c4f2f81b92a947a250171c"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_hal.c",
+      "sha256": "a9f53db923458795dbb375b0131cfdff334c5d1c70c31937ec7c43c31d35ec5e"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_lbt.c",
+      "sha256": "4db55927d363e5cf6d0a9da98b2cadc56593e9775bb1bc9c79a23645be1964a4"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_mcu.c",
+      "sha256": "a1a2c1ad8e52c62572a07cfd7fb09771d97e7bb03b722132360dea9bae9898f8"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_reg.c",
+      "sha256": "597cc23007db7174b41bb2394e710d495719fe37d19902da9d777e4c03df2f73"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_stts751.c",
+      "sha256": "4f5a67f3e9e6a36212e3931685f20a846c7e857e25be47b576df69fe8b5decb6"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_sx1250.c",
+      "sha256": "e693467dbc1e55dfce5a328f59a256a075d71097f515719b34d790e0a3066cc7"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_sx125x.c",
+      "sha256": "d73c37e29bb6db1afa23bfaf71ba77061ce2f48eeb87c5dd1e394b8fa9d1ffe9"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_sx1261.c",
+      "sha256": "b94dd29f943d680708d9bc9e9b478511faeb8ed66685ff88042faffe725c8d05"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_sx1302.c",
+      "sha256": "e57548138946583b83c5fd86f15a66a444a81e2dc18049da96cdbf4fdc968e55"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_sx1302_rx.c",
+      "sha256": "a9b78b2c961122d656038a042fe312c27106f4260b5c808642a9ae02dc6b47b0"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_sx1302_timestamp.c",
+      "sha256": "90af4c86c0c39f21f0d216bf2a9937d2b541e310bae11d5321fe9b34b476be3b"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/loragw_usb.c",
+      "sha256": "6e3865257c5a4558bbefb6dcc1167930a0dafa0db47f12eb8dd15296b7eed326"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/sx1250_com.c",
+      "sha256": "c5ab71987eca9c825eb9588c969fbfd6e47fb44af58f2e52f681ce3e9ba0a0d0"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/sx1250_usb.c",
+      "sha256": "37d723823ba21553cadc6a33fe0f8f529a0482bf20c2f3fa727e4379fa80f03d"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/sx125x_com.c",
+      "sha256": "1e82a7d9de995dcbf1390854f4b4290adecd0aeaeeaa25f7b98fc1c717f4fd81"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/sx1261_com.c",
+      "sha256": "fa319425c357e01ad5388e494e2bf71af8b88e408317706486f5b46078044860"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/sx1261_pram.var",
+      "sha256": "6f7b0d967bb547f4b2b353d3cde502b0c9ca917aa98f6faf7508c02ef4a34e33"
+    },
+    {
+      "path": "third_party/sx1302_hal/libloragw/src/sx1261_usb.c",
+      "sha256": "de225dbee0c5428a7d1e678da784f355b839f0e02892404f224ae77845ae1b93"
+    },
+    {
+      "path": "third_party/sx1302_hal/libtools/inc/tinymt32.h",
+      "sha256": "17b6a76e20a3d24d6fdcabd815ea4ac50e267c292b9e88f202eee9ee56cbf622"
+    },
+    {
+      "path": "third_party/sx1302_hal/libtools/src/tinymt32.c",
+      "sha256": "badf80e01e4e79c3d029aa39711b93d9edb858891a4e750e2434b1a1d6704d6d"
     }
   ]
 }

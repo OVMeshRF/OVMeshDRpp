@@ -18,6 +18,7 @@ Describe expected and observed behavior.
 - OS and architecture:
 - Receiver model and driver/library versions (no serial identifiers):
 - Survey span, input rate and relevant settings (no keys or location):
+- For RAK: board count, scan step, configured packet frequency/BW/SF/sync word, readiness and scan/CRC counts (no USB paths or IDs):
 
 ## Reproduction
 

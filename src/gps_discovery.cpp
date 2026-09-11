@@ -359,4 +359,33 @@ std::optional<std::size_t> select_gps_device(const std::vector<GpsDevice>& devic
     return selected;
 }
 
+std::optional<ConcentratorDevice> classify_concentrator_serial_device(const SerialDeviceMetadata& metadata) {
+    if (metadata.vendor_id != 0x0483 || metadata.product_id != 0x5740) return std::nullopt;
+    const auto serial = classify_gps_serial_device(metadata);
+    if (!serial) return std::nullopt;
+    return ConcentratorDevice{serial->path, serial->label, serial->stable_id};
+}
+
+ConcentratorDiscovery discover_concentrator_devices() {
+    // GPS enumeration already returns all bounded USB serial metadata, while
+    // only reviewed GNSS identities are automatic GPS candidates. Reusing its
+    // inventory preserves every existing platform and GPS selection behavior.
+    const auto serial = discover_gps_devices();
+    ConcentratorDiscovery result;
+    result.error = serial.error;
+    for (const auto& device : serial.devices)
+        if (device.stable_id.starts_with("usb:0483:5740:"))
+            result.devices.push_back({device.path, device.label, device.stable_id});
+    return result;
+}
+
+std::optional<std::size_t> select_concentrator_device(const std::vector<ConcentratorDevice>& devices,
+                                                    const std::string& preferred_id) {
+    if (preferred_id.empty() || !preferred_id.starts_with("usb:0483:5740:")) return std::nullopt;
+    std::vector<GpsDevice> serial;
+    serial.reserve(devices.size());
+    for (const auto& device : devices) serial.push_back({device.path, device.label, device.stable_id, false});
+    return select_gps_device(serial, preferred_id);
+}
+
 } // namespace ovmesh

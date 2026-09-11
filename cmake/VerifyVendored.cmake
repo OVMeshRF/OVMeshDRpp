@@ -33,7 +33,8 @@ file(GLOB_RECURSE actual LIST_DIRECTORIES FALSE RELATIVE "${OVMESH_SOURCE_DIR}"
   "${OVMESH_SOURCE_DIR}/third_party/nanopb/*"
   "${OVMESH_SOURCE_DIR}/third_party/meshtastic/*"
   "${OVMESH_SOURCE_DIR}/third_party/sdrangel/*"
-  "${OVMESH_SOURCE_DIR}/third_party/rtlsdr/*")
+  "${OVMESH_SOURCE_DIR}/third_party/rtlsdr/*"
+  "${OVMESH_SOURCE_DIR}/third_party/sx1302_hal/*")
 list(SORT expected)
 list(SORT actual)
 if(NOT actual STREQUAL expected)
