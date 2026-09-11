@@ -8,6 +8,7 @@ are explicitly skipped when that reviewed native prefix has not been built.
 Fixtures and compiler outputs stay in the repository's ignored build directory.
 """
 import os
+import importlib.util
 from pathlib import Path
 import shutil
 import subprocess
@@ -19,6 +20,9 @@ REPO = Path(__file__).resolve().parents[1]
 MODULE = REPO / "cmake" / "ReviewedOpenSSL.cmake"
 PREFIX = Path(os.environ.get("OVMESH_TEST_OPENSSL_PREFIX",
     str(REPO / "build/deps/openssl-3.5.8-local"))).resolve()
+spec = importlib.util.spec_from_file_location("bootstrap_openssl", REPO / "tools/bootstrap_openssl.py")
+bootstrap = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bootstrap)
 
 
 class OpenSSLConfigureTests(unittest.TestCase):
@@ -163,6 +167,54 @@ class OpenSSLConfigureTests(unittest.TestCase):
             stream.write("\n#undef OPENSSL_NO_AUTOLOAD_CONFIG\n")
         self.assert_failure(self.configure(f"-DOPENSSL_ROOT_DIR={prefix}"),
             "configuration or link check failed")
+
+    def system_crypto_metadata(self, prefix):
+        if not shutil.which("pkg-config"):
+            self.skipTest("pkg-config is needed to reproduce unrelated system metadata")
+        pc = self.root / "pkgconfig"
+        pc.mkdir()
+        (pc / "openssl.pc").write_text(
+            f"prefix={prefix}\nName: openssl\nDescription: unrelated system fixture\n"
+            "Version: 3.5.8\nLibs: -L${prefix}/lib -lssl -lcrypto\n"
+            "Libs.private: -lz -pthread\nCflags: -I${prefix}/include\n")
+        self.environment["PKG_CONFIG_LIBDIR"] = str(pc)
+        self.environment["PKG_CONFIG_PATH"] = str(pc)
+
+    def test_system_pkgconfig_zlib_does_not_contaminate_local_crypto(self):
+        prefix = self.copy_prefix()
+        self.system_crypto_metadata(prefix)
+        with (self.source / "CMakeLists.txt").open("a") as output:
+            output.write('find_package(PkgConfig REQUIRED)\n'
+                'pkg_check_modules(CONTROL REQUIRED openssl)\n'
+                'if(NOT "z" IN_LIST CONTROL_STATIC_LIBRARIES)\n'
+                '  message(FATAL_ERROR "fixture did not expose its Zlib dependency")\n'
+                'endif()\n'
+                'get_target_property(deps OpenSSL::Crypto INTERFACE_LINK_LIBRARIES)\n'
+                'if("ZLIB::ZLIB" IN_LIST deps OR "z" IN_LIST deps)\n'
+                '  message(FATAL_ERROR "unrelated Zlib leaked into local crypto")\n'
+                'endif()\n')
+        result = self.configure(f"-DOPENSSL_ROOT_DIR={prefix}",
+            "-DCMAKE_DISABLE_FIND_PACKAGE_ZLIB=TRUE")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_generated_bootstrap_probe_ignores_system_crypto_metadata(self):
+        prefix = self.copy_prefix()
+        self.system_crypto_metadata(prefix)
+        probe = self.root / "probe"
+        bootstrap.write_probe(REPO, probe)
+        result = subprocess.run(["cmake", "-G", "Unix Makefiles", "-S", str(probe),
+            "-B", str(self.binary), f"-DOVMESH_SOURCE_DIR={REPO}",
+            f"-DOPENSSL_ROOT_DIR={prefix}", "-DCMAKE_DISABLE_FIND_PACKAGE_ZLIB=TRUE"],
+            env=self.environment, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        built = subprocess.run(["cmake", "--build", str(self.binary)], env=self.environment,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
+        self.assertEqual(built.returncode, 0, built.stdout)
+        checked = subprocess.run([str(self.binary / "intake")], text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+        self.assertEqual(checked.returncode, 0, checked.stdout)
+        self.assertIn("vectors passed", checked.stdout)
 
 
 if __name__ == "__main__":

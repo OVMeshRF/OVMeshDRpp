@@ -6,6 +6,7 @@ import io
 from pathlib import Path
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -96,6 +97,17 @@ class BootstrapTests(unittest.TestCase):
         network.assert_not_called()
         execute.assert_not_called()
         self.assertEqual((prefix / "keep").read_text(), "existing")
+
+    def test_missing_perl_module_fails_before_download_or_build(self):
+        with patch.object(helper, "native_target", return_value="linux-x86_64"), \
+                patch.object(helper.shutil, "which", return_value="fixture-tool"), \
+                patch.object(helper.subprocess, "run", return_value=SimpleNamespace(returncode=1)), \
+                patch.object(helper, "download") as network, patch.object(helper, "run") as execute:
+            with self.assertRaisesRegex(ValueError, "Time::Piece"):
+                helper.bootstrap(self.root, None, True, self.root / "build/crypto", 1)
+        network.assert_not_called()
+        execute.assert_not_called()
+        self.assertFalse((self.root / "build").exists())
 
     def test_only_https_official_release_destinations(self):
         for url in ("https://github.com/openssl/openssl/releases/a", "https://release-assets.githubusercontent.com/a"):

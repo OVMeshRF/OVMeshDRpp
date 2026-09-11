@@ -60,19 +60,27 @@ if((WIN32 AND MSVC AND NOT OPENSSL_CRYPTO_LIBRARY MATCHES "\\.lib$") OR
    (NOT (WIN32 AND MSVC) AND NOT OPENSSL_CRYPTO_LIBRARY MATCHES "\\.a$"))
   message(FATAL_ERROR "Reviewed OpenSSL requires a static crypto archive, not ${OPENSSL_CRYPTO_LIBRARY}.\n${_ovmesh_openssl_help}")
 endif()
-if(WIN32)
-  # FindOpenSSL uses these instead of OPENSSL_CRYPTO_LIBRARY on Windows.
-  set(LIB_EAY "${OPENSSL_CRYPTO_LIBRARY}")
-  set(LIB_EAY_DEBUG "${OPENSSL_CRYPTO_LIBRARY}")
-  set(LIB_EAY_RELEASE "${OPENSSL_CRYPTO_LIBRARY}")
-endif()
-set(OPENSSL_USE_STATIC_LIBS TRUE)
-find_package(OpenSSL 3.5.8 EXACT QUIET COMPONENTS Crypto)
-if(NOT OpenSSL_FOUND OR NOT OPENSSL_VERSION STREQUAL "3.5.8")
+file(STRINGS "${OPENSSL_INCLUDE_DIR}/openssl/opensslv.h" _ovmesh_version_line
+  REGEX "^#[ \t]*define[ \t]+OPENSSL_VERSION_STR[ \t]+\"3\\.5\\.8\"[ \t]*$")
+if(NOT _ovmesh_version_line)
   message(FATAL_ERROR "Reviewed OpenSSL 3.5.8 is required; the selected headers/archive do not match that version.\n${_ovmesh_openssl_help}")
 endif()
-_ovmesh_openssl_require_inside("${OPENSSL_INCLUDE_DIR}" "selected headers")
-_ovmesh_openssl_require_inside("${OPENSSL_CRYPTO_LIBRARY}" "selected crypto archive")
+
+# FindOpenSSL consults system openssl.pc even when both local paths are explicit.
+# That metadata may add Zlib or other dependencies absent from this no-zlib,
+# no-module build. Own the target for the reviewed archive instead. Do not
+# disable pkg-config globally: the USB adapters still use it independently.
+if(TARGET OpenSSL::Crypto)
+  message(FATAL_ERROR "OpenSSL::Crypto already exists before reviewed crypto setup; use an isolated configuration.\n${_ovmesh_openssl_help}")
+endif()
+add_library(OpenSSL::Crypto STATIC IMPORTED)
+set_target_properties(OpenSSL::Crypto PROPERTIES
+  IMPORTED_LOCATION "${OPENSSL_CRYPTO_LIBRARY}"
+  INTERFACE_INCLUDE_DIRECTORIES "${OPENSSL_INCLUDE_DIR}"
+  INTERFACE_LINK_LIBRARIES "Threads::Threads;${CMAKE_DL_LIBS}")
+if(WIN32)
+  set_property(TARGET OpenSSL::Crypto APPEND PROPERTY INTERFACE_LINK_LIBRARIES ws2_32 crypt32)
+endif()
 
 # Always compile and link the existing intake source, even when BUILD_TESTING
 # is OFF. This checks the header configuration and linkability without running

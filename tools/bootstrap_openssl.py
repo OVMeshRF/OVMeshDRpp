@@ -135,6 +135,17 @@ def run(command, cwd, log):
         subprocess.run(command, cwd=cwd, stdout=output, stderr=subprocess.STDOUT, check=True)
 
 
+def write_probe(repo, probe):
+    probe.mkdir()
+    shutil.copyfile(repo / "third_party/openssl/intake_smoke.c", probe / "intake_smoke.c")
+    (probe / "CMakeLists.txt").write_text(
+        'cmake_minimum_required(VERSION 3.24)\nproject(CryptoIntake C)\n'
+        'find_package(Threads REQUIRED)\n'
+        'include("${OVMESH_SOURCE_DIR}/cmake/ReviewedOpenSSL.cmake")\n'
+        'add_executable(intake intake_smoke.c)\n'
+        'target_link_libraries(intake PRIVATE OpenSSL::Crypto Threads::Threads)\n')
+
+
 def bootstrap(repo, archive, allow_download, prefix, jobs):
     target = native_target()
     prefix = checked_output_path(repo, prefix)
@@ -144,6 +155,11 @@ def bootstrap(repo, archive, allow_download, prefix, jobs):
     for tool in ("perl", "make", "cmake"):
         if not shutil.which(tool):
             raise ValueError("Missing build tool: " + tool)
+    perl_check = subprocess.run(["perl", "-MTime::Piece", "-e", "1"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if perl_check.returncode:
+        raise ValueError("Perl cannot load Time::Piece. Install its package using your distribution's "
+                         "package manager (Fedora: perl-Time-Piece), then retry. No download or build was started.")
     manifest = json.loads((repo / "third_party/openssl-source.json").read_text())
     entry = next(item for item in manifest["files"] if item["name"].endswith(".tar.gz"))
     if archive is None and not allow_download:
@@ -193,18 +209,13 @@ def bootstrap(repo, archive, allow_download, prefix, jobs):
     for required in ("opensslv.h", "configuration.h", "crypto.h", "evp.h"):
         if not (staged / "include/openssl" / required).is_file():
             raise ValueError("Missing generated public header: " + required)
-    # Use CMake's imported target for platform thread/dl link requirements.
+    # Reuse the application's prefix-only target; never mix system openssl.pc
+    # dependencies with the reviewed no-zlib archive.
     probe = work / "probe"
-    probe.mkdir()
-    shutil.copyfile(repo / "third_party/openssl/intake_smoke.c", probe / "intake_smoke.c")
-    (probe / "CMakeLists.txt").write_text(
-        'cmake_minimum_required(VERSION 3.24)\nproject(CryptoIntake C)\n'
-        'set(OPENSSL_USE_STATIC_LIBS TRUE)\nfind_package(Threads REQUIRED)\n'
-        'find_package(OpenSSL 3.5.8 EXACT REQUIRED COMPONENTS Crypto)\n'
-        'add_executable(intake intake_smoke.c)\n'
-        'target_link_libraries(intake PRIVATE OpenSSL::Crypto Threads::Threads)\n')
+    write_probe(repo, probe)
     print("Checking hardened headers, linking, and AES known-answer tests...", flush=True)
     run(["cmake", "-G", "Unix Makefiles", "-S", str(probe), "-B", str(probe / "build"),
+         "-DOVMESH_SOURCE_DIR=" + str(repo),
          "-DOPENSSL_ROOT_DIR=" + str(staged),
          "-DOPENSSL_INCLUDE_DIR=" + str(staged / "include"),
          "-DOPENSSL_CRYPTO_LIBRARY=" + str(staged / "lib/libcrypto.a")], work, log)
