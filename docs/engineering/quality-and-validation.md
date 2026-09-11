@@ -19,6 +19,12 @@ The [CMake test definitions](../../CMakeLists.txt) build native tests from [test
 
 Fixtures contain public examples or constructed inputs, not operational captures. Sharing implementation ancestry limits independence: agreement between two derived decoders is weaker evidence than agreement with a separately generated reference.
 
+The engine integration fixtures use consumer-paced synthetic input: the generator waits when the bounded input queue is full, preserving the waveform and sample-based RF timestamps. Hardware callbacks and ordinary real-time demo pacing are unchanged. Both recording modes still require successful authorized fixture decoding, zero sample loss, complete accepted FFT exposure, saved-data consistency and session lifecycle checks. Optional `OVMESH_ENGINE_THROUGHPUT_TESTS` retains the separate real-time 16 MS/s pass/fail checks. Passing an offline fixture does not establish receiver throughput.
+
+On macOS, both consumer-paced recording modes passed in Release and in an unoptimized Debug build. The Debug checks each decoded the expected message with zero drops and approximately 5.50 seconds of measured RF input while processing load was about 5, demonstrating correctness when processing takes longer than RF time. This is local software evidence, not native Linux or USB qualification.
+
+The corresponding Release build with both USB backends and the desktop disabled passed all 35 configured native tests, including the two optional real-time engine checks. The real-time checks remain host-specific; these results do not establish the same throughput on another machine.
+
 ## Known limitations
 
 Successful software checks do not qualify the RF receiver, USB path or GPS for every field condition. Payload CRC failures, missed waveforms, discovery processing losses and receiver interruptions are known failure modes. Discovery has separate capacity counters because a working spectrum pipeline does not establish that all waveform work kept pace. Reliable automatic range-wide payload decoding remains incomplete.

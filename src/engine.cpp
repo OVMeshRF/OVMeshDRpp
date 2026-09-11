@@ -99,6 +99,7 @@ void validate(const ReceiverConfig& c) {
 }
 
 struct Engine::Impl {
+    const SyntheticPacing synthetic_pacing;
     mutable std::mutex mutex;
     std::mutex lifecycle;
     Snapshot view;
@@ -133,7 +134,7 @@ struct Engine::Impl {
     rtlsdr_dev_t* rtl_device=nullptr;
     RtlAsyncPump rtl_pump;
 #endif
-    Impl() {
+    explicit Impl(SyntheticPacing pacing):synthetic_pacing(pacing) {
         for(size_t i=0;i<profiles.size();++i) {
             profiles[i].id="key-"+std::to_string(i);
             profiles[i].restrict_channel_name=false;
@@ -302,9 +303,21 @@ struct Engine::Impl {
                     osc*=step;other*=other_step;if((sample&4095)==0){osc/=std::abs(osc);other/=std::abs(other);}
                     if(++period_position==period_samples)period_position=0;if(++other_position==other_period)other_position=0;
                 }
+                if(synthetic_pacing==SyntheticPacing::ConsumerPaced) {
+                    // Only this synthetic producer can pause. Preserve the
+                    // generated block and sample order until the consumer has
+                    // room; never turn an offline correctness test into an
+                    // implicit host-speed requirement or enlarge its queue.
+                    std::unique_lock lock(wake_mutex);
+                    while(run && head.load(std::memory_order_relaxed)-tail.load(std::memory_order_acquire)>=pool_blocks)
+                        wake.wait_for(lock,std::chrono::milliseconds(2),[&]{return !run.load();});
+                    if(!run)break;
+                }
                 deliver(block.data(),block.size(),monotonic_now());
-                double target=simulation_started+static_cast<double>(sample)/c.sample_rate;
-                std::unique_lock lock(wake_mutex);wake.wait_for(lock,std::chrono::duration<double>(std::max(0.0,target-monotonic_now())),[&]{return !run.load();});
+                if(synthetic_pacing==SyntheticPacing::Realtime) {
+                    double target=simulation_started+static_cast<double>(sample)/c.sample_rate;
+                    std::unique_lock lock(wake_mutex);wake.wait_for(lock,std::chrono::duration<double>(std::max(0.0,target-monotonic_now())),[&]{return !run.load();});
+                }
             }
             std::fill(wave.begin(),wave.end(),Complex{});std::fill(block.begin(),block.end(),int8_t{});
         }catch(const std::exception& e){fail(e.what());}
@@ -625,7 +638,7 @@ struct Engine::Impl {
     }
 };
 
-Engine::Engine():impl_(std::make_unique<Impl>()){}
+Engine::Engine(SyntheticPacing pacing):impl_(std::make_unique<Impl>(pacing)){}
 Engine::~Engine(){stop();disconnect_gps();}
 std::string Engine::version(){return OVMESH_VERSION;}
 bool Engine::start(const ReceiverConfig& requested,bool hardware_permission,std::string& error) {

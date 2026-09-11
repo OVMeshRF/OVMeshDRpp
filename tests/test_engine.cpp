@@ -37,7 +37,18 @@ double scalar(sqlite3* db,const char* query) {
 }
 int main(int argc,char** argv) {
     try {
-        ovmesh::Engine engine; ovmesh::ReceiverConfig config; std::string error;
+        bool detailed=false,realtime=false;
+        for(int i=1;i<argc;++i) {
+            const std::string argument=argv[i];
+            if(argument=="--detailed")detailed=true;
+            else if(argument=="--realtime")realtime=true;
+            else throw std::runtime_error("Usage: test_engine [--detailed] [--realtime]");
+        }
+        ovmesh::Engine engine(realtime ? ovmesh::Engine::SyntheticPacing::Realtime :
+            ovmesh::Engine::SyntheticPacing::ConsumerPaced);
+        ovmesh::ReceiverConfig config; std::string error;
+        std::cout<<(realtime?"Real-time throughput check":"Consumer-paced correctness fixture")
+            <<" at "<<config.sample_rate<<" samples/s; "<<(detailed?"detailed":"compact")<<" recording; no hardware\n"<<std::flush;
         require(!engine.save_session(error)&&error.find("not recorded")!=std::string::npos,
             "Fresh Save refuses to imply a recording exists");
         require(engine.new_session(error)&&engine.snapshot().session_id.empty()&&!engine.snapshot().running,
@@ -96,15 +107,7 @@ int main(int argc,char** argv) {
         require(!engine.start(config,false,error),"Overflowing lane frequency rejected");
         config=ovmesh::ReceiverConfig{};
         config.synthetic=true;
-        const bool detailed=argc==2 && std::string(argv[1])=="--detailed";
         config.compact_recording=!detailed;
-#ifdef OVMESH_TEST_SANITIZED
-        // Instrumented execution tests correctness at 8 MS/s, including complete
-        // loss accounting if instrumentation misses the real-time budget. The
-        // release integration retains its 16 MS/s zero-drop throughput gate.
-        config.sample_rate=8000000;
-        config.survey_span_hz=5000000;
-#endif
         config.tuning_offset_hz=900;
         // This artificial fixture key is never used for the synthetic decoder;
         // its channel binding must survive a demo run without replacement.
@@ -118,7 +121,7 @@ int main(int argc,char** argv) {
         require(engine.start(config,false,error),error);
         require(!engine.set_channel_key(0,"UserFixture","101112131415161718191a1b1c1d1e1f",error),"Changing keys while running rejected");
         require(!engine.set_survey_key(15,"Other fixture","AQ==",error) && engine.has_survey_key(15),"Key-only records remain immutable during reception");
-        const bool decoded=wait_for(engine,[](const auto& s){return s.authorized_messages>=1&&s.input_seconds>=5.2;},35);
+        const bool decoded=wait_for(engine,[](const auto& s){return s.authorized_messages>=1&&s.input_seconds>=5.2;},realtime?35:120);
         if(!decoded) {
             const auto s=engine.snapshot();
             std::cerr<<"Integration progress input="<<s.input_seconds<<"s frames="<<s.total_receptions<<" dropped="<<s.dropped_samples<<" load="<<s.processing_load<<'\n';
@@ -149,20 +152,14 @@ int main(int argc,char** argv) {
         engine.stop(); const auto stopped=engine.snapshot();
         require(engine.save_session(error),error);
         require(!stopped.running&&!stopped.recording&&stopped.error.empty(),"Clean stop state");
-#ifndef OVMESH_TEST_SANITIZED
         require(stopped.dropped_samples==0,"No accepted synthetic input blocks lost");
-#else
-        if(stopped.dropped_samples)
-            std::cout<<"Sanitizer instrumentation missed the real-time budget at "<<config.sample_rate
-                <<" samples/s: "<<stopped.dropped_samples
-                <<" application-dropped samples; validating complete loss accounting\n";
-#endif
         require(stopped.delivered_samples>0&&stopped.input_seconds>0&&stopped.measurement_seconds>0,"Input and RF exposure recorded");
         require(stopped.measurement_seconds<=stopped.input_seconds,"RF observation cannot exceed delivered input");
-#ifndef OVMESH_TEST_SANITIZED
         require(stopped.input_seconds-stopped.measurement_seconds<4096.0/config.sample_rate+1e-7,
             "Every complete accepted FFT contributes exposure; only partial tail is excluded");
-#endif
+        std::cout<<"Fixture decoded "<<stopped.authorized_messages<<" authorized message(s); input="
+            <<stopped.input_seconds<<"s measured="<<stopped.measurement_seconds<<"s dropped="
+            <<stopped.dropped_samples<<" processing_load="<<stopped.processing_load<<'\n'<<std::flush;
         require(stopped.spectrum_tiles>0 && stopped.spectrum_fft_size==4096 &&
             std::abs(stopped.spectrum_bin_width_hz-double(config.sample_rate)/4096)<1e-9 &&
             std::abs(stopped.spectrum_enbw_hz-1.5*stopped.spectrum_bin_width_hz)<1e-3,
@@ -340,7 +337,7 @@ int main(int argc,char** argv) {
         for(unsigned attempt=0;attempt<3;++attempt) {
             if(attempt==2) require(engine.set_survey_key(15,"Clear while receiving fixture","202122232425262728292a2b2c2d2e2f",error),error);
             require(engine.start(config,false,error),error);
-            require(wait_for(engine,[](const auto& s){return s.delivered_samples>0;},5),"Restart receives input");
+            require(wait_for(engine,[](const auto& s){return s.delivered_samples>0;},realtime?5:30),"Restart receives input");
             if(attempt==0) {
                 const auto memory=engine.snapshot();
                 require(!engine.save_session(error)&&!engine.save_session_copy((directory/"memory.sqlite").string(),error),
@@ -361,7 +358,7 @@ int main(int argc,char** argv) {
         }
         config.lanes.clear();config.session_path=(directory/"new-while-live.sqlite").string();
         require(engine.start(config,false,error),error);
-        require(wait_for(engine,[](const auto& s){return s.measurement_seconds>=.1;},5),"Saved New fixture has measurements");
+        require(wait_for(engine,[](const auto& s){return s.measurement_seconds>=.1;},realtime?5:30),"Saved New fixture has measurements");
         const auto before_new=engine.snapshot();
         require(engine.new_session(error),error);
         require(!engine.snapshot().running&&engine.snapshot().session_id.empty(),"New stops an active saved session and leaves a blank workspace");
@@ -372,7 +369,7 @@ int main(int argc,char** argv) {
         }
         config.session_path=(directory/"unavailable-saved-file.sqlite").string();
         require(engine.start(config,false,error),error);
-        require(wait_for(engine,[](const auto& s){return s.measurement_seconds>=.1;},5),"Unavailable-file fixture has measurements");
+        require(wait_for(engine,[](const auto& s){return s.measurement_seconds>=.1;},realtime?5:30),"Unavailable-file fixture has measurements");
         engine.stop();const auto unavailable=engine.snapshot();
         const auto relocated=directory/"temporarily-relocated.sqlite";
         std::filesystem::rename(config.session_path,relocated);

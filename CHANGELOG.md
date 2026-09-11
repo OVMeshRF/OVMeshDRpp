@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Separate portable engine correctness fixtures from optional real-time throughput checks, preserving sample-loss and decoding assertions on slower hosts.
+
 - Prevent system OpenSSL pkg-config metadata from adding an unintended Zlib dependency to the reviewed local crypto build; check Perl's Time::Piece prerequisite before setup starts.
 
 - Add explicit local OpenSSL setup for native Linux/macOS and actionable CMake checks for missing, mismatched or insufficiently hardened crypto dependencies. Normal builds remain offline.
