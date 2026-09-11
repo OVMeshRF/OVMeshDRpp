@@ -69,3 +69,9 @@ Replace the work-directory placeholder with the directory reported by the helper
 Report the exact error, Linux distribution/version, architecture, compiler and CMake versions, and whether the local setup helper completed. A missing prefix, mismatched version, stale cache, missing hardening, and a missing USB development package have different remedies. Do not send private survey files, keys, serial numbers or GPS information. Use [community support](../../SUPPORT.md).
 
 The setup workflow has local macOS build validation and synthetic error-path tests. Linux compilation, desktop behavior, USB permissions and live hardware acceptance remain pending independent Linux testing. Passing the crypto checks does not qualify the receiver or the entire Linux application.
+
+## Synthetic engine tests and throughput
+
+`engine` and `engine_detailed` exercise the same 16 MS/s synthetic waveform in compact and detailed recording modes. They now wait for processing capacity rather than dropping fixture samples when the host falls behind. They still require a valid decoded fixture, zero dropped samples, complete FFT accounting, saved-data consistency and correct session lifecycle. Their sample timestamps describe RF time, not a real-time performance guarantee. No SDR is opened by these tests.
+
+The optional real-time checks retain the original host-speed requirement. Enable them with `-DOVMESH_ENGINE_THROUGHPUT_TESTS=ON`, rebuild, and run `ctest --test-dir build/native -L performance --output-on-failure`. They run serially and must not be presented as correctness passes if they drop samples or fail to decode. A processing load above 1 with sample drops means the tested workload exceeded available processing capacity; check Release configuration and other CPU load. The 16 MS/s synthetic workload is separate from the RTL-SDR's supported 1/2 MS/s input. USB and discovery coverage must still be checked during actual operation.

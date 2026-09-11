@@ -168,7 +168,11 @@ struct KeyRecordInfo {
 
 class Engine {
 public:
-    Engine();
+    // Consumer-paced synthetic input is for offline correctness fixtures only.
+    // It preserves RF sample timing but does not establish real-time throughput.
+    // USB callbacks always retain their nonblocking, loss-accounting behavior.
+    enum class SyntheticPacing { Realtime, ConsumerPaced };
+    explicit Engine(SyntheticPacing synthetic_pacing = SyntheticPacing::Realtime);
     ~Engine();
     Engine(const Engine&) = delete;
     Engine& operator=(const Engine&) = delete;
