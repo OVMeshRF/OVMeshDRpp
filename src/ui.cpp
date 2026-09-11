@@ -450,6 +450,7 @@ struct DesktopState {
     double export_geographic_cell_m = 100;
     std::string notice;
     bool notice_error = false;
+    bool notice_warning = false;
     bool authorize_hardware = false;
     bool authorize_keys = false;
     bool show_settings = false;
@@ -513,9 +514,11 @@ struct DesktopState {
     void feedback(bool ok, const std::string& message) {
         notice = message;
         notice_error = !ok;
+        notice_warning = false;
     }
-    void refresh_gps() {
-        gps_devices = discover_gps_devices();
+    template<class DiscoverGps = decltype(&discover_gps_devices)>
+    void refresh_gps(DiscoverGps discover = discover_gps_devices) {
+        gps_devices = discover();
         selected_gps = gps_devices.error.empty() ? select_gps_device(gps_devices.devices, preferences.gps_device_id) : std::nullopt;
     }
     // Updates setup only. Selecting a source never enumerates or opens an SDR.
@@ -639,10 +642,20 @@ struct DesktopState {
         }
         if (discover) refresh_gps(); // OS inventory only; no serial/device opens.
     }
-    bool connect_selected_gps(Engine& engine) {
-        refresh_gps(); // Recheck identity after any USB rearrangement.
-        if (!gps_devices.error.empty()) { feedback(false, gps_devices.error); return false; }
+    // Keep discovery/receiver operations substitutable for hardware-free checks
+    // of this same startup path. Production calls use OS metadata and Engine.
+    template<class Receiver, class DiscoverGps = decltype(&discover_gps_devices)>
+    bool connect_selected_gps(Receiver& engine, DiscoverGps discover = discover_gps_devices) {
+        refresh_gps(discover); // Recheck identity after any USB rearrangement.
+        if (!gps_devices.error.empty()) {
+            engine.disconnect_gps();
+            feedback(false, gps_devices.error);
+            return false;
+        }
         if (!selected_gps) {
+            // Do not keep an earlier serial fix when its identity is no longer
+            // available/unambiguous. Engine preserves an explicit manual fix.
+            engine.disconnect_gps();
             feedback(false, "GPS unavailable or ambiguous. Choose a receiver in Settings > GPS & location.");
             return false;
         }
@@ -656,7 +669,8 @@ struct DesktopState {
         feedback(ok, ok ? "GPS connected. Waiting for a current position." : error);
         return ok;
     }
-    void start(Engine& engine, bool permission) {
+    template<class Receiver, class DiscoverGps = decltype(&discover_gps_devices)>
+    void start(Receiver& engine, bool permission, DiscoverGps discover = discover_gps_devices) {
         if (passive_smoke) {
             feedback(false, "Passive UI checks cannot start reception.");
             return;
@@ -685,7 +699,9 @@ struct DesktopState {
         std::string error;
         // Ordinary startup may already have connected the recognized GPS.
         // Saved analysis, passive checks and synthetic demos remain isolated.
-        if (preferences_active && !config.synthetic && gps_enabled && permission && !connect_selected_gps(engine)) return;
+        std::string gps_warning;
+        if (preferences_active && !config.synthetic && gps_enabled && permission && !connect_selected_gps(engine, discover))
+            gps_warning = notice;
         if (preferences_active && config.synthetic && engine.gps_connection_status().state != GpsConnectionState::Disconnected) engine.disconnect_gps();
         // Storage can be created before USB startup fails. Preserve that file
         // and allocate a fresh destination on the next ordinary-session retry.
@@ -706,6 +722,10 @@ struct DesktopState {
         feedback(ok, ok ? (config.synthetic ? "Synthetic reception started. No USB device is accessed."
                                              : "Receive-only hardware session started.") : error);
         if (ok) {
+            if (!gps_warning.empty()) {
+                feedback(true, "Reception started without GPS. " + gps_warning);
+                notice_warning = true;
+            }
             recording_path_used = save_session;
             if (after_start) {
                 try { after_start(); }
@@ -1482,6 +1502,7 @@ void gps_settings(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
             ui.persist_preferences();
         }
         ImGui::EndDisabled();
+        wrapped("GPS is optional. Reception continues if it is unavailable; measurements without a valid receiver position cannot be mapped.");
     }
     ImGui::TextColored(secondary, "%s", snapshot.gps_status.c_str());
     wrapped("Positions describe the receiver. Sender-reported coordinates inside authorized packets remain separate.");
