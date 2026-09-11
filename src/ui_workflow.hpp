@@ -477,7 +477,11 @@ void status_strip(Engine& engine,DesktopState& ui,const Snapshot& snapshot){
     ImGui::SameLine(0,18);
     const auto gps=engine.gps_connection_status();
     const char* gps_label=snapshot.historical?"Recorded GPS":gps.state==GpsConnectionState::ValidFix?"GPS fix":gps.state==GpsConnectionState::WaitingForFix?"GPS acquiring":gps.state==GpsConnectionState::StaleFix?"GPS stale":gps.state==GpsConnectionState::ReadError?"GPS error":ui.gps_enabled?"GPS unavailable":"GPS off";
+    const bool gps_attention=!snapshot.historical&&!snapshot.config.synthetic&&ui.gps_enabled&&gps.state!=GpsConnectionState::ValidFix;
+    if(gps_attention)ImGui::PushStyleColor(ImGuiCol_Text,amber);
     if(ImGui::SmallButton(gps_label)){ui.settings_page=1;ui.show_settings=true;}
+    if(gps_attention)ImGui::PopStyleColor();
+    help("GPS is optional. Without a valid fix or an explicitly configured fixed position, RF measurements remain unlocated. Click to review GPS settings.");
     ImGui::SameLine(0,18);
     if(ImGui::SmallButton("Details"))ui.show_diagnostics=true;
     if(snapshot.discovery.failed)wrapped("LoRa discovery stopped. Spectrum measurements have separate coverage; see Details.",red);
@@ -557,7 +561,7 @@ void render(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
     if(ui.operation_busy())ImGui::TextColored(secondary,"%s",ui.operation_label.c_str());
     else if(!snapshot.error.empty())wrapped(snapshot.error.c_str(),red);
     else if(!ui.notice.empty()){
-        wrapped(ui.notice.c_str(),ui.notice_error?red:muted);
+        wrapped(ui.notice.c_str(),ui.notice_error?red:ui.notice_warning?amber:muted);
         if(ImGui::IsItemClicked()&&!ui.notice_error)ui.notice.clear();
     }
     const auto& active = snapshot.session_id.empty() ? ui.config : snapshot.config;

@@ -203,6 +203,96 @@ void consecutive_recordings(const Fixture& fixture) {
         reopened.snapshot().spectrum_tiles>0&&!reopened.snapshot().incomplete,
         "Second recording is independently readable");
 }
+
+// Test the desktop's real start/selection control flow without opening any
+// physical SDR/GPS or asking the OS to discover devices.
+struct StartupReceiver {
+    GpsConnectionStatus gps;
+    ReceiverConfig requested;
+    unsigned rf_starts=0, gps_opens=0, gps_closes=0;
+    bool gps_fails=false, rf_fails=false, prior_serial_fix=false;
+    bool running=false, permission_seen=false;
+    GpsConnectionStatus gps_connection_status() const { return gps; }
+    void disconnect_gps() { ++gps_closes;gps={};prior_serial_fix=false; }
+    bool connect_gps(const std::string& path,unsigned baud,std::string& error) {
+        ++gps_opens;require(baud==9600,"GPS startup preserves the configured baud");
+        if(gps_fails) {gps={GpsConnectionState::ReadError,path,"Fixture serial open failed"};error=gps.detail;return false;}
+        gps={GpsConnectionState::WaitingForFix,path,"Fixture awaiting fix"};return true;
+    }
+    bool start(const ReceiverConfig& config,bool permission,std::string& error) {
+        ++rf_starts;requested=config;permission_seen=permission;
+        running=!rf_fails&&(config.synthetic||permission);
+        if(!running)error="Fixture RF start refused";
+        return running;
+    }
+    void stop() { running=false; }
+};
+
+void optional_gps_startup(const Fixture& fixture) {
+    // Plausible POSIX and Windows path syntax reaches the real selection
+    // checks; only StartupReceiver sees these strings, never a serial API.
+    const GpsDevice a{"/dev/ttyFixtureGpsA","Fixture GPS A","fixture-gps-a",true};
+    const GpsDevice b{"COM987","Fixture GPS B","fixture-gps-b",true};
+    struct Scenario { GpsDiscovery inventory;std::string preferred;bool serial_failure=false; };
+    const std::vector<Scenario> missing{
+        {{},""}, {{{a,b},""},""}, {{{b},""},a.stable_id},
+        {{{a,a},""},a.stable_id}, {{{},"Fixture metadata lookup failed"},""},
+        {{{a},""},"",true}
+    };
+    for(int source:{1,2})for(const auto& scenario:missing) {
+        DesktopState ui;ui.initialize_preferences(fixture.path("optional-gps-profile"),false);
+        ui.select_receiver(source);ui.preferences.gps_device_id=scenario.preferred;
+        const auto path=ui.session_path;
+        StartupReceiver receiver;receiver.gps_fails=scenario.serial_failure;
+        receiver.gps={GpsConnectionState::ValidFix,"test-only:old-gps","Old fixture fix"};receiver.prior_serial_fix=true;
+        unsigned inventories=0;
+        ui.start(receiver,true,[&]{++inventories;return scenario.inventory;});
+        require(receiver.running&&receiver.rf_starts==1&&receiver.permission_seen&&inventories==1,
+            "Missing, ambiguous, disappeared or failed GPS must not block an authorized SDR start");
+        require(receiver.gps_opens==(scenario.serial_failure?1U:0U)&&receiver.gps_closes==1&&!receiver.prior_serial_fix,
+            "GPS failure clears the prior serial source and never probes an unrelated port");
+        require(!ui.notice_error&&ui.notice_warning&&ui.notice.starts_with("Reception started without GPS."),
+            "Successful RF startup retains a visible GPS warning rather than a false RF failure");
+        require(ui.gps_enabled&&ui.save_session&&ui.recording_path_used&&receiver.requested.session_path==path&&
+            !receiver.requested.synthetic&&receiver.requested.hardware_receiver==(source==2?HardwareReceiver::RtlSdr:HardwareReceiver::HackRf),
+            "GPS failure preserves recording, selected SDR and the operator's GPS preference");
+        require(!fs::exists(file_path(path)),"Substituted receiver never opens a recording or hardware");
+        if(scenario.serial_failure)require(ui.notice.find("Fixture serial open failed")!=std::string::npos,
+            "Serial failure detail survives the successful RF startup notice");
+    }
+    // Uniquely recognized and explicitly remembered devices still connect;
+    // an already connected source (including acquisition/staleness) stays open.
+    for(bool remembered:{false,true})for(auto state:{GpsConnectionState::Disconnected,GpsConnectionState::WaitingForFix,
+                    GpsConnectionState::ValidFix,GpsConnectionState::StaleFix}) {
+        DesktopState ui;ui.preferences_active=true;ui.source=2;
+        ui.preferences.gps_device_id=remembered?a.stable_id:"";
+        StartupReceiver receiver;receiver.gps={state,a.path,"Fixture GPS"};
+        ui.start(receiver,true,[&]{return GpsDiscovery{remembered?std::vector<GpsDevice>{a,b}:std::vector<GpsDevice>{a},""};});
+        require(receiver.running&&!ui.notice_warning&&!ui.notice_error&&
+            receiver.gps_opens==(state==GpsConnectionState::Disconnected?1U:0U),
+            "Remembered GPS connects or remains open without requiring a satellite lock to start RF");
+    }
+    DesktopState ui;ui.preferences_active=true;ui.source=2;
+    StartupReceiver receiver;receiver.rf_fails=true;
+    ui.start(receiver,true,[]{return GpsDiscovery{};});
+    require(ui.notice_error&&!ui.notice_warning&&!receiver.running&&ui.notice=="Fixture RF start refused",
+        "A genuine SDR error remains the primary failure even when GPS is absent");
+    unsigned inventories=0;
+    const auto no_discovery=[&]{++inventories;return GpsDiscovery{};};
+    receiver={};ui.gps_enabled=false;ui.start(receiver,true,no_discovery);
+    require(receiver.running&&inventories==0&&receiver.gps_opens==0&&!ui.notice_warning,
+        "GPS opt-out skips discovery and leaves normal RF startup intact");
+    receiver={};ui.gps_enabled=true;ui.start(receiver,false,no_discovery);
+    require(!receiver.running&&!receiver.permission_seen&&inventories==0&&receiver.gps_opens==0,
+        "Missing RF authorization cannot be bypassed through optional GPS startup");
+    receiver={};ui.source=0;ui.start(receiver,false,no_discovery);
+    require(receiver.running&&receiver.requested.synthetic&&inventories==0&&receiver.gps_opens==0,
+        "Synthetic startup remains isolated from automatic GPS discovery");
+    receiver={};ui.source=2;ui.passive_smoke=true;ui.start(receiver,true,no_discovery);
+    require(receiver.rf_starts==0&&inventories==0,"Passive checks cannot start a receiver or GPS");
+    receiver={};ui.passive_smoke=false;ui.preferences_active=false;ui.start(receiver,true,no_discovery);
+    require(receiver.running&&inventories==0,"Explicit modes do not inherit ordinary GPS auto-start");
+}
 void unavailable_settings_or_folder(const Fixture& fixture) {
     const auto malformed_profile=fixture.path("malformed-profile");
     DesktopState original;original.initialize_preferences(malformed_profile,false);
@@ -292,7 +382,7 @@ void frequency_summary_rendering() {
 int main() {
     try {
         Fixture fixture;defaults_folder_and_optouts(fixture);receiver_offset_survives_restart(fixture);rtl_setup_survives_restart(fixture);consecutive_recordings(fixture);
-        unavailable_settings_or_folder(fixture);frequency_summary_rendering();
+        unavailable_settings_or_folder(fixture);optional_gps_startup(fixture);frequency_summary_rendering();
         std::cout<<"Desktop setup and recording integration passed; explicit fixtures only, no windows or USB opened\n";
         return 0;
     }catch(const std::exception& error){std::cerr<<"Desktop setup integration failed: "<<error.what()<<'\n';return 1;}

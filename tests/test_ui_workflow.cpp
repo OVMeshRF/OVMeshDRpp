@@ -107,6 +107,7 @@ void fresh_layout_and_settings(Canvas& canvas, const Fixture& fixture) {
     ui.settings_page = 1;
     canvas.frame(show); const auto gps = canvas.frame(show);
     contains(gps, "Start GPS automatically"); contains(gps, "FIXED OR MOBILE RECEIVER POSITION");
+    contains(gps, "GPS is optional. Reception continues if it is unavailable");
     require(engine.gps_connection_status().state == GpsConnectionState::Disconnected && !engine.snapshot().running,
         "Opening Settings alone performs no device connection");
     ui.show_settings = false;

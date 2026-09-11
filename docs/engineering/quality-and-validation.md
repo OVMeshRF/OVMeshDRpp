@@ -12,12 +12,16 @@ The [CMake test definitions](../../CMakeLists.txt) build native tests from [test
 | Compact storage | Detailed/compact activity and GPS equivalence, power-block support, schema handling and saved query/report consistency |
 | PHY and protocol | Symbol/framing checks, chunk boundaries, malformed input, explicit key behavior, schema presence/defaults and independent official-version fixtures |
 | Waveform discovery | Analytic chirps, BW/SF inference, interference/adversarial cases, queue/worker behavior, persistence and processing-loss reporting |
-| GPS and preferences | Checksums, valid/invalid/stale fixes, discovery selection, connection lifecycle, settings isolation and safe defaults |
+| GPS and preferences | Checksums, valid/invalid/stale fixes, discovery selection, connection lifecycle, settings isolation and safe defaults; optional GPS failure does not block RF or disable recording |
 | Reports and files | Selection consistency, privacy defaults, escaping, output bounds, source immutability, overwrite refusal and incomplete-output handling |
 | Desktop | Session workflows, selectors, occupancy/geographic displays, timestamps, licenses and PNG capture |
 | Dependencies | Offline vendored-file hashes, primitive crypto examples, compiled notice content and bounded generated schemas |
 
 Fixtures contain public examples or constructed inputs, not operational captures. Sharing implementation ancestry limits independence: agreement between two derived decoders is weaker evidence than agreement with a separately generated reference.
+
+Desktop GPS-start fixtures substitute metadata inventory and receiver operations in the actual desktop startup path. They cover absent/ambiguous/duplicated/remembered-missing devices, metadata and serial failures, both SDR choices, preserved recording and GPS preferences, old-source invalidation, waiting/valid/stale connections, genuine RF failure and passive/demo/authorization guards. They do not enumerate or open USB devices. Separate GPS lifecycle tests cover invalidating serial fixes while preserving an explicit manual position; native Linux/Windows device and UI acceptance remains necessary.
+
+For the optional-GPS startup change, the macOS Release desktop build completed and `desktop_setup_ui`, `ui_workflow`, `gps_status` and `gps_discovery` passed. Serial lifecycle checks used a test-owned pseudo-terminal, not a USB GPS. This validates the local software behavior, not Linux/Windows USB operation.
 
 The engine integration fixtures use consumer-paced synthetic input: the generator waits when the bounded input queue is full, preserving the waveform and sample-based RF timestamps. Hardware callbacks and ordinary real-time demo pacing are unchanged. Both recording modes still require successful authorized fixture decoding, zero sample loss, complete accepted FFT exposure, saved-data consistency and session lifecycle checks. Optional `OVMESH_ENGINE_THROUGHPUT_TESTS` retains the separate real-time 16 MS/s pass/fail checks. Passing an offline fixture does not establish receiver throughput.
 

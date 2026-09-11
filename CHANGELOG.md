@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Allow RF reception when optional automatic GPS is missing, ambiguous or cannot connect; show a warning, preserve recording, and invalidate an unavailable earlier serial source.
+
 - Separate portable engine correctness fixtures from optional real-time throughput checks, preserving sample-loss and decoding assertions on slower hosts.
 
 - Prevent system OpenSSL pkg-config metadata from adding an unintended Zlib dependency to the reviewed local crypto build; check Perl's Time::Piece prerequisite before setup starts.
