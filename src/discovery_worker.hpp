@@ -2,6 +2,7 @@
 #pragma once
 
 #include "discovery_channelizer.hpp"
+#include "discovery_decoder.hpp"
 #include "lora_discovery.hpp"
 #include <complex>
 #include <cstdint>
@@ -13,8 +14,9 @@
 
 namespace ovmesh {
 
-// Experimental background discovery only. No receiver, filesystem, transport,
-// decoder-key or UI dependency. This wrapper does not establish live capacity.
+// Experimental background discovery and optional transient PHY dispatch. No
+// device, filesystem, transport, decoder-key or UI dependency. This wrapper
+// does not establish live capacity.
 class DiscoveryWorker {
 public:
     static constexpr size_t maximum_input_block = 131072;
@@ -22,9 +24,13 @@ public:
     // This absorbs short discovery bursts; it cannot fix sustained overload.
     static constexpr size_t source_capacity = 64;
     static constexpr size_t detector_workers = 3;
+    // Three bounded FIFO queues retain their band assignment. Any worker may
+    // serve an eligible queue, with one active job per subband. Capacity and
+    // queue high-water include active slots until their IQ has been erased.
     static constexpr size_t detector_queue_capacity = 16;
     static constexpr size_t detector_batch = 4096;
     static constexpr size_t result_capacity = 128, gap_capacity = 128;
+    static constexpr size_t frame_capacity = 64;
     static constexpr size_t all_subbands = std::numeric_limits<size_t>::max();
 
     enum class GapReason {
@@ -73,10 +79,13 @@ public:
         // dumps, paths, payloads or arbitrary caller text.
         std::string fault;
         std::vector<SubbandProgress> subbands;
+        DiscoveryDecoderStats automatic_decoder;
+        size_t queued_frames = 0;
     };
 
     DiscoveryWorker(uint32_t input_sample_rate, double receiver_center_hz,
-                    double requested_lower_hz, double requested_upper_hz);
+                    double requested_lower_hz, double requested_upper_hz,
+                    const DiscoveryDecoderOptions& decoder_options = {});
     ~DiscoveryWorker();
     DiscoveryWorker(const DiscoveryWorker&) = delete;
     DiscoveryWorker& operator=(const DiscoveryWorker&) = delete;
@@ -94,6 +103,7 @@ public:
     [[nodiscard]] Snapshot snapshot() const;
     std::vector<Result> take_results();
     std::vector<Gap> take_gaps();
+    std::vector<DiscoveryDecodedFrame> take_frames();
 
 private:
     class Impl;

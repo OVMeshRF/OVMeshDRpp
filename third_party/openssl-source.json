@@ -35,10 +35,13 @@
   "purpose": "Public source pins and reproducible build configuration; no machine-specific binary identity or build result is recorded here",
   "integrity": {
     "published_sha256_match": true,
-    "pgp_signature_verified": false,
-    "pgp_reason": "The detached release signature has not been verified. A recorded checksum or signing fingerprint does not authenticate the publisher.",
+    "pgp_signature_verified": true,
+    "pgp_reason": "Release archive detached signature verified on 2026-09-11 with GnuPG 2.4.4 against the pinned public key bundle. The signing subkey is certified by the primary fingerprint published on the official OpenSSL source page; no Web-of-Trust certification is claimed.",
     "published_primary_signing_fingerprint": "B146647E45A7B33947AB226B2A2C87D161692D40",
-    "source_transport": "HTTPS via official release-page links"
+    "source_transport": "HTTPS via official release-page links",
+    "verified_signing_subkey_fingerprint": "C46ED3F2CBEFDA1FDAADA44264ED7B1DCCE71CB2",
+    "signature_created_utc": "2026-08-25T11:57:35Z",
+    "verification_date": "2026-09-11"
   },
   "source_file_hashes": {
     "Configure": "3d3ed5a3e4c69a917cee593643c4614a0d6ccc074c0e2b4ecad3293de47aa452",
@@ -92,7 +95,6 @@
     ],
     "linkage_review": "Inspect the resulting binary dependencies using the target platform tools; record build and test outcomes separately",
     "scope_limitations": [
-      "PGP release signature not verified",
       "Build instructions and source pins do not establish successful validation on any particular target",
       "The no-apps/no-tests configuration omits the upstream full test suite",
       "A bounded build-path review and primitive smoke tests are not a comprehensive source security audit or FIPS validation",

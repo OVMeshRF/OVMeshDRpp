@@ -86,6 +86,19 @@ void pooling_preserves_measurement_meaning() {
     require(next == dense.size(), "Every dense source bin remains represented");
 }
 
+void resumed_frequency_gaps() {
+    const std::vector<FrequencySummary> bins{
+        {905000000,100000,-80,-40,10,5}, {910000000,500000,-80,-40,10,10}};
+    const auto columns=occupancy_columns(bins,100);
+    require(columns.size()==100 && columns.front().observed && columns.back().observed,
+        "Different acquisition grids use actual frequency coordinates");
+    require(!columns[50].observed && columns[50].unobserved && !columns[50].last,
+        "A gap between receiver ranges stays unobserved rather than stretched into data");
+    const auto region=frequency_gesture_range(bins,.45,.55,true,125000);
+    require(region && region->lower_hz>906000000 && region->upper_hz<909000000,
+        "Dragging a coverage gap selects its real frequencies without jumping to a measured bin");
+}
+
 class ChartUi {
 public:
     ChartUi() {
@@ -165,7 +178,7 @@ void actual_chart_geometry() {
 
 int main() {
     try {
-        sparse_activity_scale(); pooling_preserves_measurement_meaning(); actual_chart_geometry();
+        sparse_activity_scale(); pooling_preserves_measurement_meaning(); resumed_frequency_gaps(); actual_chart_geometry();
         std::cout << "Occupancy chart sparse-activity and peak-retention checks passed; no windows or USB opened\n";
         return 0;
     } catch (const std::exception& error) {

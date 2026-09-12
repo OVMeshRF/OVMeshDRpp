@@ -5,9 +5,11 @@
 #include "ovmesh/gps_discovery.hpp"
 #include "ovmesh/preferences.hpp"
 #include "ovmesh/report.hpp"
+#include "ovmesh/meshtastic_presets.hpp"
 #include "session_disk.hpp"
 #include "geographic_plot.hpp"
 #include "desktop_assets.hpp"
+#include "occupancy_scale.hpp"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -82,7 +84,14 @@ constexpr ImVec4 secondary{0.41f, 0.69f, 1.0f, 1.0f};
 constexpr ImVec4 muted{0.66f, 0.71f, 0.78f, 1.0f};
 constexpr ImVec4 amber{0.96f, 0.73f, 0.37f, 1.0f};
 constexpr ImVec4 red{1.0f, 0.48f, 0.53f, 1.0f};
-constexpr size_t waterfall_rows = 180;
+// Bounded visual history, independent of the current panel height. These are
+// displayed spectrum updates, not a lossless or uniformly timed RF recording.
+constexpr size_t waterfall_rows = 1024;
+constexpr float waterfall_row_pitch = 2.f;
+// Release policy: the desktop is an RF energy survey tool until range-wide
+// LoRa processing is qualified. Retain the backend for deliberate development
+// checks, but neither saved preferences nor desktop launch flags can enable it.
+constexpr bool desktop_lora_enabled = false;
 
 // macOS's supported system libc++ does not yet expose std::jthread. Keep the
 // same cancel-and-join ownership with standard thread/CV facilities instead.
@@ -383,9 +392,9 @@ std::string desktop_acquisition_log(const ReceiverConfig& applied, size_t key_re
         }
     }
     out << "Desktop keyring configured_records=" << key_records << " waveform_discovery=" << applied.discover_lora
-        << " automatic_decoder_dispatch=0 decoding_scope="
+        << " automatic_decoder_dispatch=" << applied.automatic_decode << " decoding_scope="
         << (rak ? !packets ? "paused_spectrum_only" : applied.concentrators.decode_enabled ? "configured_hardware_profiles" : "disabled_packet_metadata_only"
-                : applied.lanes.empty() ? "paused_spectrum_only" : "selected_profiles") << '\n';
+                : applied.automatic_decode ? "discovered_waveforms" : applied.lanes.empty() ? "paused_spectrum_only" : "selected_profiles") << '\n';
     return out.str();
 }
 
@@ -443,17 +452,17 @@ struct DesktopState {
         waveform_rows.clear(); waveform_refresh = -1; last_analysis_refresh = -1;
         focus_analysis = false; focus_live = true;
     }
-    bool spectrum_only = false;
-    bool decode_enabled = true;
+    bool spectrum_only = !desktop_lora_enabled;
+    bool decode_enabled = desktop_lora_enabled;
+    bool public_meshtastic_key_enabled = false; // Passive construction never adds a key.
     bool mixed_fonts = true;
     ImFont* sans_font = nullptr;
     ImFont* mono_font = nullptr;
-    int settings_page = 0;
+    int settings_page = desktop_lora_enabled ? 0 : 1;
     bool show_diagnostics = false;
     bool show_analysis_details = false;
     int analysis_view = 0;
     bool new_requested = false;
-    bool restart_after_new = false;
     bool close_requested = false;
     bool close_approved = false;
     std::string pending_open_path;
@@ -490,7 +499,7 @@ struct DesktopState {
     std::array<char, 65> key_input{};
     std::array<char, 160> filter{};
     ExportOptions export_options;
-    int export_kind = 0; // Six CSV reports, detailed archive, narrative HTML.
+    int export_kind = 0; // Five CSV reports, detailed archive, narrative HTML.
     SurveyQuery export_query;
     std::string export_session_id;
     bool export_from_analysis = false;
@@ -506,7 +515,7 @@ struct DesktopState {
     int selected_license = 0;
     bool show_keys = false;
     bool show_export = false;
-    bool only_authorized = false;
+    bool only_classified = false;
     bool freeze_waterfall = false;
     bool save_session = false;
     bool show_detail = false;
@@ -522,6 +531,12 @@ struct DesktopState {
     float display_floor = -100;
     float display_ceiling = -15;
     float ui_scale = 1;
+    // Logical pixel heights: resize without changing measurement or recording.
+    float spectrum_height = 110;
+    float waterfall_height = 220;
+    ImVec2 spectrum_grabber{}, waterfall_grabber{};
+    uint64_t waterfall_center_hz = 0;
+    uint32_t waterfall_span_hz = 0;
     int gps_baud = 9600;
     double latitude = 0;
     double longitude = 0;
@@ -553,11 +568,26 @@ struct DesktopState {
 
     DesktopState() {
         config.lanes.clear(); // Passive construction; ordinary startup arms the saved defaults.
+        enforce_spectrum_only_policy();
         copy_text(session_title, "RF survey");
         copy_text(channel_name, "LongFast");
         copy_text(key_label, "Survey key");
     }
     ~DesktopState() { erase_secret(key_input); }
+
+    void enforce_spectrum_only_policy() {
+        if (desktop_lora_enabled) return;
+        spectrum_only = true;
+        decode_enabled = false;
+        public_meshtastic_key_enabled = false;
+        config.discover_lora = false;
+        config.automatic_decode = false;
+        config.lanes.clear();
+        config.concentrators.decode_enabled = false;
+        for (auto& board : config.concentrators.boards) board.packets_enabled = false;
+        show_keys = false;
+        show_detail = false;
+    }
 
     void feedback(bool ok, const std::string& message) {
         notice = message;
@@ -565,14 +595,19 @@ struct DesktopState {
         notice_warning = false;
     }
     void use_launch_detection(const ReceiverConfig& requested) {
+        if (!desktop_lora_enabled) { enforce_spectrum_only_policy(); return; }
         if (is_concentrator(requested)) {
             spectrum_only = std::none_of(requested.concentrators.boards.begin(), requested.concentrators.boards.end(),
                 [](const auto& board) { return board.packets_enabled; });
             decode_enabled = requested.concentrators.decode_enabled;
         } else {
-            spectrum_only = !requested.discover_lora && requested.lanes.empty();
-            decode_enabled = !requested.lanes.empty();
+            spectrum_only = !requested.discover_lora && requested.lanes.empty() && !requested.automatic_decode;
+            decode_enabled = !requested.lanes.empty() || requested.automatic_decode;
         }
+    }
+    bool automatic_decode_requested() const {
+        return desktop_lora_enabled && source != 3 && config.discover_lora && decode_enabled && !spectrum_only &&
+            (preferences_active || config.automatic_decode);
     }
     template<class DiscoverGps = decltype(&discover_gps_devices)>
     void refresh_gps(DiscoverGps discover = discover_gps_devices) {
@@ -604,7 +639,10 @@ struct DesktopState {
                 if (matches != 1) selected.reset();
             }
             if (!selected) {
-                feedback(false, "Choose each RAK board in Settings > RAK concentrators. A selected USB identity is missing or ambiguous.");
+                if (boards[i].device_id.empty() && boards[i].device_path.empty())
+                    feedback(false, "Select Board " + std::to_string(i + 1) + " in Settings > RAK concentrators, then start reception.");
+                else
+                    feedback(false, "The selected RAK board is unavailable or ambiguous. Refresh USB candidates in Settings > RAK concentrators and select the board again.");
                 return false;
             }
             boards[i].device_path = concentrator_devices.devices[*selected].path;
@@ -618,6 +656,7 @@ struct DesktopState {
     }
     // Updates setup only. Selecting a source never enumerates or opens an SDR.
     void select_receiver(int next_source) {
+        enforce_spectrum_only_policy();
         if (next_source < 0 || next_source > 3 || next_source == source) return;
         const bool hardware_changed = next_source != 0 && next_source != source;
         source = next_source;
@@ -636,6 +675,7 @@ struct DesktopState {
             if (config.center_hz < 24000000 || config.center_hz > 1766000000ULL)
                 config.center_hz = 906875000;
         } else if (source == 3) {
+            concentrator_inventory_loaded = false;
             config.center_hz = 915000000;
             config.survey_span_hz = 26000000;
             config.amplifier = false;
@@ -643,11 +683,12 @@ struct DesktopState {
             config.sample_rate = 16000000;
             config.survey_span_hz = 10000000;
         }
-        feedback(true, source == 3 ? "RAK selected: swept 902-928 MHz energy survey. Choose the USB boards and packet profiles in Settings." : source == 2 ?
+        feedback(true, source == 3 ? "RAK selected: swept 902-928 MHz energy survey. Choose the USB boards in Settings." : source == 2 ?
             "RTL-SDR selected: 1.5 MHz survey at 2 MS/s. Check the center frequency; Offset reset for this receiver." :
             "Receiver selected. Check the survey range and Offset before starting.");
     }
     void prepare_discovery_rate() {
+        if (!desktop_lora_enabled) { enforce_spectrum_only_policy(); return; }
         if (source != 2 || spectrum_only || !config.discover_lora) return;
         if (config.sample_rate != 2000000 || config.survey_span_hz > 1500000) {
             config.sample_rate = 2000000;
@@ -656,6 +697,7 @@ struct DesktopState {
         }
     }
     void persist_preferences() {
+        enforce_spectrum_only_policy();
         if (!preferences_ready) return;
         preferences.recording_enabled = save_session;
         preferences.compact_recording = config.compact_recording;
@@ -665,6 +707,7 @@ struct DesktopState {
         preferences.discover_lora = config.discover_lora;
         preferences.spectrum_only = spectrum_only;
         preferences.decode_enabled = decode_enabled;
+        preferences.public_meshtastic_key_enabled = public_meshtastic_key_enabled;
         preferences.mixed_fonts = mixed_fonts;
         preferences.mobile_position_display = position_view_mode == PositionViewMode::Mobile;
         preferences.receiver_source = source == 0 ? DesktopReceiver::Synthetic :
@@ -684,6 +727,11 @@ struct DesktopState {
         } catch (const std::exception& e) {
             preferences_error = std::string("Settings could not be saved: ") + e.what();
         }
+    }
+    void apply_public_key(Engine& engine) {
+        enforce_spectrum_only_policy();
+        std::string error;
+        if (!engine.set_public_meshtastic_key_enabled(public_meshtastic_key_enabled, error)) feedback(false, error);
     }
     void prepare_recording_file() {
         if (!save_session || (!preferences_ready && session_path.empty())) return;
@@ -718,6 +766,7 @@ struct DesktopState {
             config.compact_recording = config.compact_recording && preferences.compact_recording;
             spectrum_only = preferences.spectrum_only;
             decode_enabled = preferences.decode_enabled;
+            public_meshtastic_key_enabled = preferences.public_meshtastic_key_enabled;
             mixed_fonts = preferences.mixed_fonts;
             position_view_mode = preferences.mobile_position_display ? PositionViewMode::Mobile : PositionViewMode::Stationary;
             if (restore_receiver) {
@@ -734,8 +783,8 @@ struct DesktopState {
                 config.amplifier = preferences.amplifier;
                 config.rtl_gain_tenths_db = preferences.rtl_gain_tenths_db;
                 config.rtl_auto_gain = preferences.rtl_auto_gain;
-                // The decoder is armed, but no channel key is implicitly loaded.
-                if (config.lanes.empty()) config.lanes.push_back(LaneConfig{});
+                // Ordinary range-wide discovery needs no assumed channel frequency.
+                // Explicit manual profiles are left unchanged; keys are applied separately.
             }
             prepare_recording_file();
             persist_preferences();
@@ -743,6 +792,7 @@ struct DesktopState {
             preferences_ready = false;
             preferences_error = std::string("Saved setup unavailable: ") + e.what();
         }
+        enforce_spectrum_only_policy();
         if (discover) refresh_gps(); // OS inventory only; no serial/device opens.
     }
     // Keep discovery/receiver operations substitutable for hardware-free checks
@@ -776,6 +826,7 @@ struct DesktopState {
              class DiscoverConcentrators = decltype(&discover_concentrator_devices)>
     void start(Receiver& engine, bool permission, DiscoverGps discover = discover_gps_devices,
                DiscoverConcentrators discover_boards = discover_concentrator_devices) {
+        enforce_spectrum_only_policy();
         if (passive_smoke) {
             feedback(false, "Passive UI checks cannot start reception.");
             return;
@@ -784,11 +835,16 @@ struct DesktopState {
             feedback(false, "This managed session cannot be restarted. Its results remain selected for review.");
             return;
         }
+        const auto previous = engine.snapshot();
+        const bool resuming = !previous.session_id.empty() && !previous.historical;
         config.synthetic = source == 0;
         config.hardware_receiver = source == 3 ? HardwareReceiver::Rak5146 :
             source == 2 ? HardwareReceiver::RtlSdr : HardwareReceiver::HackRf;
         if (source == 3 && !resolve_concentrators(discover_boards)) return;
-        if (preferences_active && save_session && (session_path.empty() || recording_path_used)) prepare_recording_file();
+        if (resuming) {
+            session_path = previous.config.session_path;
+            save_session = !session_path.empty();
+        } else if (preferences_active && save_session && (session_path.empty() || recording_path_used)) prepare_recording_file();
         if (save_session && session_path.empty()) {
             feedback(false, "Choose a recording location before starting. Recording has not been disabled.");
             return;
@@ -816,6 +872,7 @@ struct DesktopState {
         auto effective = config;
         if (spectrum_only) effective.discover_lora = false;
         if (spectrum_only || !decode_enabled) effective.lanes.clear();
+        effective.automatic_decode = automatic_decode_requested();
         if (source == 3) {
             effective.discover_lora = false; effective.lanes.clear();
             effective.concentrators.decode_enabled = decode_enabled && !spectrum_only;
@@ -847,7 +904,8 @@ struct DesktopState {
                     return;
                 }
             }
-            waterfall.clear();
+            // The live waterfall is transient. Keep it on same-range resume;
+            // spectrum_view clears it if the acquisition axis actually changes.
             analysis_loaded = false;
             selected_observation.reset();
             selected.reset();
@@ -898,7 +956,7 @@ void begin_file_picker(DesktopState& ui, FilePickerPurpose purpose, const std::s
         else if (picker.directory.empty()) browse_folder(picker, file_browser_home());
         else browse_folder(picker, picker.directory);
         if (picker.directory.empty()) browse_folder(picker, file_browser_home());
-        std::string filename = purpose == FilePickerPurpose::Export ? (ui.export_kind == 7 ? "survey-analysis.html" : "survey.csv") :
+        std::string filename = purpose == FilePickerPurpose::Export ? (ui.export_kind == 6 ? "survey-analysis.html" : "survey.csv") :
             purpose == FilePickerPurpose::WaveformImage ? "waveform.png" :
             purpose == FilePickerPurpose::SaveCopy ? "survey-copy.sqlite" : "survey.sqlite";
         if (purpose == FilePickerPurpose::OpenSurvey) filename.clear();
@@ -995,7 +1053,7 @@ void file_picker_dialog(DesktopState& ui, const Snapshot& snapshot) {
     // Do not invalidate the list while its rows are being rendered.
     if (next_directory) browse_folder(picker, *next_directory);
     if (picker.listing.truncated) wrapped("This folder is too large to list completely. Use a smaller folder or enter the known filename below.", amber);
-    if (exporting && ui.export_kind == 6) {
+    if (exporting && ui.export_kind == 5) {
         ImGui::SetNextItemWidth(240);
         if (ImGui::Combo("File type", &picker.format, "CSV (.csv)\0GeoJSON (.geojson)\0")) {
             const std::string name = picker.filename.data();
@@ -1007,7 +1065,7 @@ void file_picker_dialog(DesktopState& ui, const Snapshot& snapshot) {
         }
     } else if (exporting) {
         picker.format = 0;
-        ImGui::TextDisabled(ui.export_kind == 7 ? "File type: Analysis report (.html)" : "File type: CSV report (.csv)");
+        ImGui::TextDisabled(ui.export_kind == 6 ? "File type: Analysis report (.html)" : "File type: CSV report (.csv)");
     } else ImGui::TextDisabled(image ? "File type: PNG image (.png)" : opening ? "Select an existing survey database." : "File type: Survey database (.sqlite)");
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##chosenFilename", "Filename", picker.filename.data(), picker.filename.size());
@@ -1017,7 +1075,7 @@ void file_picker_dialog(DesktopState& ui, const Snapshot& snapshot) {
     ImGui::BeginDisabled(picker.directory.empty() || picker.filename[0] == 0);
     if (ImGui::Button(ui.file_chosen ? (opening ? "Open" : "Save") : "Choose file", {145, 0})) {
         try {
-            const auto kind = image ? FileChoiceKind::Png : exporting ? (ui.export_kind == 7 ? FileChoiceKind::Html :
+            const auto kind = image ? FileChoiceKind::Png : exporting ? (ui.export_kind == 6 ? FileChoiceKind::Html :
                 picker.format == 0 ? FileChoiceKind::Csv : FileChoiceKind::GeoJson) : FileChoiceKind::Survey;
             const auto path = choose_local_file(picker.directory, picker.filename.data(), kind, opening);
             if (ui.file_chosen) { auto complete = std::move(ui.file_chosen); ui.file_chosen = {}; complete(path); }
@@ -1075,12 +1133,111 @@ void health_strip(const Snapshot& snapshot) {
     }
 }
 
+void automatic_decoder_status(const Snapshot& snapshot, bool requested) {
+    const auto& status = snapshot.automatic_decoder;
+    if (snapshot.historical && !status.available) {
+        wrapped("Automatic decoder diagnostics were not recorded in this survey.", secondary);
+        return;
+    }
+    if (!status.enabled) {
+        wrapped(requested && !snapshot.historical ? "Automatic decoding / ready for reception" : "Automatic decoding / off", requested ? accent : secondary);
+        return;
+    }
+    ImGui::TextColored(accent, "Automatic decoding / %s / %zu active",
+        snapshot.running ? "running" : snapshot.historical ? "recorded" : "stopped", status.active_decoders);
+    ImGui::Text("Latest acquisition: %llu frames / %llu CRC valid / %llu likely Meshtastic",
+        static_cast<unsigned long long>(status.completed), static_cast<unsigned long long>(status.crc_valid),
+        static_cast<unsigned long long>(status.classified));
+    const bool limited = status.history_misses || status.active_limit_hits || status.frame_overflows || status.abandoned_decoders;
+    if (limited) ImGui::TextColored(amber, "Some candidates could not be processed / hover for counts");
+    else ImGui::TextDisabled("Candidate processing is bounded; reception is not exhaustive.");
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::Text("Candidates: %llu / started: %llu / completed: %llu",
+            static_cast<unsigned long long>(status.candidates), static_cast<unsigned long long>(status.started),
+            static_cast<unsigned long long>(status.completed));
+        ImGui::Text("History unavailable: %llu / active limit: %llu / frame overflow: %llu",
+            static_cast<unsigned long long>(status.history_misses), static_cast<unsigned long long>(status.active_limit_hits),
+            static_cast<unsigned long long>(status.frame_overflows));
+        ImGui::Text("Unsupported: %llu / outside range: %llu / excluded: %llu / duplicate: %llu",
+            static_cast<unsigned long long>(status.unsupported_candidates), static_cast<unsigned long long>(status.outside_range_candidates),
+            static_cast<unsigned long long>(status.excluded_candidates), static_cast<unsigned long long>(status.duplicate_candidates));
+        ImGui::Text("Timeouts: %llu / resets: %llu / abandoned: %llu",
+            static_cast<unsigned long long>(status.timeouts), static_cast<unsigned long long>(status.resets),
+            static_cast<unsigned long long>(status.abandoned_decoders));
+        ImGui::TextUnformatted("Counters describe processing stages, not unique packets or measured airtime.");
+        ImGui::EndTooltip();
+    }
+}
+
+bool rak_preset_supported(const meshtastic::Preset& preset) {
+    return (preset.bandwidth_hz == 125000 || preset.bandwidth_hz == 250000 || preset.bandwidth_hz == 500000) &&
+        preset.spreading_factor >= 7 && preset.spreading_factor <= 12;
+}
+
+void meshtastic_preset_catalog(bool rak = false) {
+    if (!ImGui::CollapsingHeader("Meshtastic preset catalog", ImGuiTreeNodeFlags_DefaultOpen)) return;
+    ImGui::Text("%zu modem presets / one shared public default key", meshtastic::presets.size());
+    wrapped("One public default key (AQ==) applies across presets. Presets define modulation, not a channel key or regional frequency.");
+    if (ImGui::BeginTable("meshtasticPresets", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
+            ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp, {0, 255})) {
+        ImGui::TableSetupColumn("Preset", ImGuiTableColumnFlags_WidthStretch, 1.8f);
+        ImGui::TableSetupColumn("BW / kHz", ImGuiTableColumnFlags_WidthStretch, .8f);
+        ImGui::TableSetupColumn("SF", ImGuiTableColumnFlags_WidthStretch, .5f);
+        ImGui::TableSetupColumn("CR", ImGuiTableColumnFlags_WidthStretch, .6f);
+        ImGui::TableSetupColumn(rak ? "RAK support" : "SDR support", ImGuiTableColumnFlags_WidthStretch, 1.3f);
+        ImGui::TableSetupScrollFreeze(0, 1); ImGui::TableHeadersRow();
+        for (const auto& preset : meshtastic::presets) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn(); ImGui::TextUnformatted(preset.name.data(), preset.name.data() + preset.name.size());
+            ImGui::TableNextColumn(); ImGui::Text("%.3f", preset.bandwidth_hz / 1000.0);
+            ImGui::TableNextColumn(); ImGui::Text("%u", static_cast<unsigned>(preset.spreading_factor));
+            ImGui::TableNextColumn(); ImGui::Text("4/%u", static_cast<unsigned>(preset.coding_rate_denominator));
+            ImGui::TableNextColumn();
+            const bool supported = rak ? rak_preset_supported(preset) : preset.phy_supported;
+            ImGui::TextColored(supported ? accent : secondary, "%s", supported ? "Available" : "Unsupported");
+            if (ImGui::IsItemHovered() && (rak || !preset.support_note.empty())) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40);
+                if (rak) ImGui::TextUnformatted("RAK supports configured 125/250/500 kHz, SF7-12 reception. Narrower modes require an SDR decoder that supports that bandwidth. This does not select a regional frequency.");
+                else ImGui::TextUnformatted(preset.support_note.data(), preset.support_note.data() + preset.support_note.size());
+                ImGui::PopTextWrapPos(); ImGui::EndTooltip();
+            }
+            if (preset.deprecated) ImGui::TextColored(amber, "Deprecated");
+            if (preset.historical_only) ImGui::TextDisabled("Historical");
+            else if (!preset.available_in_2_7_19) ImGui::TextDisabled("2.8+");
+        }
+        ImGui::EndTable();
+    }
+    wrapped("Available means the modulation can be attempted, not guaranteed reception. Deprecated presets remain listed for existing traffic. Unsupported presets remain visible in RF measurements.", secondary);
+}
+
+void meshtastic_preset_picker(LaneConfig& lane) {
+    const meshtastic::Preset* match = nullptr;
+    for (const auto& preset : meshtastic::presets)
+        if (preset.bandwidth_hz == lane.bandwidth_hz && preset.spreading_factor == lane.spreading_factor &&
+            preset.coding_rate_denominator == lane.coding_rate) { match = &preset; break; }
+    const std::string preview = match ? std::string(match->name) : "Custom modulation";
+    if (ImGui::BeginCombo("Meshtastic preset", preview.c_str())) {
+        for (const auto& preset : meshtastic::presets) {
+            const auto name = std::string(preset.name) + (preset.historical_only ? " (historical)" : preset.deprecated ? " (deprecated)" : "") +
+                (!preset.phy_supported ? " (unsupported)" : "");
+            ImGui::BeginDisabled(!preset.phy_supported);
+            if (ImGui::Selectable(name.c_str(), match == &preset)) {
+                lane.label = std::string(preset.name); lane.bandwidth_hz = preset.bandwidth_hz;
+                lane.spreading_factor = preset.spreading_factor; lane.coding_rate = preset.coding_rate_denominator;
+            }
+            ImGui::EndDisabled();
+        }
+        ImGui::EndCombo();
+    }
+    wrapped("Choosing a preset changes BW/SF/CR only. Check the frequency below for your region; keys stay survey-wide.", secondary);
+}
+
 void legacy_profile_settings(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
-    if (!ui.config.lanes.empty()) {
     label("LEGACY DECODE PROFILES");
-    wrapped("Payload decoding covers these selected profiles only. Discovered waveforms are not automatically passed to the payload decoder.", amber);
-    ImGui::Text("Authorized key records: %zu / 16", engine.configured_key_count());
-    ImGui::BeginDisabled(snapshot.running);
+    wrapped("Optional fixed-frequency receivers supplement automatic discovery. No manual profile is required for automatic decoding.");
+    ImGui::BeginDisabled(snapshot.running || snapshot.historical || ui.operation_busy());
     for (size_t i = 0; i < ui.config.lanes.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
         auto& lane = ui.config.lanes[i];
@@ -1095,16 +1252,17 @@ void legacy_profile_settings(Engine& engine, DesktopState& ui, const Snapshot& s
     if (!ui.config.lanes.empty()) {
         ui.selected_lane = std::clamp(ui.selected_lane, 0, static_cast<int>(ui.config.lanes.size()) - 1);
         auto& lane = ui.config.lanes[static_cast<size_t>(ui.selected_lane)];
+        meshtastic_preset_picker(lane);
         double frequency = static_cast<double>(lane.frequency_hz) / 1e6;
         ImGui::TextUnformatted("Selected profile / MHz");
         ImGui::SetNextItemWidth(-1);
         if (ImGui::InputDouble("##laneFrequency", &frequency, 0.025, 0.25, "%.6f") && std::isfinite(frequency))
             lane.frequency_hz = static_cast<uint64_t>(std::clamp(frequency, 1.0, 6000.0) * 1e6);
-        const char* bandwidths[] = {"125 kHz", "250 kHz", "500 kHz"};
-        const std::array<uint32_t, 3> bandwidth_values{125000, 250000, 500000};
+        const char* bandwidths[] = {"15.625 kHz", "62.5 kHz", "125 kHz", "250 kHz", "500 kHz"};
+        const std::array<uint32_t, 5> bandwidth_values{15625, 62500, 125000, 250000, 500000};
         int bandwidth = 1;
         for (size_t i = 0; i < bandwidth_values.size(); ++i) if (lane.bandwidth_hz == bandwidth_values[i]) bandwidth = static_cast<int>(i);
-        if (ImGui::Combo("BW", &bandwidth, bandwidths, 3)) lane.bandwidth_hz = bandwidth_values[static_cast<size_t>(bandwidth)];
+        if (ImGui::Combo("BW", &bandwidth, bandwidths, 5)) lane.bandwidth_hz = bandwidth_values[static_cast<size_t>(bandwidth)];
         int sf = lane.spreading_factor;
         int cr = lane.coding_rate;
         if (ImGui::SliderInt("SF", &sf, 7, 12)) lane.spreading_factor = static_cast<uint8_t>(sf);
@@ -1118,7 +1276,7 @@ void legacy_profile_settings(Engine& engine, DesktopState& ui, const Snapshot& s
         ui.config.lanes.push_back(lane);
         ui.selected_lane = static_cast<int>(ui.config.lanes.size()) - 1;
     }
-    if (ui.config.lanes.size() > 1 && ImGui::Button("Remove selected profile", {-1, 0})) {
+    if (!ui.config.lanes.empty() && ImGui::Button("Remove selected profile", {-1, 0})) {
         ui.config.lanes.erase(ui.config.lanes.begin() + ui.selected_lane);
         ui.selected_lane = 0;
         ui.feedback(true, "Receive profile removed. Authorized key records remain independent of receiver profiles.");
@@ -1136,8 +1294,29 @@ void legacy_profile_settings(Engine& engine, DesktopState& ui, const Snapshot& s
         ui.authorize_keys = false;
         ui.show_keys = true;
     }
-    wrapped("Meshtastic channel decoding. MeshCore and recipient private-key decoding are not yet enabled.");
-    } else wrapped("Payload decoding paused. Energy and waveform observations do not establish a mesh protocol or sender identity.", secondary);
+    wrapped("MeshCore and recipient private-key decoding are not yet enabled. Message contents are not interpreted.");
+}
+
+void plot_grabber(const char* id, ImVec2 origin, float width, float& size,
+                  float minimum, float maximum, float scale, const char* guidance = nullptr) {
+    ImGui::SetCursorScreenPos(origin);
+    ImGui::InvisibleButton(id, {width, 12 * scale});
+    const bool hover = ImGui::IsItemHovered(), active = ImGui::IsItemActive();
+    if (hover || active) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+    if (active && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0))
+        size = std::clamp(size + ImGui::GetIO().MouseDelta.y / scale, minimum, maximum);
+    // Keyboard users can adjust the focused divider without precise dragging.
+    if (ImGui::IsItemFocused()) {
+        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) size = std::max(minimum, size - 10);
+        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) size = std::min(maximum, size + 10);
+    }
+    auto* draw = ImGui::GetWindowDrawList();
+    const float y = origin.y + 6 * scale, middle = origin.x + width * .5f;
+    const ImU32 color = ImGui::GetColorU32(hover || active ? accent : muted);
+    draw->AddLine({origin.x, y}, {origin.x + width, y}, IM_COL32(34, 48, 62, 255));
+    draw->AddLine({middle - 22 * scale, y - scale}, {middle + 22 * scale, y - scale}, color, 2 * scale);
+    draw->AddLine({middle - 22 * scale, y + 2 * scale}, {middle + 22 * scale, y + 2 * scale}, color, scale);
+    if (hover) ImGui::SetTooltip("%s\nFocus and use arrow keys for smaller adjustments.", guidance ? guidance : "Drag up or down to resize.");
 }
 
 void spectrum_view(DesktopState& ui, const Snapshot& snapshot, float height) {
@@ -1157,7 +1336,8 @@ void spectrum_view(DesktopState& ui, const Snapshot& snapshot, float height) {
     // Stopped plots retain the acquisition axis, even while next-session
     // receiver settings are edited in the sidebar.
     const auto& cfg = snapshot.session_id.empty() ? ui.config : snapshot.config;
-    if (snapshot.session_id != ui.last_session) {
+    if (snapshot.session_id != ui.last_session || cfg.center_hz != ui.waterfall_center_hz || cfg.survey_span_hz != ui.waterfall_span_hz) {
+        ui.waterfall_center_hz = cfg.center_hz; ui.waterfall_span_hz = cfg.survey_span_hz;
         ui.last_session = snapshot.session_id;
         ui.waterfall.clear();
         ui.last_spectrum = 0;
@@ -1169,16 +1349,25 @@ void spectrum_view(DesktopState& ui, const Snapshot& snapshot, float height) {
     }
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const float width = std::max(200.0f, ImGui::GetContentRegionAvail().x);
-    height = std::max(180.0f, height);
+    const float scale = ui.ui_scale;
+    // Leave a useful result table even at the minimum window size. A smaller
+    // window clamps the visible sizes; it cannot drag either panel out of reach.
+    const float plot_budget = std::max(130.f, height / scale - 83.f);
+    ui.spectrum_height = std::clamp(ui.spectrum_height, 60.f, plot_budget - 70.f);
+    ui.waterfall_height = std::clamp(ui.waterfall_height, 70.f, plot_budget - ui.spectrum_height);
+    height = (ui.spectrum_height + ui.waterfall_height + 83.f) * scale;
     ui.capture_origin = origin; ui.capture_size = {width, height};
-    ImGui::InvisibleButton("##spectrum", {width, height});
+    ImGui::Dummy({width, height});
+    const ImVec2 after_plot = ImGui::GetCursorScreenPos();
     auto* draw = ImGui::GetWindowDrawList();
     const float left = origin.x + 48;
     const float right = origin.x + width - 12;
     const float top = origin.y + 10;
-    const float spectrum_bottom = top + height * 0.41f;
-    const float waterfall_top = spectrum_bottom + 31;
-    const float bottom = origin.y + height - 29;
+    const float spectrum_bottom = top + ui.spectrum_height * scale;
+    ui.spectrum_grabber = {origin.x, spectrum_bottom + 27 * scale};
+    const float waterfall_top = ui.spectrum_grabber.y + 12 * scale;
+    const float bottom = waterfall_top + ui.waterfall_height * scale;
+    ui.waterfall_grabber = {origin.x, bottom + 22 * scale};
     const float plot_width = right - left;
     const double start_hz = static_cast<double>(cfg.center_hz) - cfg.survey_span_hz * 0.5;
     const double end_hz = start_hz + cfg.survey_span_hz;
@@ -1202,7 +1391,9 @@ void spectrum_view(DesktopState& ui, const Snapshot& snapshot, float height) {
                                 spectrum_bottom - level * (spectrum_bottom - top));
         }
         draw->AddPolyline(points.data(), static_cast<int>(points.size()), IM_COL32(80, 215, 201, 255), 0, 1.2f);
-        const float row_height = std::max(1.0f, (bottom - waterfall_top) / static_cast<float>(waterfall_rows));
+        // Resizing reveals or clips history; it must never stretch the same
+        // signal vertically to fill a larger panel. UI scale is independent.
+        const float row_height = waterfall_row_pitch * scale;
         for (size_t row = 0; row < ui.waterfall.size(); ++row) {
             const auto& samples = ui.waterfall[row];
             const float y = waterfall_top + static_cast<float>(row) * row_height;
@@ -1259,25 +1450,41 @@ void spectrum_view(DesktopState& ui, const Snapshot& snapshot, float height) {
         const ImVec2 size = ImGui::CalcTextSize(message);
         draw->AddText({left + (plot_width - size.x) / 2, waterfall_top + 28}, IM_COL32(128, 151, 171, 255), message);
     }
-    if (ImGui::IsItemHovered()) {
+    bool plot_hovered = false, plot_clicked = false;
+    ImGui::SetCursorScreenPos(origin);
+    ImGui::InvisibleButton("##spectrum", {width, ui.spectrum_grabber.y - origin.y});
+    plot_hovered = ImGui::IsItemHovered(); plot_clicked = ImGui::IsItemClicked();
+    ImGui::SetCursorScreenPos({origin.x, waterfall_top});
+    ImGui::InvisibleButton("##waterfall", {width, bottom - waterfall_top});
+    plot_hovered |= ImGui::IsItemHovered(); plot_clicked |= ImGui::IsItemClicked();
+    if (plot_hovered) {
         const float x = std::clamp(ImGui::GetIO().MousePos.x, left, right);
         const double frequency = start_hz + (x - left) / plot_width * span;
         ImGui::SetTooltip("%.6f MHz\n%s", frequency / 1e6,
             snapshot.running ? "Stop reception before changing the selected profile." :
             snapshot.historical ? "Historical survey. Start a new session to tune." :
             "Click to tune the selected decode profile. Survey center is unchanged.");
-        if (ImGui::IsItemClicked() && !snapshot.running && !snapshot.historical && !ui.config.lanes.empty()) {
+        if (plot_clicked && !snapshot.running && !snapshot.historical && !ui.config.lanes.empty()) {
             auto& lane = ui.config.lanes[static_cast<size_t>(ui.selected_lane)];
             if (cfg.survey_span_hz >= lane.bandwidth_hz)
                 lane.frequency_hz = static_cast<uint64_t>(std::clamp(std::round(frequency / 1000) * 1000,
                     start_hz + lane.bandwidth_hz / 2.0, end_hz - lane.bandwidth_hz / 2.0));
         }
     }
+    plot_grabber("##spectrumDivider", ui.spectrum_grabber, width, ui.spectrum_height,
+        60.f, plot_budget - ui.waterfall_height, scale);
+    plot_grabber("##waterfallDivider", ui.waterfall_grabber, width, ui.waterfall_height,
+        70.f, plot_budget - ui.spectrum_height, scale,
+        "Drag to reveal more or fewer history rows without stretching signals.\nRows are display updates, not an exact elapsed-time scale.");
+    ImGui::SetCursorScreenPos(after_plot);
+
 }
 
-void content_detail(const Reception& reception) {
+void reception_detail(const Reception& reception) {
     ImGui::TextColored(accent, "%s", reception.decoded.classification.c_str());
-    ImGui::Text("Decode: %.*s", static_cast<int>(protocol::status_name(reception.decoded.status).size()), protocol::status_name(reception.decoded.status).data());
+    ImGui::Text("Classification state: %.*s", static_cast<int>(protocol::status_name(reception.decoded.status).size()), protocol::status_name(reception.decoded.status).data());
+    const auto explanation = protocol::status_explanation(reception.decoded.status);
+    ImGui::TextWrapped("%.*s", static_cast<int>(explanation.size()), explanation.data());
     wrapped(reception.decoded.authentication.c_str(), amber);
     ImGui::Separator();
     ImGui::Text("%s UTC / host-estimated reception time", timestamp_text(reception.utc_seconds).c_str());
@@ -1300,84 +1507,19 @@ void content_detail(const Reception& reception) {
     } else ImGui::TextDisabled("Receiver position unavailable or stale for this reception.");
     if (reception.decoded.evidence) {
         const auto& evidence=*reception.decoded.evidence;
-        ImGui::Text("Decoded envelope evidence: port %u | signature %s", evidence.port,
+        ImGui::Text("Envelope evidence: port %u | signature %s", evidence.port,
             evidence.signature_present ? "present, not verified" : "not present");
-        ImGui::TextDisabled("Envelope evidence does not authenticate a sender or retain unsupported payloads.");
+        ImGui::TextDisabled("Envelope evidence does not authenticate a sender or identify the physical transmitter.");
     }
-    if (!reception.decoded.authorized) {
-        ImGui::Spacing();
-        wrapped("No authorized decoded content is available. Undecoded bytes and ciphertext are not retained.");
-        return;
-    }
-    const auto& authorized = *reception.decoded.authorized;
-    const auto& data = authorized.content;
-    label("AUTHORIZED SCHEMA FIELDS");
-    ImGui::Text("Profile %s  |  Port %u  |  Packet %08x", authorized.profile_id.c_str(), authorized.port, authorized.packet_id);
-    ImGui::Text("Reported origin !%08x  ->  !%08x", authorized.from, authorized.to);
-    ImGui::Text("Hop limit %u  |  Hop start %u  |  Relay hint %02x", authorized.hop_limit, authorized.hop_start, authorized.relay_node);
-    ImGui::Text("Request ID %08x | Reply ID %08x", authorized.request_id, authorized.reply_id);
-    ImGui::TextDisabled("Zero IDs are unset or unavailable in legacy surveys.");
-    ImGui::Text("Signature: %s", authorized.signature_present ? "present, not verified" : "not present / unavailable in legacy surveys");
-    ImGui::TextDisabled("Reported origin may differ from the physical transmitter or relay.");
-    ImGui::Separator();
-    ImGui::Text("Content: %s", data.kind.c_str());
-    if (!data.routing_variant.empty()) ImGui::Text("Routing variant: %s", data.routing_variant.c_str());
-    else if (data.kind=="routing") ImGui::TextDisabled("Routing variant unavailable; do not infer an acknowledgment.");
-    if (!data.text.empty()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, {0.91f, 0.95f, 0.97f, 1});
-        ImGui::PushTextWrapPos(0);
-        ImGui::TextUnformatted(data.text.c_str());
-        ImGui::PopTextWrapPos();
-        ImGui::PopStyleColor();
-    }
-    if (!data.long_name.empty()) ImGui::Text("Name: %s", data.long_name.c_str());
-    if (!data.short_name.empty()) ImGui::Text("Short name: %s", data.short_name.c_str());
-    if (!data.node_id.empty()) ImGui::Text("Node ID: %s", data.node_id.c_str());
-    if (data.latitude && data.longitude) ImGui::Text("Sender-reported location: %.6f, %.6f", *data.latitude, *data.longitude);
-    if (data.altitude) ImGui::Text("Sender-reported altitude: %.1f m", *data.altitude);
-    if (data.battery_percent) ImGui::Text("Battery: %.0f%%", *data.battery_percent);
-    if (data.voltage) ImGui::Text("Voltage: %.3f V", *data.voltage);
-    if (data.temperature) ImGui::Text("Temperature: %.2f C", *data.temperature);
-    if (data.humidity) ImGui::Text("Relative humidity: %.1f%%", *data.humidity);
-    if (data.channel_utilization) ImGui::Text("Reported channel utilization: %.2f%%", *data.channel_utilization);
-    if (data.air_util_tx) ImGui::Text("Reported transmit air utilization: %.2f%%", *data.air_util_tx);
-    if (data.hardware_model) ImGui::Text("Hardware model enum: %u", *data.hardware_model);
-    if (data.role) ImGui::Text("Role enum: %u", *data.role);
-    if (data.routing_error) ImGui::Text("Routing result enum: %u", *data.routing_error);
-    if (data.reported_time) ImGui::Text("Sender-reported time: %s", clock_text(*data.reported_time).c_str());
-    if (data.kind=="traceroute" || data.kind=="routing" || !data.route.empty() || !data.route_back.empty() ||
-        !data.snr_towards.empty() || !data.snr_back.empty()) {
-        const auto route=[](const char* title,const std::vector<uint32_t>& values) {
-            ImGui::Text("%s (%zu entries)",title,values.size());
-            for(size_t i=0;i<values.size();++i) {
-                if(values[i]==UINT32_MAX)ImGui::Text("  %zu: unknown hop",i+1);
-                else ImGui::Text("  %zu: !%08x",i+1,values[i]);
-            }
-        };
-        const auto snr=[](const char* title,const std::vector<int32_t>& values) {
-            ImGui::Text("%s (%zu entries; sender-reported)",title,values.size());
-            // Firmware 6d41e279f1f51bd59f687b9d441c1bf47b1594fc:
-            // TraceRouteModule.cpp uses INT8_MIN for unknown SNR and /4.0f for dB.
-            for(size_t i=0;i<values.size();++i) {
-                if(values[i]==-128)ImGui::Text("  %zu: unknown (raw -128)",i+1);
-                else ImGui::Text("  %zu: %.2f dB (raw %d / 4)",i+1,static_cast<double>(values[i])/4.0,values[i]);
-            }
-        };
-        route("Reported forward route",data.route);route("Reported return route",data.route_back);
-        snr("Forward SNR",data.snr_towards);snr("Return SNR",data.snr_back);
-        ImGui::TextDisabled("Lists are independent; missing entries are not inferred or paired with route nodes.");
-    }
+    ImGui::Spacing();
+    wrapped("Likely protocol classification is an unauthenticated envelope inference and may be a false positive. Message contents and sender identities are not interpreted or retained.");
 }
 
 bool matches_filter(const Reception& reception, const DesktopState& ui) {
-    if (ui.only_authorized && !reception.decoded.authorized) return false;
+    if (ui.only_classified && reception.decoded.status != protocol::Status::classified) return false;
     if (ui.filter[0] == 0) return true;
     std::string needle = ui.filter.data();
     std::string haystack = reception.lane_label + " " + reception.decoded.classification;
-    if (reception.decoded.authorized) {
-        const auto& content = reception.decoded.authorized->content;
-        haystack += " " + content.kind + " " + content.text + " " + content.long_name + " " + content.node_id;
-    }
     const auto lower = [](unsigned char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c + ('a' - 'A')) : static_cast<char>(c); };
     std::transform(needle.begin(), needle.end(), needle.begin(), lower);
     std::transform(haystack.begin(), haystack.end(), haystack.begin(), lower);
@@ -1389,10 +1531,10 @@ void packet_table(DesktopState& ui, const Snapshot& snapshot, float height) {
     ImGui::SameLine();
     ImGui::TextDisabled("%zu recent records", snapshot.receptions.size());
     ImGui::SameLine();
-    ImGui::Checkbox("Authorized only", &ui.only_authorized);
+    ImGui::Checkbox("Likely Meshtastic", &ui.only_classified);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(std::max(110.0f, ImGui::GetContentRegionAvail().x));
-    ImGui::InputTextWithHint("##filter", "Filter profile, classification, decoded text...", ui.filter.data(), ui.filter.size());
+    ImGui::InputTextWithHint("##filter", "Filter profile or classification...", ui.filter.data(), ui.filter.size());
     const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY |
         ImGuiTableFlags_Resizable | ImGuiTableFlags_Reorderable | ImGuiTableFlags_Hideable | ImGuiTableFlags_SizingStretchProp;
     if (ImGui::BeginTable("receptions", 7, flags, {0, std::max(90.0f, height)})) {
@@ -1402,8 +1544,8 @@ void packet_table(DesktopState& ui, const Snapshot& snapshot, float height) {
         ImGui::TableSetupColumn("MHz", ImGuiTableColumnFlags_WidthFixed, 90);
         ImGui::TableSetupColumn("BW / SF", ImGuiTableColumnFlags_WidthFixed, 87);
         ImGui::TableSetupColumn("Classification", ImGuiTableColumnFlags_WidthStretch, 1.4f);
-        ImGui::TableSetupColumn("Decode state", ImGuiTableColumnFlags_WidthStretch, 1.3f);
-        ImGui::TableSetupColumn("Content", ImGuiTableColumnFlags_WidthStretch, 1.8f);
+        ImGui::TableSetupColumn("Classification state", ImGuiTableColumnFlags_WidthStretch, 1.3f);
+        ImGui::TableSetupColumn("Envelope evidence", ImGuiTableColumnFlags_WidthStretch, 1.8f);
         ImGui::TableSetupColumn("GPS", ImGuiTableColumnFlags_WidthFixed, 46);
         ImGui::TableHeadersRow();
         for (const auto& reception : snapshot.receptions) {
@@ -1423,16 +1565,19 @@ void packet_table(DesktopState& ui, const Snapshot& snapshot, float height) {
             ImGui::TableNextColumn();
             ImGui::Text("%.0fk / %u", static_cast<double>(reception.bandwidth_hz) / 1000, reception.spreading_factor);
             ImGui::TableNextColumn();
-            ImGui::TextColored(reception.decoded.authorized ? accent : amber, "%s", reception.decoded.classification.c_str());
+            ImGui::TextColored(reception.decoded.status == protocol::Status::classified ? accent : amber, "%s", reception.decoded.classification.c_str());
             ImGui::TableNextColumn();
             const auto decode_status = protocol::status_name(reception.decoded.status);
             ImGui::TextUnformatted(decode_status.data(), decode_status.data() + decode_status.size());
+            if (ImGui::IsItemHovered()) {
+                const auto explanation = protocol::status_explanation(reception.decoded.status);
+                ImGui::SetTooltip("%.*s", static_cast<int>(explanation.size()), explanation.data());
+            }
             ImGui::TableNextColumn();
-            if (reception.decoded.authorized) {
-                const auto& data = reception.decoded.authorized->content;
-                const auto& preview = data.text.empty() ? data.kind : data.text;
-                ImGui::TextUnformatted(preview.c_str());
-            } else ImGui::TextDisabled("No retained payload");
+            if (reception.decoded.evidence) {
+                ImGui::Text("Port %u | %s", reception.decoded.evidence->port,
+                    reception.decoded.evidence->signature_present ? "signature unverified" : "no signature");
+            } else ImGui::TextDisabled("Unavailable");
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(reception.receiver_position && reception.receiver_position->valid ? "fix" : "--");
             ImGui::PopID();
@@ -1556,9 +1701,10 @@ void track_view(const Snapshot& snapshot, DesktopState& ui, float height) {
 
 void lane_health_table(const Snapshot& snapshot) {
     label("DECODER COVERAGE");
-    wrapped("Each profile covers only its configured frequency and modulation. Frame counts and schema acceptance do not measure all mesh traffic or end-to-end delivery.");
+    if (!is_concentrator(snapshot.config)) automatic_decoder_status(snapshot, snapshot.config.automatic_decode);
+    wrapped("Manual profiles cover their configured frequencies and modulation. Automatic decoding follows discovered waveforms separately. Counts do not establish exhaustive traffic capture or end-to-end delivery.");
     if (ImGui::BeginTable("laneHealth", 7, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
-        for (const char* header : {"Profile", "MHz", "Processed", "Frames", "Decoded", "CRC fail", "State"}) ImGui::TableSetupColumn(header);
+        for (const char* header : {"Profile", "MHz", "Processed", "Frames", "Classified", "CRC fail", "State"}) ImGui::TableSetupColumn(header);
         ImGui::TableHeadersRow();
         for (const auto& lane : snapshot.lane_health) {
             ImGui::TableNextRow();
@@ -1566,7 +1712,7 @@ void lane_health_table(const Snapshot& snapshot) {
             ImGui::TableNextColumn(); ImGui::Text("%.6f", static_cast<double>(lane.frequency_hz) / 1e6);
             ImGui::TableNextColumn(); ImGui::Text("%.1f s", lane.processed_seconds);
             ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(lane.frames));
-            ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(lane.decoded));
+            ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(lane.classified));
             ImGui::TableNextColumn(); ImGui::Text("%llu", static_cast<unsigned long long>(lane.crc_failures));
             ImGui::TableNextColumn(); ImGui::TextUnformatted(lane.state.c_str());
         }
@@ -1590,10 +1736,10 @@ void recording_mode_control(DesktopState& ui, const Snapshot& snapshot) {
 
 void recording_settings(DesktopState& ui, const Snapshot& snapshot) {
     label("SESSION & RECORDING");
-    ImGui::BeginDisabled(snapshot.running);
+    ImGui::BeginDisabled(snapshot.running || !snapshot.session_id.empty());
     ImGui::SetNextItemWidth(-1);
     ImGui::InputText("Title", ui.session_title.data(), ui.session_title.size());
-    if (ImGui::Checkbox("Save survey measurements and authorized content", &ui.save_session)) {
+    if (ImGui::Checkbox("Save survey measurements", &ui.save_session)) {
         ui.persist_preferences();
         if (ui.save_session && (ui.session_path.empty() || ui.recording_path_used)) ui.prepare_recording_file();
     }
@@ -1602,9 +1748,10 @@ void recording_settings(DesktopState& ui, const Snapshot& snapshot) {
         if (ImGui::Button("Browse recording location...")) begin_file_picker(ui, FilePickerPurpose::SaveSurvey, ui.session_path);
         selected_file_field("##sessionPath", "No recording file selected", ui.session_path);
         if (ui.preferences_active) wrapped("The folder is remembered. Every new survey gets a separate file; previous recordings are never replaced.");
-        wrapped("Choose a local data directory outside this source repository. Saved content may include private messages and precise receiver locations.", amber);
+        wrapped("Choose a local data directory outside this source repository. Saved measurements may include precise receiver locations and private survey notes.", amber);
     } else wrapped("Memory-only session. Enable saving before starting to retain or export a survey; current memory-only data is discarded when replaced or closed.");
     ImGui::EndDisabled();
+    if (!snapshot.session_id.empty()) wrapped("This survey keeps its recording file and mode when resumed. Use New to choose a different recording setup.");
     if (!ui.preferences_error.empty()) wrapped(ui.preferences_error.c_str(), red);
     ImGui::Text("Recording: %s", snapshot.recording ? "active" : snapshot.historical ? "saved session open" : "off");
     if (snapshot.recording) ImGui::TextWrapped("Current file: %s", snapshot.config.session_path.c_str());
@@ -1625,7 +1772,7 @@ void gps_settings(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
         wrapped("GPS is optional. Reception continues if it is unavailable; measurements without a valid receiver position cannot be mapped.");
     }
     ImGui::TextColored(secondary, "%s", snapshot.gps_status.c_str());
-    wrapped("Positions describe the receiver. Sender-reported coordinates inside authorized packets remain separate.");
+    wrapped("Positions describe the receiver, not the transmitting device.");
     if (ImGui::BeginTabBar("gpsMode")) {
         if (ImGui::BeginTabItem("Fixed position")) {
             ImGui::SetNextItemWidth(210);
@@ -1738,7 +1885,7 @@ double occupancy_height(double value, OccupancyScale scale) {
     value = std::clamp(value, 0.0, 1.0);
     // A logarithmic transform offset at zero keeps true zero representable.
     // Percentage ticks and tooltips remain in the original measured units.
-    return scale == OccupancyScale::Linear ? value : std::log1p(value * 1e6) / std::log1p(1e6);
+    return scale == OccupancyScale::Linear ? value : low_activity_height(value);
 }
 
 struct OccupancyColumn {
@@ -1747,7 +1894,7 @@ struct OccupancyColumn {
     double maximum_ratio = 0;
 };
 
-template<class Bin> std::vector<OccupancyColumn> occupancy_columns(const std::vector<Bin>& bins, size_t pixels) {
+template<class Bin> std::vector<OccupancyColumn> uniform_occupancy_columns(const std::vector<Bin>& bins, size_t pixels) {
     const size_t count = std::min(bins.size(), pixels);
     std::vector<OccupancyColumn> columns;
     columns.reserve(count);
@@ -1771,19 +1918,70 @@ template<class Bin> std::vector<OccupancyColumn> occupancy_columns(const std::ve
     return columns;
 }
 
+template<class Bin> FrequencyRange frequency_extent(const std::vector<Bin>& bins) {
+    if (bins.empty()) return {};
+    FrequencyRange range{double(bins.front().center_hz) - bins.front().width_hz / 2.0,
+                         double(bins.front().center_hz) + bins.front().width_hz / 2.0};
+    for (const auto& bin : bins) {
+        range.lower_hz = std::min(range.lower_hz, double(bin.center_hz) - bin.width_hz / 2.0);
+        range.upper_hz = std::max(range.upper_hz, double(bin.center_hz) + bin.width_hz / 2.0);
+    }
+    return range;
+}
+
+template<class Bin> std::vector<OccupancyColumn> occupancy_columns(const std::vector<Bin>& bins, size_t pixels) {
+    if (bins.empty() || !pixels) return {};
+    bool uniform = true;
+    for (size_t i = 1; i < bins.size(); ++i)
+        if (bins[i].width_hz != bins.front().width_hz ||
+            std::abs(double(bins[i].center_hz) - double(bins[i-1].center_hz) - bins.front().width_hz) > 1.0)
+            uniform = false;
+    if (uniform) return uniform_occupancy_columns(bins, pixels);
+    // Resumed acquisitions can have gaps and different FFT grids. Draw against
+    // real Hz edges; equal spacing by row index would invent covered bandwidth.
+    const auto range = frequency_extent(bins);
+    const double span = range.upper_hz - range.lower_hz;
+    if (!(span > 0)) return {};
+    const size_t count = std::min<size_t>(pixels, 8192);
+    std::vector<OccupancyColumn> columns(count);
+    for (size_t i = 0; i < bins.size(); ++i) {
+        const auto& bin = bins[i];
+        const double lower = std::clamp((double(bin.center_hz) - bin.width_hz/2.0 - range.lower_hz)/span, 0., 1.);
+        const double upper = std::clamp((double(bin.center_hz) + bin.width_hz/2.0 - range.lower_hz)/span, 0., 1.);
+        const size_t begin = std::min(count - 1, size_t(std::floor(lower * double(count))));
+        const size_t end = std::min(count, size_t(std::ceil(upper * double(count))));
+        for (size_t pixel = begin; pixel < end; ++pixel) {
+            auto& column = columns[pixel];
+            if (column.last == 0) column.first = i;
+            column.last = i + 1;
+            if (bin.observed_seconds <= 0) { column.unobserved = true; continue; }
+            const double busy = ratio(bin.active_seconds, bin.observed_seconds);
+            if (!column.observed || busy > column.maximum_ratio) { column.maximum_ratio = busy; column.representative = i; }
+            column.observed = true;
+        }
+    }
+    for (auto& column : columns) if (!column.last) column.unobserved = true;
+    return columns;
+}
+
 template<class Bin> std::optional<FrequencyRange> frequency_gesture_range(const std::vector<Bin>& bins,
         double anchor, double cursor, bool dragging, double click_width_hz) {
     if (bins.empty() || !std::isfinite(anchor) || !std::isfinite(cursor)) return {};
-    const double lower = double(bins.front().center_hz) - bins.front().width_hz / 2.0;
-    const double upper = double(bins.back().center_hz) + bins.back().width_hz / 2.0;
+    const auto range = frequency_extent(bins);
+    const double lower = range.lower_hz, upper = range.upper_hz;
     if (upper <= lower) return {};
     anchor = std::clamp(anchor, 0.0, 1.0); cursor = std::clamp(cursor, 0.0, 1.0);
     if (dragging) {
-        const auto index = [&](double fraction) { return std::min(bins.size() - 1, size_t(fraction * bins.size())); };
-        const auto& first = bins[index(std::min(anchor, cursor))];
-        const auto& last = bins[index(std::max(anchor, cursor))];
-        return FrequencyRange{double(first.center_hz) - first.width_hz / 2.0,
-                              double(last.center_hz) + last.width_hz / 2.0};
+        const double left = lower + std::min(anchor, cursor) * (upper - lower);
+        const double right = lower + std::max(anchor, cursor) * (upper - lower);
+        std::optional<FrequencyRange> selected;
+        for (const auto& bin : bins) {
+            const double lo = double(bin.center_hz) - bin.width_hz/2.0, hi = double(bin.center_hz) + bin.width_hz/2.0;
+            if (hi <= left || lo > right) continue;
+            if (!selected) selected = FrequencyRange{lo, hi};
+            else { selected->lower_hz = std::min(selected->lower_hz, lo); selected->upper_hz = std::max(selected->upper_hz, hi); }
+        }
+        return selected ? selected : std::optional<FrequencyRange>{{left, right}};
     }
     if (!std::isfinite(click_width_hz) || click_width_hz <= 0) return {};
     const double width = std::min(click_width_hz, upper - lower);
@@ -1802,8 +2000,9 @@ void queue_analysis(DesktopState& ui, const Snapshot& snapshot, bool reveal_time
     }
     auto query = ui.survey_query;
     if (ui.query_lower_mhz == 0 && ui.query_upper_mhz == 0) {
-        ui.query_lower_mhz = (double(snapshot.config.center_hz) - snapshot.config.survey_span_hz * .5) / 1e6;
-        ui.query_upper_mhz = (double(snapshot.config.center_hz) + snapshot.config.survey_span_hz * .5) / 1e6;
+        const auto extent = frequency_extent(snapshot.frequencies);
+        ui.query_lower_mhz = extent.lower_hz / 1e6;
+        ui.query_upper_mhz = extent.upper_hz / 1e6;
     }
     query.lower_hz = ui.query_lower_mhz * 1e6;
     query.upper_hz = ui.query_upper_mhz * 1e6;
@@ -1898,6 +2097,7 @@ template<class Bin> void occupancy_chart(const std::vector<Bin>& frequencies, fl
         draw->AddText({left + 12, top + 28}, IM_COL32(140, 158, 173, 255), "Survey measurements appear after reception starts.");
         return;
     }
+    const auto extent_hz = frequency_extent(frequencies);
     const bool hovered = ImGui::IsItemHovered();
     const bool active = ImGui::IsItemActive();
     const auto& io = ImGui::GetIO();
@@ -1933,8 +2133,8 @@ template<class Bin> void occupancy_chart(const std::vector<Bin>& frequencies, fl
             draw->AddRectFilled({x, bottom + 2}, {x + column_width, bottom + 4}, IM_COL32(129, 92, 63, 255));
     }
     if (guard_upper_hz > guard_lower_hz) {
-        const double first_edge = double(frequencies.front().center_hz) - frequencies.front().width_hz / 2.0;
-        const double last_edge = double(frequencies.back().center_hz) + frequencies.back().width_hz / 2.0;
+        const double first_edge = extent_hz.lower_hz;
+        const double last_edge = extent_hz.upper_hz;
         if (last_edge > first_edge && guard_upper_hz > first_edge && guard_lower_hz < last_edge) {
             const auto x_at = [&](double hz) { return left + float(std::clamp((hz - first_edge) / (last_edge - first_edge), 0.0, 1.0)) * (right - left); };
             const float x0 = x_at(guard_lower_hz), x1 = std::max(x0 + 2, x_at(guard_upper_hz));
@@ -1942,8 +2142,8 @@ template<class Bin> void occupancy_chart(const std::vector<Bin>& frequencies, fl
         }
     }
     const auto outline_range = [&](const FrequencyRange& range, ImU32 color, float thickness) {
-        const double first_edge = double(frequencies.front().center_hz) - frequencies.front().width_hz / 2.0;
-        const double last_edge = double(frequencies.back().center_hz) + frequencies.back().width_hz / 2.0;
+        const double first_edge = extent_hz.lower_hz;
+        const double last_edge = extent_hz.upper_hz;
         if (last_edge <= first_edge || range.upper_hz <= first_edge || range.lower_hz >= last_edge) return;
         const auto x_at = [&](double hz) { return left + float(std::clamp((hz - first_edge) / (last_edge - first_edge), 0.0, 1.0)) * (right - left); };
         draw->AddRect({x_at(range.lower_hz), top}, {x_at(range.upper_hz), bottom}, color, 0, 0, thickness);
@@ -1951,9 +2151,8 @@ template<class Bin> void occupancy_chart(const std::vector<Bin>& frequencies, fl
     if (selection && selection->highlighted) outline_range(*selection->highlighted, IM_COL32(114, 173, 240, 255), 2);
     if (preview) outline_range(*preview, IM_COL32(245, 245, 245, 255), 2);
     for (int tick = 0; tick < 5; ++tick) {
-        const size_t index = static_cast<size_t>(tick) * (frequencies.size() - 1) / 4;
         std::array<char, 32> text{};
-        std::snprintf(text.data(), text.size(), "%.3f MHz", static_cast<double>(frequencies[index].center_hz) / 1e6);
+        std::snprintf(text.data(), text.size(), "%.3f MHz", (extent_hz.lower_hz + (extent_hz.upper_hz - extent_hz.lower_hz) * tick / 4) / 1e6);
         const ImVec2 extent = ImGui::CalcTextSize(text.data());
         const float x = left + (right - left) * static_cast<float>(tick) / 4;
         draw->AddText({std::clamp(x - extent.x / 2, left, std::max(left, right - extent.x)), bottom + 9}, IM_COL32(150, 173, 190, 255), text.data());
@@ -1963,11 +2162,16 @@ template<class Bin> void occupancy_chart(const std::vector<Bin>& frequencies, fl
         const auto& column = columns[static_cast<size_t>(fraction * static_cast<float>(columns.size()))];
         const auto& bin = frequencies[column.representative];
         const auto& first = frequencies[column.first];
-        const auto& last = frequencies[column.last - 1];
+        const auto& last = frequencies[column.last ? column.last - 1 : 0];
         ImGui::BeginTooltip();
         if (preview) ImGui::Text("Release to analyze %.6f - %.6f MHz / %.3f kHz (Esc cancels)",
             preview->lower_hz / 1e6, preview->upper_hz / 1e6, (preview->upper_hz - preview->lower_hz) / 1e3);
         else if (selection) ImGui::Text("Click: %.3f kHz view. Drag: select frequency edges for time/GPS analysis.", selection->click_width_hz / 1e3);
+        if (!column.last) {
+            ImGui::TextUnformatted("No recorded frequency coverage at this point.");
+            ImGui::TextUnformatted("This gap is unobserved, not a quiet channel.");
+            ImGui::EndTooltip(); return;
+        }
         ImGui::Text("Displayed interval %.6f - %.6f MHz (%zu bins)",
             (static_cast<double>(first.center_hz) - first.width_hz / 2.0) / 1e6,
             (static_cast<double>(last.center_hz) + last.width_hz / 2.0) / 1e6, column.last - column.first);
@@ -2172,15 +2376,16 @@ void energy_event_table(const std::vector<SpectrumEvent>& events, float height) 
 }
 
 void burst_table(const std::vector<SpectrumBurst>& bursts, uint64_t total, float height) {
+    const float heading_y = ImGui::GetCursorPosY();
     label("ENERGY GROUPS / SUPPORTING DETAIL");
-    wrapped("LoRa bandwidth/SF: not identified by this energy view.", amber);
-    wrapped("Width kHz is the span of grouped above-threshold energy, not detected LoRa bandwidth. These provisional groups can split one transmission or combine unrelated activity. Brief fragments remain in Show raw fragments.");
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("At least 2 active FFTs per seed bin in ~20 ms; up to 40 ms quiet gaps and 2-bin frequency gaps.\nCenter guard kept separate; ambiguous matches flagged. Weak signals can split, simultaneous signals can share a group.");
+    wrapped(desktop_lora_enabled ? "Energy width describes RF activity. For estimated LoRa bandwidth and spreading factor (SF), use Detected signals."
+        : "Energy width is the measured frequency extent of RF activity. Events are not packets or devices; the width is not a decoded modem setting.");
+    help("Energy groups are provisional, not packets or modem settings. They can split a transmission or combine overlapping activity.\nAt least 2 active FFTs per seed bin in ~20 ms; up to 40 ms quiet gaps and 2-bin frequency gaps.\nCenter artifacts remain separate. Show raw fragments reveals the underlying energy events.");
     ImGui::Text("%llu completed groups | %zu shown | center-region activity kept separate",
         static_cast<unsigned long long>(total), bursts.size());
     if (bursts.empty()) wrapped("Groups appear after a short quiet interval, a 10-second segment limit, or Stop reception.");
     if (ImGui::BeginTable("candidateBursts", 8, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
-            ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp, {0,std::max(90.0f,height)})) {
+            ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp, {0,std::max(70.0f,height - (ImGui::GetCursorPosY() - heading_y))})) {
         ImGui::TableSetupScrollFreeze(0,1);
         for (const char* name : {"Start / s", "Lower MHz", "Upper MHz", "Width kHz", "Duration ms", "Active ms", "Tile peak upper bound dBFS", "Grouping"})
             ImGui::TableSetupColumn(name);
@@ -2216,8 +2421,8 @@ void live_burst_table(DesktopState& ui, const Snapshot& snapshot, float height) 
         return;
     }
     ImGui::Checkbox("Pause result list", &list.paused);
+    help("Pauses this table only. Reception and recording continue; the table normally refreshes once per second.");
     ImGui::SameLine(); ImGui::Checkbox("Show raw fragments", &list.show_fragments);
-    wrapped(list.paused ? "Result list paused; acquisition and recording continue." : "Result list refreshes once per second; acquisition and recording remain continuous.");
     list.update(snapshot, ImGui::GetTime());
     if (list.show_fragments) energy_event_table(list.fragments,height);
     else burst_table(list.bursts,list.count,height);
@@ -2236,8 +2441,10 @@ bool guarded_view(const DesktopState& ui) {
 }
 
 std::optional<double> displayed_busy_ratio(const DesktopState& ui, const SurveyObservation& observation) {
-    if (observation.observed_seconds <= 0 || (guarded_view(ui) && ui.analysis.outside_center_bin_count == 0)) return {};
-    return ratio(guarded_view(ui) ? observation.outside_center_busy_seconds : observation.busy_seconds, observation.observed_seconds);
+    const bool guarded = guarded_view(ui);
+    const double observed = guarded ? observation.outside_center_observed_seconds : observation.observed_seconds;
+    if (observation.observed_seconds <= 0 || observed <= 0 || (guarded && ui.analysis.outside_center_bin_count == 0)) return {};
+    return ratio(guarded ? observation.outside_center_busy_seconds : observation.busy_seconds, observed);
 }
 
 std::string analysis_frequency_text(const SurveyAnalysis& result) {
@@ -2251,7 +2458,8 @@ std::string analysis_frequency_text(const SurveyAnalysis& result) {
 
 void analysis_frequency_caption(const DesktopState& ui) {
     wrapped(analysis_frequency_text(ui.analysis).c_str(), secondary);
-    if (guarded_view(ui)) ImGui::TextWrapped("Excluded center region: %.6f - %.6f MHz (%.3f kHz; unassessed)",
+    if (guarded_view(ui) && ui.analysis.mixed_acquisitions) wrapped("The excluded center region follows each acquisition; guarded exposure remains unassessed.");
+    else if (guarded_view(ui)) ImGui::TextWrapped("Excluded center region: %.6f - %.6f MHz (%.3f kHz; unassessed)",
         ui.analysis.center_guard_lower_hz / 1e6, ui.analysis.center_guard_upper_hz / 1e6,
         (ui.analysis.center_guard_upper_hz - ui.analysis.center_guard_lower_hz) / 1e3);
     else ImGui::TextWrapped("All measured frequencies inside this interval contribute.");
@@ -2304,12 +2512,33 @@ void busy_time_chart(DesktopState& ui, float height) {
         if (ImGui::IsItemHovered() && mouse.x >= x0 && mouse.x <= x1) hovered = i;
     }
     const CoverageGap* hovered_gap = nullptr;
+    // Rasterize the union at display resolution. Overlapping saved gaps must
+    // not multiply hatch primitives or drawing-buffer allocation each frame.
+    // The source records and their exact times remain available for details.
+    const size_t gap_columns = static_cast<size_t>(std::clamp(std::ceil(right - left), 1.0f, 4096.0f));
+    std::array<int, 4097> gap_edges{};
     for (const auto& gap : result.gaps) {
         if (gap.elapsed_end_seconds <= first || gap.elapsed_start_seconds >= last) continue;
         const float x0 = x_at(gap.elapsed_start_seconds), x1 = x_at(gap.elapsed_end_seconds);
-        draw->AddRectFilled({x0, top}, {x1, bottom}, IM_COL32(40, 46, 58, 230));
-        for (float x = x0; x < x1; x += 6) draw->AddLine({x, top}, {x, bottom}, IM_COL32(100, 105, 115, 130));
+        const auto a = static_cast<size_t>(std::clamp(std::floor((x0 - left) / (right - left) * gap_columns), 0.0f, static_cast<float>(gap_columns)));
+        const auto b = static_cast<size_t>(std::clamp(std::ceil((x1 - left) / (right - left) * gap_columns), 0.0f, static_cast<float>(gap_columns)));
+        if (a < b) { ++gap_edges[a]; --gap_edges[b]; }
         if (ImGui::IsItemHovered() && mouse.x >= x0 && mouse.x <= x1) hovered_gap = &gap;
+    }
+    int overlap = 0;
+    size_t gap_start = 0;
+    for (size_t column = 0; column <= gap_columns; ++column) {
+        const int next = overlap + gap_edges[column];
+        if (!overlap && next) gap_start = column;
+        if (overlap && !next) {
+            const float x0 = left + (right - left) * static_cast<float>(gap_start) / gap_columns;
+            const float x1 = left + (right - left) * static_cast<float>(column) / gap_columns;
+            draw->AddRectFilled({x0, top}, {x1, bottom}, IM_COL32(40, 46, 58, 230));
+            // At most one hatch per six columns, even on oversized displays.
+            const float step = std::max(6.0f, (right - left) / gap_columns * 6);
+            for (float x = x0; x < x1; x += step) draw->AddLine({x, top}, {x, bottom}, IM_COL32(100, 105, 115, 130));
+        }
+        overlap = next;
     }
     for (int n = 0; n <= 4; ++n) {
         char text[40];
@@ -2327,7 +2556,8 @@ void busy_time_chart(DesktopState& ui, float height) {
         const auto& observation = observations[*hovered];
         const auto busy = displayed_busy_ratio(ui, observation);
         ImGui::BeginTooltip();
-        ImGui::Text("Elapsed %.3f - %.3f s | observed %.6f s", observation.elapsed_start, observation.elapsed_end, observation.observed_seconds);
+        ImGui::Text("Elapsed %.3f - %.3f s | observed %.6f s", observation.elapsed_start, observation.elapsed_end,
+            guarded_view(ui) ? observation.outside_center_observed_seconds : observation.observed_seconds);
         if (busy) ImGui::Text("%s busy %.6f s (%#.6g%%)", guarded_view(ui) ? "Outside guard" : "All selected bins",
             guarded_view(ui) ? observation.outside_center_busy_seconds : observation.busy_seconds, *busy * 100);
         else ImGui::TextUnformatted("Displayed busy time is unavailable.");
@@ -2401,7 +2631,8 @@ void geographic_rf_view(DesktopState& ui, float height) {
         position_quality_tooltip(*observation.receiver_position);
         ImGui::Text("Elapsed %.3f - %.3f s", observation.elapsed_start, observation.elapsed_end);
         const auto displayed = displayed_busy_ratio(ui, observation);
-        if (displayed) ImGui::Text("%s busy %#.6g%% | observed %.3f s", guarded_view(ui) ? "Outside guard" : "All selected bins", *displayed * 100, observation.observed_seconds);
+        if (displayed) ImGui::Text("%s busy %#.6g%% | observed %.3f s", guarded_view(ui) ? "Outside guard" : "All selected bins", *displayed * 100,
+            guarded_view(ui) ? observation.outside_center_observed_seconds : observation.observed_seconds);
         else ImGui::TextUnformatted("Busy: unavailable (unobserved or all frequencies guarded)");
         ImGui::Text("Recorded all-bin busy %.6f s", observation.busy_seconds);
         ImGui::TextUnformatted("Click to select time interval");
@@ -2490,7 +2721,16 @@ void prepare_report_export(DesktopState& ui, const Snapshot& snapshot) {
 
 ReportOptions selected_report_options(const DesktopState& ui) {
     ReportOptions options;
-    options.kind = static_cast<ReportKind>(ui.export_kind);
+    // Detailed archive is a separate export path, not a ReportKind.
+    switch (ui.export_kind) {
+        case 0: options.kind = ReportKind::FrequencySummary; break;
+        case 1: options.kind = ReportKind::TimeSummary; break;
+        case 2: options.kind = ReportKind::GeographicSummary; break;
+        case 3: options.kind = ReportKind::Waveforms; break;
+        case 4: options.kind = ReportKind::ReceiverTrack; break;
+        case 6: options.kind = ReportKind::Analysis; break;
+        default: options.kind = ReportKind::FrequencySummary; break;
+    }
     options.query = ui.export_query;
     options.query.time_bucket_seconds = ui.export_time_bucket_seconds;
     options.privacy = ui.export_options;
@@ -2498,33 +2738,55 @@ ReportOptions selected_report_options(const DesktopState& ui) {
     return options;
 }
 
-std::string report_export_block_reason(const DesktopState& ui, const Snapshot& snapshot) {
+std::string report_export_block_reason(const DesktopState& ui, const Snapshot& snapshot, bool preview = false) {
     if (snapshot.running) return "Stop reception before exporting a consistent saved session.";
     if (!ui.export_session_id.empty() && ui.export_session_id != snapshot.session_id)
         return "The selected survey changed. Close and reopen this export window to review its selection.";
     if (snapshot.config.session_path.empty()) return "Open a saved survey or record a session before exporting.";
     if (ui.operation_busy()) return "A file operation is in progress.";
-    if (ui.export_kind < 0 || ui.export_kind > 7) return "Choose a report type.";
+    if (ui.export_kind < 0 || ui.export_kind > 6) return "Choose a report type.";
     if (is_concentrator(snapshot.config) && ui.export_kind == 3)
         return "RAK records configured LoRa receptions, not software-discovered waveform observations.";
     if ((ui.export_kind == 2 || ui.export_kind == 4) && !ui.export_options.include_receiver_positions)
         return "This report requires Include receiver GPS coordinates.";
-    if (ui.export_kind == 5 && !ui.export_options.include_content)
-        return "This report requires Include authorized decoded content.";
-    if (!is_concentrator(snapshot.config) && (ui.export_kind == 1 || ui.export_kind == 7) && (!std::isfinite(ui.export_time_bucket_seconds) ||
+    if (!is_concentrator(snapshot.config) && (ui.export_kind == 1 || ui.export_kind == 6) && (!std::isfinite(ui.export_time_bucket_seconds) ||
         ui.export_time_bucket_seconds < .001 || ui.export_time_bucket_seconds > 1e10))
         return "Choose a time bucket from 0.001 through 10000000000 seconds.";
-    if (!is_concentrator(snapshot.config) && (ui.export_kind == 2 || (ui.export_kind == 7 && ui.export_options.include_receiver_positions)) && (!std::isfinite(ui.export_geographic_cell_m) ||
+    if (!is_concentrator(snapshot.config) && (ui.export_kind == 2 || (ui.export_kind == 6 && ui.export_options.include_receiver_positions)) && (!std::isfinite(ui.export_geographic_cell_m) ||
         ui.export_geographic_cell_m < 10 || ui.export_geographic_cell_m > 10000))
         return "Choose geographic cells from 10 to 10000 meters.";
+    if (preview && ui.export_kind == 6) return {};
     if (ui.export_path.empty()) return "Choose an export location.";
     auto extension = path_utf8(std::filesystem::path(std::u8string(ui.export_path.begin(), ui.export_path.end())).extension());
     for (auto& c : extension) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
-    if (ui.export_kind < 6 && extension != ".csv") return "Reports require a .csv filename.";
-    if (ui.export_kind == 7 && extension != ".html") return "Analysis reports require a .html filename.";
-    if (ui.export_kind == 6 && extension != ".csv" && extension != ".geojson")
+    if (ui.export_kind < 5 && extension != ".csv") return "Reports require a .csv filename.";
+    if (ui.export_kind == 6 && extension != ".html") return "Analysis reports require a .html filename.";
+    if (ui.export_kind == 5 && extension != ".csv" && extension != ".geojson")
         return "Detailed archives require a .csv or .geojson filename.";
     return {};
+}
+
+void start_analysis_report(Engine& engine, DesktopState& ui, const std::string& path,
+                           std::function<void(const std::string&)> opener = open_local_report) {
+    const auto options = selected_report_options(ui);
+    ui.begin_operation("Generating analysis report...", [&engine,path,options,opener] {
+        std::string error;
+        if (!engine.export_report(path,options,error)) return DesktopState::OperationResult{false,error};
+        try { opener(path); }
+        catch (const std::exception& e) {
+            return DesktopState::OperationResult{true,"Report saved at " + path + ". Browser opening failed: " + e.what()};
+        }
+        return DesktopState::OperationResult{true,"Report saved and sent to your browser: " + path};
+    }, [&ui] {ui.show_export = false;});
+}
+
+std::string analysis_preview_path(const DesktopState& ui, const Snapshot& snapshot) {
+    const auto directory = ui.preferences_ready ? ui.preference_locations.surveys_directory :
+        path_utf8(std::filesystem::path(std::u8string(snapshot.config.session_path.begin(),snapshot.config.session_path.end())).parent_path());
+    const auto generated = new_survey_path(directory);
+    auto path = std::filesystem::path(std::u8string(generated.begin(),generated.end()));
+    path = path.parent_path() / ("preview-" + path.stem().string() + ".html");
+    return path_utf8(path);
 }
 
 void report_export_panel(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
@@ -2532,22 +2794,28 @@ void report_export_panel(Engine& engine, DesktopState& ui, const Snapshot& snaps
     ImGui::SetNextItemWidth(-1);
     if (rak) {
         constexpr const char* names[] = {"Sampled frequency summary (CSV)","Scan readings over time (CSV)","Scan readings with positions (CSV)",
-            "Unavailable waveform report","Receiver track (CSV)","Authorized content (CSV)","Detailed archive (CSV / GeoJSON)","Analysis report (HTML)"};
-        if (ui.export_kind < 0 || ui.export_kind > 7 || ui.export_kind == 3) ui.export_kind = 0;
+            "Unavailable waveform report","Receiver track (CSV)","Detailed archive (CSV / GeoJSON)","Analysis report (HTML)"};
+        if (ui.export_kind < 0 || ui.export_kind > 6 || ui.export_kind == 3) ui.export_kind = 0;
         if (ImGui::BeginCombo("Report type",names[ui.export_kind])) {
-            for (int i = 0; i < 8; ++i) if (i != 3 && ImGui::Selectable(names[i],ui.export_kind==i)) ui.export_kind=i;
+            for (int i = 0; i < 7; ++i) if (i != 3 && ImGui::Selectable(names[i],ui.export_kind==i)) ui.export_kind=i;
             ImGui::EndCombo();
         }
-        wrapped("RAK reports preserve sampled RSSI histograms and configured packet-receiver evidence. Sample fractions are not continuous occupancy, calibrated power or measured signal bandwidth.");
+        wrapped("RAK reports preserve sampled RSSI histograms. Sample fractions are not continuous occupancy, calibrated power or measured signal bandwidth.");
         if (ui.export_kind == 1 || ui.export_kind == 2)
             wrapped("One row per scan with its full host transaction interval. Positions are recorded receiver fixes; these rows are not resampled into time buckets or geographic cells.");
-    } else ImGui::Combo("Report type", &ui.export_kind,
-        "Frequency summary (CSV)\0Time summary (CSV)\0Geographic summary (CSV)\0"
-        "Waveform observations (CSV)\0Receiver track (CSV)\0Authorized content (CSV)\0"
-        "Detailed archive (CSV / GeoJSON)\0Analysis report (HTML)\0");
-    const bool archive = ui.export_kind == 6;
-    const bool narrative = ui.export_kind == 7;
-    if (narrative) wrapped(rak ? "A local report of sampled frequency activity, histogram evidence, optional receiver positions, packet reception and limitations. Open in a browser and print to PDF. No cloud service or message text is included." : "A readable local report of frequency activity, time patterns, optional receiver locations, waveform/decode evidence and measurement limits. Opens in a browser; print to PDF. No cloud service or message text is included.");
+    } else {
+        constexpr const char* names[] = {"Frequency summary (CSV)", "Time summary (CSV)", "Geographic summary (CSV)",
+            "Waveform observations (CSV)", "Receiver track (CSV)", "Detailed archive (CSV / GeoJSON)", "Analysis report (HTML)"};
+        if (ui.export_kind < 0 || ui.export_kind > 6 || (!desktop_lora_enabled && ui.export_kind == 3)) ui.export_kind = 0;
+        if (ImGui::BeginCombo("Report type", names[ui.export_kind])) {
+            for (int i = 0; i < 7; ++i)
+                if ((desktop_lora_enabled || i != 3) && ImGui::Selectable(names[i], ui.export_kind == i)) ui.export_kind = i;
+            ImGui::EndCombo();
+        }
+    }
+    const bool archive = ui.export_kind == 5;
+    const bool narrative = ui.export_kind == 6;
+    if (narrative) wrapped(rak ? "A local report of sampled frequency activity, histogram evidence, optional receiver positions and limitations. Open in a browser and print to PDF." : "A readable local report of frequency activity, time patterns, optional receiver locations and measurement limits. Opens in a browser; print to PDF. No cloud service is used.");
     if (archive) {
         wrapped("Detailed archive: exports the whole saved session. Analysis frequency, time and geographic filters do not restrict this archive.", amber);
         wrapped(rak ? "The archive retains the recorded RSSI histograms and packet metadata. Individual RSSI sample order and IQ were never recorded." : "The archive contains the detail actually recorded; compact recordings cannot recover original 20 ms power samples.");
@@ -2583,7 +2851,6 @@ void report_export_panel(Engine& engine, DesktopState& ui, const Snapshot& snaps
     }
     ImGui::Separator();
     label("EXPORT PRIVACY");
-    if (!narrative) ImGui::Checkbox("Include authorized decoded content", &ui.export_options.include_content);
     ImGui::Checkbox("Include antenna/receiver descriptions and survey notes", &ui.export_options.include_provenance);
     if (ui.export_options.include_provenance) wrapped("Free-form descriptions and notes may contain private location or operational details.", amber);
     ImGui::Checkbox("Include receiver GPS coordinates", &ui.export_options.include_receiver_positions);
@@ -2594,7 +2861,6 @@ void report_export_panel(Engine& engine, DesktopState& ui, const Snapshot& snaps
         if (!rak && ui.export_kind == 2)
             wrapped("Rounded cell coordinates may coincide at low precision. Stable cell identifiers distinguish the groups; increase decimal places when finer exported coordinates are needed.");
     }
-    if (!narrative && ui.export_options.include_content) wrapped("Decoded text and sender-reported positions may be private. Receiver GPS controls do not redact locations mentioned in message text.", amber);
     label("EXPORT PREVIEW");
     ImGui::TextWrapped("Session: %s", snapshot.config.session_title.c_str());
     wrapped(archive ? "Whole-session archive. No raw IQ, undecoded frame bytes or ciphertext are included."
@@ -2606,15 +2872,22 @@ void report_export_panel(Engine& engine, DesktopState& ui, const Snapshot& snaps
     if (ImGui::Button("Browse export location...")) begin_file_picker(ui, FilePickerPurpose::Export, ui.export_path, snapshot.config.session_path);
     ImGui::EndDisabled();
     selected_file_field("##exportPath", archive ? "Choose a new .csv or .geojson archive" : narrative ? "Choose a new .html analysis report" : "Choose a new .csv report", ui.export_path);
+    if (narrative) {
+        const auto preview_blocked = report_export_block_reason(ui, snapshot, true);
+        ImGui::BeginDisabled(!preview_blocked.empty());
+        if (ImGui::Button("Preview", {190, 0})) {
+            try { start_analysis_report(engine, ui, analysis_preview_path(ui, snapshot)); }
+            catch (const std::exception& e) { ui.feedback(false, e.what()); }
+        }
+        ImGui::EndDisabled();
+        wrapped("Preview opens a local HTML copy using these selection and privacy options. No save location is needed. Preview copies remain in the app's default Surveys folder; delete them there when no longer needed.");
+        if (!preview_blocked.empty()) wrapped(preview_blocked.c_str(), amber);
+    }
     const auto blocked = report_export_block_reason(ui, snapshot);
     ImGui::BeginDisabled(!blocked.empty());
     if (ImGui::Button(archive ? "Write detailed archive" : "Write report", {190, 0})) {
         if (narrative) {
-            const auto path = ui.export_path; const auto options = selected_report_options(ui);
-            ui.begin_operation("Generating analysis report...", [&engine,path,options] {
-                std::string error; const bool ok = engine.export_report(path,options,error);
-                return DesktopState::OperationResult{ok,ok ? "Analysis report saved. Open the selected HTML file in your browser; print to PDF if needed." : error};
-            }, [&ui] {ui.show_export = false;});
+            start_analysis_report(engine, ui, ui.export_path);
         } else {
         std::string error;
         const bool ok = archive ? engine.export_session(ui.export_path, ui.export_options, error)
@@ -2624,7 +2897,7 @@ void report_export_panel(Engine& engine, DesktopState& ui, const Snapshot& snaps
         }
     }
     ImGui::EndDisabled();
-    if (!blocked.empty()) wrapped(blocked.c_str(), amber);
+    if (!blocked.empty() && !(narrative && blocked == "Choose an export location.")) wrapped(blocked.c_str(), amber);
 }
 
 void advanced_analysis_tab(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
@@ -2673,15 +2946,17 @@ void advanced_analysis_tab(Engine& engine, DesktopState& ui, const Snapshot& sna
         ui.summary_selection.requested.reset();
     }
     ImGui::Separator();
-    waveform_panel(snapshot, 160 * ui.ui_scale, ui.config.discover_lora,
-        ui.analysis_loaded && ui.analysis_session == snapshot.session_id ? &ui.analysis : nullptr);
-    ImGui::Separator();
+    if (desktop_lora_enabled) {
+        waveform_panel(snapshot, 160 * ui.ui_scale, ui.config.discover_lora,
+            ui.analysis_loaded && ui.analysis_session == snapshot.session_id ? &ui.analysis : nullptr);
+        ImGui::Separator();
+    }
     wrapped("Use Open in the session toolbar to inspect a different saved survey.");
     ImGui::BeginDisabled(!saved_available);
     if (ImGui::Button("Reports / export...")) prepare_report_export(ui, snapshot);
     ImGui::EndDisabled();
     if (!saved_available) wrapped("Detailed analysis and export require a saved survey. The live frequency summary above updates without a saved file.", amber);
-    help("Reports use the latest completed analysis selection, shown before export. Detailed archive is a separate whole-session option. Content and receiver positions are opt-in.");
+    help("Reports use the latest completed analysis selection, shown before export. Detailed archive is a separate whole-session option. Receiver positions and free-form notes are opt-in.");
     label("ANALYSIS SELECTION");
     wrapped("Chart selections update the linked plots automatically on release. For precise edges, elapsed intervals or receiver areas, edit these controls and press Run analysis. These are analysis views, not radio or modem presets.");
     if (ImGui::BeginTable("analysisControls", 2, ImGuiTableFlags_SizingStretchSame)) {
@@ -2767,15 +3042,16 @@ void advanced_analysis_tab(Engine& engine, DesktopState& ui, const Snapshot& sna
     wrapped("Any-bin busy means at least one frequency was active. It is not the percentage of the bandwidth occupied or a packet count.");
     if (result.center_guard_bin_count) {
         ImGui::Checkbox("Exclude receiver-center region from time/GPS view", &ui.use_center_guard);
-        ImGui::TextWrapped("Receiver-center guard: %.6f - %.6f MHz (%.3f kHz; %zu selected bins)",
+        if (result.mixed_acquisitions) ImGui::TextWrapped("Receiver-center guard follows each acquisition center (%zu selected bins across the acquisitions).", result.center_guard_bin_count);
+        else ImGui::TextWrapped("Receiver-center guard: %.6f - %.6f MHz (%.3f kHz; %zu selected bins)",
             result.center_guard_lower_hz / 1e6, result.center_guard_upper_hz / 1e6,
             (result.center_guard_upper_hz - result.center_guard_lower_hz) / 1e3, result.center_guard_bin_count);
         if (result.observed_seconds > 0) ImGui::Text("Center-region busy: %#.6g%% of observed time",
             ratio(result.center_busy_seconds, result.observed_seconds) * 100);
         wrapped("This guard covers up to five bins around the receiver center, where an internal DC artifact may occur. It does not prove the signal is an artifact. Real signals may also be excluded; the guarded region remains unassessed. Original per-frequency measurements stay visible below.", amber);
-        if (result.outside_center_bin_count && result.observed_seconds > 0)
+        if (result.outside_center_bin_count && result.outside_center_observed_seconds > 0)
             ImGui::TextColored(accent, "Outside-center busy: %.6f / %.6f observed s = %#.6g%%",
-                result.outside_center_busy_seconds, result.observed_seconds, ratio(result.outside_center_busy_seconds, result.observed_seconds) * 100);
+                result.outside_center_busy_seconds, result.outside_center_observed_seconds, ratio(result.outside_center_busy_seconds, result.outside_center_observed_seconds) * 100);
         else ImGui::TextColored(amber, "Outside-center busy: unavailable (no unguarded observed frequencies).");
     }
     wrapped(guarded_view(ui) ? "Time/GPS view uses OUTSIDE-CENTER busy time. Clear the checkbox to compare the original all-bin result." :
@@ -2834,10 +3110,17 @@ void advanced_analysis_tab(Engine& engine, DesktopState& ui, const Snapshot& sna
 }
 
 void dialogs(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
+    if (!desktop_lora_enabled) { ui.show_keys = false; ui.show_detail = false; }
     if (ui.show_keys) {
         ImGui::SetNextWindowSize({650, 590}, ImGuiCond_FirstUseEver);
         if (ImGui::Begin("Authorized channel keys", &ui.show_keys, ImGuiWindowFlags_NoCollapse)) {
-            wrapped("Keys are held in this process only. No default public channel key is tried for live reception. Configure a key only for traffic you are authorized to receive.", amber);
+            wrapped("The public Meshtastic key is configured separately from your private key records. Private keys stay in this process and are never saved.");
+            ImGui::BeginDisabled(snapshot.running || snapshot.historical);
+            if (ImGui::Checkbox("Use Meshtastic public default key (AQ==)", &ui.public_meshtastic_key_enabled)) {
+                ui.apply_public_key(engine); ui.persist_preferences();
+            }
+            ImGui::EndDisabled();
+            wrapped("One public key covers all presets and channel names that use it. It does not add receive profiles or bypass frame integrity checks.");
             wrapped("These records are independent of receive frequencies and profiles. Every live frame is evaluated against the configured keyring.");
             const auto records = engine.key_records();
             ui.selected_key_record = std::clamp(ui.selected_key_record, 0, static_cast<int>(records.size()) - 1);
@@ -2869,7 +3152,7 @@ void dialogs(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
                 help("Use the exact, case-sensitive resolved channel name, up to 32 bytes. This narrows key attempts by the over-the-air channel hash across every receive profile.");
             } else {
                 ImGui::InputText("Record label", ui.key_label.data(), ui.key_label.size());
-                wrapped("Key-only scope explicitly permits this key to be tried regardless of channel name or header hash. Waveform discovery is enabled separately; payload decoding still uses the configured profiles.", amber);
+                wrapped("Key-only scope permits this key regardless of channel name or header hash. Automatic discovery and optional manual profiles share this keyring; frame integrity checks still apply.", amber);
             }
             ImGui::InputText("Key / hex or Base64", ui.key_input.data(), ui.key_input.size(),
                 ImGuiInputTextFlags_Password | ImGuiInputTextFlags_NoUndoRedo);
@@ -2890,14 +3173,17 @@ void dialogs(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
             ImGui::EndDisabled();
             ImGui::EndDisabled();
             ImGui::Spacing();
+            ImGui::BeginDisabled(snapshot.running);
             if (ImGui::Button("Clear all in-memory keys")) {
                 engine.clear_keys();
+                ui.public_meshtastic_key_enabled = false; ui.persist_preferences();
                 erase_secret(ui.key_input);
-                ui.feedback(true, "Configured keys cleared. Previously authorized saved content is unchanged.");
+                ui.feedback(true, "Configured keys cleared and public-key default disabled. Original saved survey files are unchanged.");
             }
+            ImGui::EndDisabled();
             ImGui::Separator();
             wrapped("Successful channel decryption and schema validation do not authenticate a Meshtastic sender. Recipient private-key messages and MeshCore keys are outside the currently enabled decoder.");
-            wrapped("Duplicate eligible key material is tried once. Distinct keys that produce competing plausible envelopes suppress content as ambiguous; acceptance does not authenticate the sender.");
+            wrapped("Duplicate eligible key material is tried once. Distinct keys that produce competing plausible envelopes suppress classification evidence as ambiguous; acceptance does not authenticate the sender.");
             wrapped("Key entry and decoding use process memory. The application does not claim control over operating-system swap or crash handling.");
         }
         ImGui::End();
@@ -2932,7 +3218,7 @@ void dialogs(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
     }
     if (ui.show_detail && ui.selected) {
         ImGui::SetNextWindowSize({710, 530}, ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("Reception details", &ui.show_detail)) content_detail(*ui.selected);
+        if (ImGui::Begin("Reception details", &ui.show_detail)) reception_detail(*ui.selected);
         ImGui::End();
     }
     if (ui.show_export) {
@@ -2947,7 +3233,8 @@ void dialogs(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
 void receiver_diagnostics(const Snapshot& snapshot, bool show_by_default) {
     if (snapshot.historical || !ImGui::CollapsingHeader("Receiver diagnostics",
             show_by_default ? ImGuiTreeNodeFlags_DefaultOpen : ImGuiTreeNodeFlags_None)) return;
-    wrapped("Live acquisition counters. A sync match or valid CRC does not identify a mesh network or authenticate its sender.");
+    wrapped("Live acquisition counters for this receiver.");
+    if (desktop_lora_enabled) {
     if (snapshot.lane_health.empty()) ImGui::TextDisabled("No active receiver profiles.");
     for (size_t i = 0; i < snapshot.lane_health.size(); ++i) {
         const auto& lane = snapshot.lane_health[i];
@@ -2965,6 +3252,7 @@ void receiver_diagnostics(const Snapshot& snapshot, bool show_by_default) {
             static_cast<unsigned long long>(p.sync_first_mismatch), static_cast<unsigned long long>(p.sync_second_mismatch));
         ImGui::PopID();
     }
+    }
     ImGui::TextDisabled("Dropped application samples %llu  |  Upstream loss %s",
         static_cast<unsigned long long>(snapshot.dropped_samples), snapshot.upstream_loss_unknown ? "unknown" : "known synthetic source");
 }
@@ -2975,10 +3263,10 @@ void receiver_diagnostics(const Snapshot& snapshot, bool show_by_default) {
 
 void report_receiver_stop(const Snapshot& final, bool expired) {
         if (!final.config.synthetic && final.config.hardware_receiver == HardwareReceiver::Rak5146) {
-            std::printf("Desktop RAK receive stopped timed_out=%u error=%u elapsed_seconds=%.3f scans=%llu rssi_samples=%llu receptions=%llu authorized_content=%llu\n",
+            std::printf("Desktop RAK receive stopped timed_out=%u error=%u elapsed_seconds=%.3f scans=%llu rssi_samples=%llu receptions=%llu classified_receptions=%llu\n",
                 expired ? 1u : 0u, final.error.empty() ? 0u : 1u, final.elapsed_seconds,
                 static_cast<unsigned long long>(final.concentrator_scans), static_cast<unsigned long long>(final.concentrator_rssi_samples),
-                static_cast<unsigned long long>(final.total_receptions), static_cast<unsigned long long>(final.authorized_messages));
+                static_cast<unsigned long long>(final.total_receptions), static_cast<unsigned long long>(final.classified_receptions));
             for (size_t i = 0; i < final.concentrator_health.size(); ++i) {
                 const auto& h = final.concentrator_health[i];
                 std::printf("Desktop final board=%zu scans=%llu rssi_samples=%llu receptions=%llu crc_failures=%llu\n", i + 1,
@@ -2990,16 +3278,25 @@ void report_receiver_stop(const Snapshot& final, bool expired) {
         }
         std::printf("Desktop spectrum groups=%llu raw_fragments=%llu\n",
             static_cast<unsigned long long>(final.spectrum_bursts),static_cast<unsigned long long>(final.spectrum_events));
-        std::printf("Desktop receive stopped timed_out=%u error=%u elapsed_seconds=%.3f input_seconds=%.3f measurement_seconds=%.3f delivered_samples=%llu dropped_samples=%llu upstream_loss_unknown=%u receptions=%llu authorized_content=%llu\n",
+        std::printf("Desktop receive stopped timed_out=%u error=%u elapsed_seconds=%.3f input_seconds=%.3f measurement_seconds=%.3f delivered_samples=%llu dropped_samples=%llu upstream_loss_unknown=%u receptions=%llu classified_receptions=%llu\n",
             expired ? 1u : 0u, final.error.empty() ? 0u : 1u, final.elapsed_seconds, final.input_seconds, final.measurement_seconds,
             static_cast<unsigned long long>(final.delivered_samples), static_cast<unsigned long long>(final.dropped_samples),
             final.upstream_loss_unknown ? 1u : 0u, static_cast<unsigned long long>(final.total_receptions),
-            static_cast<unsigned long long>(final.authorized_messages));
+            static_cast<unsigned long long>(final.classified_receptions));
+        for (const auto& band : final.discovery.bands) {
+            if (!band.runtime_diagnostics_available) continue;
+            std::printf("Desktop final discovery_scope=latest_acquisition subband=%u center_hz=%.3f processed_output_samples=%llu abandoned_output_samples=%llu source_gap_input_samples=%llu fft_searches=%llu windows=%llu resets_after_gap=%llu candidate_limit_hits=%llu track_limit_hits=%llu\n",
+                band.subband_index, band.center_hz,
+                static_cast<unsigned long long>(band.processed_samples), static_cast<unsigned long long>(band.abandoned_samples),
+                static_cast<unsigned long long>(band.source_gap_input_samples), static_cast<unsigned long long>(band.fft_searches),
+                static_cast<unsigned long long>(band.windows), static_cast<unsigned long long>(band.resets_after_gap),
+                static_cast<unsigned long long>(band.candidate_limit_hits), static_cast<unsigned long long>(band.track_limit_hits));
+        }
         for (size_t i = 0; i < final.lane_health.size(); ++i) {
             const auto& h = final.lane_health[i]; const auto& p = h.phy;
-            std::printf("Desktop final lane=%zu frequency_hz=%llu processed_seconds=%.3f frames=%llu decoded=%llu crc_failures=%llu resets=%llu preamble_candidates=%llu sync_matches=%llu sync_rejections=%llu sync_low_ratio=%llu sync_timeout=%llu sync_first_mismatch=%llu sync_second_mismatch=%llu headers_valid=%llu headers_failed=%llu completed_frames=%llu\n",
+            std::printf("Desktop final lane=%zu frequency_hz=%llu processed_seconds=%.3f frames=%llu classified=%llu crc_failures=%llu resets=%llu preamble_candidates=%llu sync_matches=%llu sync_rejections=%llu sync_low_ratio=%llu sync_timeout=%llu sync_first_mismatch=%llu sync_second_mismatch=%llu headers_valid=%llu headers_failed=%llu completed_frames=%llu\n",
                 i + 1, static_cast<unsigned long long>(h.frequency_hz), h.processed_seconds,
-                static_cast<unsigned long long>(h.frames), static_cast<unsigned long long>(h.decoded),
+                static_cast<unsigned long long>(h.frames), static_cast<unsigned long long>(h.classified),
                 static_cast<unsigned long long>(h.crc_failures), static_cast<unsigned long long>(h.resets),
                 static_cast<unsigned long long>(p.preamble_candidates), static_cast<unsigned long long>(p.sync_matches),
                 static_cast<unsigned long long>(p.sync_rejections), static_cast<unsigned long long>(p.sync_low_ratio),
@@ -3128,7 +3425,7 @@ int run_desktop(Engine& engine, int maximum_frames, bool auto_demo,
             std::fflush(stdout);
         };
         if (prepare_only) {
-            ui.feedback(true, "Setup only. Configure authorized channel keys, then explicitly allow reception. The timer has not started.");
+            ui.feedback(true, "Setup only. Review receiver and survey settings, then start reception. The timer has not started.");
             std::printf("Desktop setup ready device_opened=0 timer_armed=0 duration_seconds=%.3f passive_smoke=%u\n",
                 duration_seconds, ui.passive_smoke ? 1u : 0u);
             std::fflush(stdout);
@@ -3145,6 +3442,7 @@ int run_desktop(Engine& engine, int maximum_frames, bool auto_demo,
     const auto initial = engine.snapshot();
     if (!managed_launch && !auto_demo && maximum_frames == 0 && !initial.historical) {
         ui.initialize_preferences(settings_directory, true, !launch_config);
+        ui.apply_public_key(engine);
         if (launch_config) {
             // Explicit command-line acquisition choices win over preferences.
             ui.config = *launch_config;

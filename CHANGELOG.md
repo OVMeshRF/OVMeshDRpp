@@ -1,26 +1,22 @@
 # Changelog
 
-## Unreleased
+## 0.4.1
 
-- Add experimental one/two-board RAK5146 USB/LBT reception, sampled RSSI scans, separate recording/reporting and a pinned receive-only Semtech HAL worker for macOS and eligible Linux builds. Concentrator scans do not provide SDR IQ, a waterfall or continuous occupancy; Windows RAK support is unavailable.
+- Focus the desktop on spectrum surveying. Experimental LoRa discovery, packet decoding and classification controls are disabled and hidden while development continues. Frequency, time and location measurements remain available; energy-event counts are not packet counts.
+- Preserve measurements and recordings across Stop/Resume. Use New for a separate survey, Open for saved history, and Save for a durable checkpoint.
+- Consolidate session controls and status in the sidebar. Resize the spectrum and waterfall independently without stretching waterfall history.
+- Make brief activity visible in HTML reports using the desktop's labeled low-activity scale. Add local report Preview and automatic opening after generation.
+- Improve RAK reports with per-board sampled-activity charts, actual filter bounds and scan/sample counts. These measurements remain distinct from continuous SDR occupancy.
+- Improve optional GPS discovery, receiver selection, report diagnostics and Linux build prerequisites.
+- Update the reviewed shared libusb dependency to 1.0.30 and harden supplied-archive handling, terminal output and saved-coverage rendering.
+- Add repeatable Apple Silicon macOS and Ubuntu 24.04 amd64/arm64 packaging, matching source materials, dependency inventories and isolated package checks. Windows packages remain in development.
 
-- Allow RF reception when optional automatic GPS is missing, ambiguous or cannot connect; show a warning, preserve recording, and invalidate an unavailable earlier serial source.
+This is an early experimental release. Container and synthetic checks do not establish Linux USB/GPS operation, calibrated RF measurements or field reliability. See [platform status](docs/operations/deployment.md#platform-and-distribution-limits) and [measurement limits](docs/engineering/rf-survey-gap-analysis.md).
 
-- Separate portable engine correctness fixtures from optional real-time throughput checks, preserving sample-loss and decoding assertions on slower hosts.
+## 0.4.0 — Initial experimental source release
 
-- Prevent system OpenSSL pkg-config metadata from adding an unintended Zlib dependency to the reviewed local crypto build; check Perl's Time::Piece prerequisite before setup starts.
-
-- Add explicit local OpenSSL setup for native Linux/macOS and actionable CMake checks for missing, mismatched or insufficiently hardened crypto dependencies. Normal builds remain offline.
-- Add a direct RTL-SDR receiver choice, receiver-specific controls, saved setup and acquisition provenance. Initial RTL LoRa discovery uses 2 MS/s over a guarded 1.5 MHz span; spectrum-only reception also supports 1 MS/s.
-- Include the pinned minimal librtlsdr source and allocation-failure checks; builds remain offline.
-
-## 2026-09-10 — Initial experimental source snapshot (0.4.0)
-
-- Receive-only HackRF spectrum surveys with a live spectrum/waterfall, measured coverage and frequency activity.
-- Fresh-session workflow, GPS association, compact local recording, and explicit opening of saved sessions.
-- Frequency/time/location analysis with summary CSVs, detailed exports and privacy-controlled HTML findings reports.
-- Full observation timestamps, session-storage size, local waveform screenshots and grouped Settings.
-- Experimental LoRa waveform discovery and explicitly configured Meshtastic decoding. Automatic discovery-to-decoder dispatch and reliable range-wide protocol identification remain incomplete.
-- Build, user, support, security and licensing documentation, with synthetic application screenshots.
-
-This is an experimental source snapshot, not a supported binary release. See the [implementation status](docs/engineering/implementation-status.md) and [RF capability gaps](docs/engineering/rf-survey-gap-analysis.md) for validation limits.
+- Local receive-only RF surveys with HackRF and RTL-SDR, spectrum/waterfall display, GPS association and saved sessions.
+- Frequency/time/location analysis, summary exports, HTML reports and waveform screenshots.
+- Experimental one/two-board RAK5146 USB/LBT support with separately reported sampled RSSI scans.
+- Build, user, support, security and licensing documentation.
+- Early LoRa detection/classification work; this is disabled in the 0.4.1 desktop.

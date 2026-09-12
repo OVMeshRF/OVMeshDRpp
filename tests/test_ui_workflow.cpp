@@ -87,25 +87,30 @@ void fresh_layout_and_settings(Canvas& canvas, const Fixture& fixture) {
     require(ui.config.lanes.empty() && !ui.preferences_active, "Passive state stays isolated from ordinary defaults");
     ui.initialize_preferences(fixture.path("fresh-profile"), false);
     require(ui.preferences_ready && ui.gps_enabled && ui.save_session && ui.config.compact_recording &&
-        ui.config.discover_lora && ui.decode_enabled && !ui.spectrum_only && ui.config.lanes.size() == 1,
-        "Ordinary setup applies the approved capture and decoding defaults");
+        !ui.config.discover_lora && !ui.config.automatic_decode && !ui.decode_enabled && ui.spectrum_only && ui.config.lanes.empty(),
+        "Ordinary setup arms spectrum recording and GPS with all LoRa processing disabled");
     require(!engine.snapshot().running && engine.snapshot().session_id.empty() && engine.configured_key_count() == 0 &&
         engine.gps_connection_status().state == GpsConnectionState::Disconnected && ui.gps_devices.devices.empty(),
         "Metadata-only initialization starts neither reception nor GPS and adds no key");
+    ui.apply_public_key(engine);
+    require(!engine.public_meshtastic_key_enabled() && engine.configured_key_count() == 0,
+        "Spectrum-only desktop adds no public classification key");
     const auto show = [&] { render(engine, ui, engine.snapshot()); };
     canvas.frame(show); const auto main = canvas.frame(show);
-    for (const char* text : {"New session", "Open...", "Save session", "Settings", "Offset / Hz", "RF amplifier", "Capture PNG..."}) contains(main, text);
+    for (const char* text : {"New", "Open...", "Save", "Settings", "Offset / Hz", "RF amplifier", "Capture PNG...", "Energy details"}) contains(main, text);
     for (const char* setting : {"Discover LoRa waveforms", "Advanced / Legacy decode profiles", "Start GPS automatically",
-            "Browse recording location", "FIXED OR MOBILE RECEIVER POSITION", "INPUT AVAILABILITY"})
+            "Browse recording location", "FIXED OR MOBILE RECEIVER POSITION", "INPUT AVAILABILITY", "Detected signals",
+            "Packet classifications", "Classification settings", "LoRa receptions"})
         require(main.find(setting) == std::string::npos, "Setup and verbose diagnostics stay out of the default working screen");
     const auto detection = canvas.frame([&] { detection_settings(engine, ui, engine.snapshot()); });
-    for (const char* text : {"Spectrum + LoRa", "Spectrum only", "Discover LoRa waveforms", "Decode authorized messages",
-            "Advanced / Legacy decode profiles", "Automatic decoding of discovered signals is still in development"}) contains(detection, text);
+    require(detection.empty(), "Disabled detection settings cannot reveal controls even when called directly");
     ui.show_settings = true; ui.settings_page = 2;
     canvas.frame(show); const auto recording = canvas.frame(show);
     contains(recording, "Recording mode"); contains(recording, "Browse recording location");
-    ui.settings_page = 1;
+    ui.settings_page = 0; // A stale UI selection must not reopen hidden controls.
     canvas.frame(show); const auto gps = canvas.frame(show);
+    require(ui.settings_page == 1 && gps.find("Detection & classification") == std::string::npos,
+        "Settings preserves category IDs and redirects the hidden detection page to GPS");
     contains(gps, "Start GPS automatically"); contains(gps, "FIXED OR MOBILE RECEIVER POSITION");
     contains(gps, "GPS is optional. Reception continues if it is unavailable");
     require(engine.gps_connection_status().state == GpsConnectionState::Disconnected && !engine.snapshot().running,
@@ -113,31 +118,107 @@ void fresh_layout_and_settings(Canvas& canvas, const Fixture& fixture) {
     ui.show_settings = false;
 }
 
+void preset_catalog_and_automatic_status(Canvas& canvas) {
+    const auto catalog = canvas.frame([&] { meshtastic_preset_catalog(); });
+    for (const char* text : {"One public default key (AQ==)", "Preset", "BW / kHz", "SDR support", "Deprecated presets remain listed"})
+        contains(catalog, text);
+    const auto rak_catalog = canvas.frame([&] { meshtastic_preset_catalog(true); });
+    contains(rak_catalog, "RAK support"); contains(rak_catalog, "Unsupported");
+    Snapshot snapshot;
+    contains(canvas.frame([&] { automatic_decoder_status(snapshot, true); }), "ready for reception");
+    snapshot.running = true; snapshot.automatic_decoder.available = true; snapshot.automatic_decoder.enabled = true;
+    snapshot.automatic_decoder.completed = 4; snapshot.automatic_decoder.crc_valid = 3;
+    snapshot.automatic_decoder.classified = 2; snapshot.automatic_decoder.active_decoders = 2;
+    snapshot.automatic_decoder.history_misses = 5;
+    const auto live = canvas.frame([&] { automatic_decoder_status(snapshot, true); });
+    contains(live, "running / 2 active"); contains(live, "Latest acquisition: 4 frames / 3 CRC valid / 2 likely Meshtastic");
+    contains(live, "Some candidates could not be processed");
+    snapshot.running = false; snapshot.historical = true; snapshot.automatic_decoder.available = false;
+    const auto historical = canvas.frame([&] { automatic_decoder_status(snapshot, false); });
+    contains(historical, "diagnostics were not recorded");
+    require(historical.find("Latest acquisition:") == std::string::npos, "Missing historical automatic diagnostics are unavailable, not fabricated zero counters");
+    snapshot.automatic_decoder.available = true;
+    contains(canvas.frame([&] { automatic_decoder_status(snapshot, false); }), "recorded / 2 active");
+
+    LaneConfig lane; lane.frequency_hz = 869123456; lane.enabled = false;
+    const auto draw = [&] { return canvas.frame([&] { meshtastic_preset_picker(lane); }); };
+    const auto key = [&](ImGuiKey value) {
+        ImGui::GetIO().AddKeyEvent(value, true); draw();
+        ImGui::GetIO().AddKeyEvent(value, false); draw();
+    };
+    const auto navigate = [&](ImGuiWindow* window, ImGuiID id) {
+        ImGui::FocusWindow(window);
+        for (unsigned attempt = 0; attempt < 64 && ImGui::GetCurrentContext()->NavId != id; ++attempt) key(ImGuiKey_Tab);
+        require(ImGui::GetCurrentContext()->NavId == id, "Keyboard navigation reaches the actual preset selection");
+    };
+    const auto click_selected = [&](ImGuiWindow* window) {
+        // ImGui stores nav rectangles relative to CursorStartPos, which includes
+        // title/padding/scroll offsets. Use its conversion, not window->Pos.
+        const auto rect = ImGui::WindowRectRelToAbs(window, window->NavRectRel[ImGuiNavLayer_Main]);
+        ImGui::GetIO().AddMousePosEvent((rect.Min.x + rect.Max.x) * .5f,
+            (rect.Min.y + rect.Max.y) * .5f); draw();
+        ImGui::GetIO().AddMouseButtonEvent(0, true); draw();
+        ImGui::GetIO().AddMouseButtonEvent(0, false); draw(); draw();
+    };
+    draw(); draw(); auto* page = ImGui::FindWindowByName("Workflow fixture");
+    navigate(page, page->GetID("Meshtastic preset")); click_selected(page);
+    auto* context = ImGui::GetCurrentContext();
+    require(!context->OpenPopupStack.empty(), "Mouse opens the shared Meshtastic preset picker");
+    auto* popup = context->OpenPopupStack.back().Window;
+    navigate(popup, popup->GetID("MediumFast")); click_selected(popup);
+    require(lane.label == "MediumFast" && lane.bandwidth_hz == 250000 && lane.spreading_factor == 9 && lane.coding_rate == 5 &&
+        lane.frequency_hz == 869123456 && !lane.enabled && context->OpenPopupStack.empty(),
+        "Preset selection applies pinned modem values while preserving operator frequency and enabled state");
+    navigate(page, page->GetID("Meshtastic preset")); click_selected(page);
+    require(!context->OpenPopupStack.empty(), "Preset picker reopens for a narrow 2.8 mode");
+    popup = context->OpenPopupStack.back().Window;
+    navigate(popup, popup->GetID("TinyFast")); click_selected(popup);
+    require(lane.label == "TinyFast" && lane.bandwidth_hz == 15625 && lane.spreading_factor == 7 && lane.coding_rate == 5 &&
+        lane.frequency_hz == 869123456 && !lane.enabled,
+        "TinyFast selects the actual 15.625 kHz modem bandwidth without changing frequency");
+}
+
 void persisted_setup_and_effective_modes(const Fixture& fixture) {
+    const auto paths = preference_paths(fixture.path("mode-profile"));
+    ensure_preferences_directories(paths);
+    auto previous = load_preferences(paths);
+    previous.discover_lora = previous.decode_enabled = previous.public_meshtastic_key_enabled = true;
+    previous.spectrum_only = false;
+    previous.concentrators.decode_enabled = true;
+    previous.concentrators.boards[0].packets_enabled = true;
+    save_preferences(paths, previous);
     Engine engine; DesktopState ui; ui.initialize_preferences(fixture.path("mode-profile"), false);
-    prepare_synthetic(ui); ui.config.lanes.front().label = "Operator profile";
-    ui.config.discover_lora = true; ui.decode_enabled = true;
+    auto expected = previous;
+    expected.spectrum_only = true;
+    expected.discover_lora = expected.decode_enabled = expected.public_meshtastic_key_enabled = false;
+    expected.concentrators.decode_enabled = false;
+    for (auto& board : expected.concentrators.boards) board.packets_enabled = false;
+    require(ui.spectrum_only && !ui.decode_enabled && !ui.public_meshtastic_key_enabled && !ui.config.discover_lora &&
+        !ui.config.automatic_decode && !ui.config.concentrators.decode_enabled && !ui.config.concentrators.boards[0].packets_enabled &&
+        load_preferences(paths) == expected,
+        "Old enabled preferences migrate only detection switches while preserving RF, GPS, recording and display setup");
+    prepare_synthetic(ui); ui.config.lanes.push_back(LaneConfig{}); ui.config.lanes.front().label = "Operator profile";
+    ui.config.discover_lora = true; ui.config.automatic_decode = true; ui.decode_enabled = true; ui.spectrum_only = false;
     ui.start(engine, false); require(!ui.notice_error, ui.notice); measurements(engine);
     auto live = engine.snapshot();
-    require(!live.config.discover_lora && live.config.lanes.empty() && ui.config.discover_lora &&
-        ui.config.lanes.size() == 1 && ui.config.lanes.front().label == "Operator profile" && ui.decode_enabled,
-        "Spectrum only suppresses effective discovery and decoding without erasing configured choices");
+    require(!live.config.discover_lora && !live.config.automatic_decode && live.config.lanes.empty() &&
+        !ui.config.discover_lora && ui.config.lanes.empty() && !ui.decode_enabled && ui.spectrum_only,
+        "Start enforces spectrum only even if an old caller supplies manual or automatic LoRa setup");
     engine.stop();
     ui.spectrum_only = false; ui.decode_enabled = false; ui.config.discover_lora = false;
     ui.start(engine, false); require(!ui.notice_error, ui.notice); measurements(engine);
-    require(engine.snapshot().config.lanes.empty() && ui.config.lanes.size() == 1,
-        "Disabling payload decoding preserves the editable receive profile");
+    require(engine.snapshot().config.lanes.empty() && ui.config.lanes.empty(),
+        "Resume keeps manual decoder profiles disabled");
     engine.stop();
     ui.decode_enabled = true;
     ui.start(engine, false); require(!ui.notice_error, ui.notice); measurements(engine);
-    require(engine.snapshot().config.lanes.size() == 1 && engine.snapshot().config.lanes.front().label == "Operator profile",
-        "Re-enabling authorized decoding restores the configured profile to the effective session");
+    require(engine.snapshot().config.lanes.empty() && !ui.decode_enabled,
+        "An attempted stale classification toggle cannot enable desktop packet processing");
     engine.stop();
     ui.config.center_hz = 868750000; ui.config.tuning_offset_hz = 900;
     ui.start(engine, false); require(!ui.notice_error, ui.notice); measurements(engine);
-    require(engine.snapshot().config.lanes.empty() && ui.config.lanes.size() == 1 &&
-        ui.config.lanes.front().frequency_hz == 906875000,
-        "A legacy profile outside the supplied range does not block surveying or erase its saved setup");
+    require(engine.snapshot().config.lanes.empty() && ui.config.lanes.empty(),
+        "Changing survey frequency keeps the effective receiver spectrum only");
     engine.stop();
     ui.config.lna_gain = 32; ui.config.vga_gain = 24; ui.config.amplifier = true;
     ui.mixed_fonts = false; ui.position_view_mode = PositionViewMode::Mobile;
@@ -158,7 +239,7 @@ void rtl_receiver_controls(Canvas& canvas) {
     Engine engine; DesktopState ui; ui.passive_smoke=true;
     ui.select_receiver(2); ui.config.center_hz=906875000;
     Snapshot snapshot; snapshot.rtl_sdr_available=true;
-    const auto draw=[&] { receiver_controls(engine,ui,snapshot); };
+    const auto draw=[&] { reception_control(engine,ui,snapshot); receiver_controls(engine,ui,snapshot); };
     canvas.frame(draw);const auto rtl=canvas.frame(draw);
     for(const auto* text:{"RTL-SDR / USB","Tuner gain","Automatic tuner gain","2 MS/s","906.125 - 907.625 MHz",
             "Only this range is monitored continuously."})contains(rtl,text);
@@ -185,24 +266,28 @@ void concentrator_controls_and_measurements(Canvas& canvas) {
         ui.config.hardware_receiver==HardwareReceiver::Rak5146 && !ui.config.amplifier,
         "RAK selects its swept US915 range without an SDR amplifier");
     Snapshot snapshot; snapshot.rak5146_available=true;
-    const auto draw=[&] { receiver_controls(engine,ui,snapshot); };
+    const auto draw=[&] { reception_control(engine,ui,snapshot); receiver_controls(engine,ui,snapshot); };
     canvas.frame(draw); const auto controls=canvas.frame(draw);
     for(const auto* text:{"RAK5146 USB/LBT","Configure RAK boards...","902.000 - 928.000 MHz","visited sequentially"}) contains(controls,text);
     for(const auto* text:{"LNA gain","VGA gain","RF amplifier","Sample rate","Tuner gain"})
         require(controls.find(text)==std::string::npos,"Concentrator controls hide irrelevant SDR settings");
     ui.concentrator_inventory_loaded=true;
     const auto setup=canvas.frame([&] { concentrator_settings(engine,ui,snapshot); });
-    for(const auto* text:{"Number of boards","Choose USB concentrator...","generic STM32 identity","Packet frequency / MHz",
-            "Packet bandwidth","Spreading factor","Sync word","Scan RF energy across the survey range"}) contains(setup,text);
+    for(const auto* text:{"Number of boards","Choose USB concentrator...","generic STM32 identity",
+            "Scan RF energy across the survey range", "Scan step / kHz"}) contains(setup,text);
+    for(const auto* text:{"Receive LoRa packets", "Packet frequency / MHz", "Packet bandwidth", "Spreading factor",
+            "Sync word", "Apply preset", "Configured key records", "Configure authorized keys"})
+        require(setup.find(text) == std::string::npos, "RAK spectrum setup hides packet profiles and classification keys");
     require(!engine.snapshot().running && engine.gps_connection_status().state==GpsConnectionState::Disconnected,
         "Concentrator UI rendering opens neither USB nor GPS");
-    contains(setup,"Apply preset"); contains(setup,"Edit the fields below for a custom receive profile.");
     ui.config.concentrators.boards[0].frequency_hz=907000000;
     const auto custom=canvas.frame([&] { concentrator_settings(engine,ui,snapshot); });
-    contains(custom,"Manual settings");
+    require(custom.find("LongFast") == std::string::npos, "Hidden packet profile is not shown in scan setup");
     require(ui.config.concentrators.boards[0].frequency_hz==907000000,
-        "Manual profile edits remain selected across settings frames without a no-op Custom choice");
+        "Changing a manual frequency preserves its value and does not change the modem preset");
     auto applied=ui.config; applied.sample_rate=0; applied.discover_lora=false; applied.lanes.clear();
+    // The low-level metadata formatter remains compatible with old recordings.
+    applied.concentrators.decode_enabled=true; applied.concentrators.boards[0].packets_enabled=true;
     applied.concentrators.boards[0].device_path="fixture-private-path";
     applied.concentrators.boards[0].device_id="fixture-private-id";
     auto log=desktop_acquisition_log(applied,0,90,1700000090);
@@ -241,13 +326,110 @@ void concentrator_controls_and_measurements(Canvas& canvas) {
     ui.export_kind=3; ui.export_path="synthetic.csv";
     require(!report_export_block_reason(ui,snapshot).empty(),"Unsupported RAK waveform reports are blocked");
     Reception rx; rx.utc_seconds=1700000001.25; rx.concentrator=ConcentratorPacketMetadata{0,-72,12345};
-    const auto detail=canvas.frame([&] { content_detail(rx); });
+    const auto detail=canvas.frame([&] { reception_detail(rx); });
+    contains(detail,"not authenticated");
+    require(detail.find("AUTHORIZED SCHEMA FIELDS") == std::string::npos && detail.find("Reported origin") == std::string::npos, "Concentrator details exclude semantic message fields");
     contains(detail,"RSSI -72.0 dBm (uncalibrated)"); contains(detail,"Board-local timestamp: 12345 us");
     require(detail.find("Frequency error 0 Hz")==std::string::npos,"Unavailable concentrator frequency error is not reported as zero");
     snapshot.historical=false; snapshot.rak5146_available=false;
     contains(canvas.frame(draw),"RAK5146 support is unavailable in this build.");
     ui.select_receiver(1);
     require(ui.config.survey_span_hz<=ui.config.sample_rate*4/5,"Returning from RAK restores a valid SDR width");
+}
+
+void concentrator_selector_mouse_input(Canvas& canvas) {
+    Engine engine; DesktopState ui; ui.passive_smoke = true;
+    ui.select_receiver(3); ui.show_settings = true; ui.settings_page = 6;
+    ui.concentrator_inventory_loaded = true;
+    const ConcentratorDevice candidate{"/dev/cu.fixture-rak", "Synthetic STM32 USB candidate (0483:5740)",
+        "usb:0483:5740:serial:66697874757265"};
+    ui.concentrator_devices.devices = {candidate};
+    Snapshot snapshot; snapshot.rak5146_available = true;
+    const auto draw = [&] { canvas.full_frame([&] { render(engine, ui, snapshot); }); };
+    const auto key = [&](ImGuiKey value) {
+        ImGui::GetIO().AddKeyEvent(value, true); draw();
+        ImGui::GetIO().AddKeyEvent(value, false); draw();
+    };
+    const auto navigate = [&](ImGuiWindow* window, ImGuiID id) {
+        ImGui::FocusWindow(window);
+        for (unsigned attempt = 0; attempt < 64 && ImGui::GetCurrentContext()->NavId != id; ++attempt)
+            key(ImGuiKey_Tab);
+        require(ImGui::GetCurrentContext()->NavId == id, "Keyboard navigation reaches the actual RAK selector control");
+    };
+    const auto nav_center = [](ImGuiWindow* window) {
+        const auto rect = ImGui::WindowRectRelToAbs(window, window->NavRectRel[ImGuiNavLayer_Main]);
+        return ImVec2{(rect.Min.x + rect.Max.x) * .5f, (rect.Min.y + rect.Max.y) * .5f};
+    };
+    const auto click = [&](ImVec2 point) {
+        ImGui::GetIO().AddMousePosEvent(point.x, point.y); draw();
+        ImGui::GetIO().AddMouseButtonEvent(0, true); draw();
+        ImGui::GetIO().AddMouseButtonEvent(0, false); draw(); draw();
+    };
+    draw(); draw();
+    ImGuiWindow* page = nullptr;
+    for (auto* window : ImGui::GetCurrentContext()->Windows)
+        if (window->Active && std::string(window->Name).find("settingsPage") != std::string::npos) page = window;
+    require(page && page->Active, "RAK settings render inside the real Settings child window");
+    const auto board_id = ImHashStr("##boardDevice", 0, page->GetID(0));
+    navigate(page, board_id); const auto board_point = nav_center(page); click(board_point);
+    auto* context = ImGui::GetCurrentContext();
+    require(!context->OpenPopupStack.empty(), "Mouse click opens Board 1 USB selector from Settings child");
+    auto* popup = context->OpenPopupStack.back().Window;
+    require(popup && popup->Active && !popup->Hidden, "Board candidate popup is visible in the full desktop frame");
+    navigate(popup, popup->GetID("###candidate0")); click(nav_center(popup));
+    require(ui.config.concentrators.boards[0].device_id == candidate.stable_id &&
+        ui.config.concentrators.boards[0].device_path == candidate.path && context->OpenPopupStack.empty(),
+        "Mouse-selecting a unique USB candidate saves its identity and path and closes the popup");
+    require(!engine.snapshot().running && engine.snapshot().session_id.empty() &&
+        engine.gps_connection_status().state == GpsConnectionState::Disconnected && !ui.preferences_active,
+        "Selecting a fixture concentrator opens no USB or GPS and touches no ordinary preferences");
+
+    auto& board = ui.config.concentrators.boards[0]; board.device_id.clear(); board.device_path.clear();
+    const auto setup = [&] { return canvas.frame([&] { concentrator_settings(engine, ui, snapshot); }); };
+    const auto available = setup(); contains(available, "Select this board"); contains(available, candidate.label.c_str()); contains(available, candidate.path.c_str());
+    require(board.device_id.empty() && board.device_path.empty(), "Showing a single USB candidate never selects it automatically");
+    draw(); draw();
+    navigate(page, ImHashStr("Select this board", 0, page->GetID(0)));
+    const auto shortcut_point = nav_center(page); click(shortcut_point);
+    require(board.device_id == candidate.stable_id && board.device_path == candidate.path &&
+        context->OpenPopupStack.empty() && !engine.snapshot().running && engine.snapshot().session_id.empty() &&
+        engine.gps_connection_status().state == GpsConnectionState::Disconnected,
+        "Explicit mouse click selects the visible single candidate without a popup or hardware connection");
+
+    snapshot.session_id = "synthetic-paused-rak"; snapshot.config = ui.config;
+    const auto locked = canvas.frame([&] { concentrator_settings(engine, ui, snapshot); });
+    contains(locked, "Choose New to change concentrator boards or scan settings.");
+    contains(locked, "USB candidates found: 1"); contains(locked, "Refresh USB candidates");
+    draw(); draw(); click(board_point);
+    require(context->OpenPopupStack.empty() && ui.config.concentrators.boards[0].device_id == candidate.stable_id,
+        "Paused session keeps its concentrator setup locked instead of erasing measurements");
+    board.device_id.clear(); board.device_path.clear(); draw(); draw(); click(shortcut_point);
+    require(board.device_id.empty() && board.device_path.empty(), "Single-candidate shortcut obeys the existing session configuration lock");
+    snapshot.session_id.clear();
+    const ConcentratorDevice second{"/dev/cu.fixture-rak-two", "Second synthetic candidate", "usb:0483:5740:serial:7365636f6e64"};
+    ui.concentrator_devices.devices = {candidate, second};
+    require(setup().find("Select this board") == std::string::npos, "Multiple eligible boards require the explicit candidate list");
+    ui.concentrator_devices.devices = {candidate, candidate};
+    require(setup().find("Select this board") == std::string::npos, "Ambiguous duplicate USB identities never receive a shortcut");
+    ui.concentrator_devices.devices = {candidate}; ui.config.concentrators.boards.resize(2);
+    ui.config.concentrators.boards[1].device_id = candidate.stable_id; ui.config.concentrators.boards[1].device_path = candidate.path;
+    require(setup().find("Select this board") == std::string::npos, "A board assigned to another slot is excluded from the shortcut");
+    ui.config.concentrators.boards.resize(1);
+    ui.config.concentrators.boards[0].frequency_hz = 907125000;
+    ui.config.concentrators.boards[0].device_id = candidate.stable_id;
+    ui.config.concentrators.boards[0].device_path = candidate.path;
+    if (desktop_lora_enabled) {
+    draw(); draw();
+    navigate(page, ImHashStr("Apply preset", 0, page->GetID(0))); click(nav_center(page));
+    require(!context->OpenPopupStack.empty(), "RAK modem preset picker opens without device access");
+    popup = context->OpenPopupStack.back().Window;
+    navigate(popup, popup->GetID("MediumFast")); click(nav_center(popup));
+    require(ui.config.concentrators.boards[0].frequency_hz == 907125000 &&
+        ui.config.concentrators.boards[0].bandwidth_hz == 250000 &&
+        ui.config.concentrators.boards[0].spreading_factor == 9 && ui.config.concentrators.boards[0].sync_word == 0x2b &&
+        context->OpenPopupStack.empty(), "RAK catalog preset changes modulation without assuming a regional frequency");
+    }
+    ui.show_settings = false; ImGui::GetIO().AddMousePosEvent(-1000, -1000); draw();
 }
 
 void save_new_and_historical(Canvas& canvas, const Fixture& fixture) {
@@ -409,15 +591,14 @@ void toolbar_open_displays_chooser(Canvas& canvas, const Fixture& fixture) {
             ui.start(engine, false); require(!ui.notice_error, ui.notice); measurements(engine); engine.stop();
         }
         const auto before = engine.snapshot(); draw(); draw();
-        auto* main = ImGui::FindWindowByName("OVMeshDR++");
-        require(main && main->Active, "Full desktop window is active");
-        // Table widgets have a table ID scope. Navigate to obtain the actual
-        // rectangle, then exercise real mouse down/up rather than calling Open.
-        const auto target = ImHashStr("Open...", 0, main->GetID("sessionToolbar"));
+        ImGuiWindow* main=nullptr;
+        for(auto* window:ImGui::GetCurrentContext()->Windows)
+            if(std::string(window->Name).find("receiverSidebar")!=std::string::npos && window->Active) main=window;
+        require(main && main->Active, "Sidebar contains the session controls");
+        const auto target = main->GetID("Open...");
         navigate(main, target);
-        const auto rect = main->NavRectRel[ImGuiNavLayer_Main];
-        const ImVec2 point{main->Pos.x + (rect.Min.x + rect.Max.x) / 2,
-                           main->Pos.y + (rect.Min.y + rect.Max.y) / 2};
+        const auto rect = ImGui::WindowRectRelToAbs(main, main->NavRectRel[ImGuiNavLayer_Main]);
+        const ImVec2 point{(rect.Min.x + rect.Max.x) / 2, (rect.Min.y + rect.Max.y) / 2};
         ImGui::GetIO().AddMousePosEvent(point.x, point.y); draw();
         ImGui::GetIO().AddMouseButtonEvent(0, true); draw();
         ImGui::GetIO().AddMouseButtonEvent(0, false); draw(); draw();
@@ -433,6 +614,34 @@ void toolbar_open_displays_chooser(Canvas& canvas, const Fixture& fixture) {
             "Cancelling the actual chooser preserves the fresh or stopped session");
         ImGui::GetIO().AddMousePosEvent(-1000, -1000); draw();
     }
+}
+
+void draggable_live_panels(Canvas& canvas) {
+    Engine engine; DesktopState ui;
+    const auto draw=[&] { canvas.full_frame([&] { render(engine,ui,engine.snapshot()); }); };
+    draw();draw();
+    const float spectrum=ui.spectrum_height, waterfall=ui.waterfall_height;
+    const auto drag=[&](ImVec2 point,float dy) {
+        ImGui::GetIO().AddMousePosEvent(point.x+100,point.y+6);draw();
+        ImGui::GetIO().AddMouseButtonEvent(0,true);draw();
+        ImGui::GetIO().AddMousePosEvent(point.x+100,point.y+6+dy);draw();
+        ImGui::GetIO().AddMouseButtonEvent(0,false);draw();draw();
+    };
+    drag(ui.spectrum_grabber,-30);
+    require(ui.spectrum_height<=spectrum-25 && ui.waterfall_height==waterfall,
+        "Dragging spectrum divider shrinks only spectrum and frees results space");
+    const float reduced=ui.spectrum_height;
+    drag(ui.waterfall_grabber,-60);
+    require(ui.waterfall_height<=waterfall-55 && ui.spectrum_height==reduced,
+        "Waterfall divider independently frees space for the result tables");
+    drag(ui.waterfall_grabber,10000);
+    require(ui.waterfall_height<700,"Divider cannot drag results outside the viewport");
+    ImGui::GetIO().DisplaySize={1000,680};ui.ui_scale=1.5f;draw();draw();
+    require(ui.spectrum_height>=60 && ui.waterfall_height>=70 && ui.waterfall_grabber.y<650,
+        "Both dividers remain reachable at minimum window size and large UI scale");
+    ImGui::GetIO().DisplaySize={1440,960};ui.ui_scale=1;draw();
+    require(engine.snapshot().session_id.empty()&&!engine.snapshot().running,
+        "Layout interactions never create a survey or open hardware");
 }
 
 void final_analysis_refresh_after_stop(Canvas& canvas, const Fixture& fixture) {
@@ -468,15 +677,18 @@ int main() {
     try {
         Fixture fixture; Canvas canvas;
         fresh_layout_and_settings(canvas, fixture);
+        preset_catalog_and_automatic_status(canvas);
         persisted_setup_and_effective_modes(fixture);
         rtl_receiver_controls(canvas);
         concentrator_controls_and_measurements(canvas);
+        concentrator_selector_mouse_input(canvas);
         save_new_and_historical(canvas, fixture);
         unrecorded_and_pending_feedback(canvas);
         asynchronous_analysis_preserves_selection(canvas, fixture);
         scaled_settings_scopes(canvas);
         toolbar_open_displays_chooser(canvas, fixture);
         final_analysis_refresh_after_stop(canvas, fixture);
+        draggable_live_panels(canvas);
         std::cout << "Desktop workflow checks passed; synthetic input only, no windows or devices\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << "Desktop workflow checks failed: " << error.what() << '\n'; return 1; }

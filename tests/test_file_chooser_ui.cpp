@@ -78,7 +78,6 @@ void current_file_and_cancel(HeadlessUi& harness, const Fixture& fixture) {
     DesktopState ui;
     Snapshot snapshot;
     ui.export_path = fixture.path("regional.GEOJSON");
-    ui.export_options.include_content = true;
     ui.export_options.include_provenance = false;
     ui.export_options.include_receiver_positions = false;
     ui.export_options.coordinate_decimals = 3;
@@ -94,7 +93,7 @@ void current_file_and_cancel(HeadlessUi& harness, const Fixture& fixture) {
     harness.activate(ui, snapshot, "Cancel");
     require(ui.file_picker.purpose == FilePickerPurpose::None, "Cancel closes chooser");
     require(ui.export_path == original && fixture.count() == before, "Cancel preserves selected path and creates no files");
-    require(ui.export_options.include_content && !ui.export_options.include_provenance &&
+    require(!ui.export_options.include_provenance &&
             !ui.export_options.include_receiver_positions && ui.export_options.coordinate_decimals == 3,
             "Choosing/cancelling GeoJSON does not change independent privacy options");
 }
@@ -113,7 +112,7 @@ void choose_export_and_recording(HeadlessUi& harness, const Fixture& fixture) {
             "Actual Choose button selects new CSV destination");
     require(fixture.count() == before && !fs::exists(fixture.folder / "survey.csv"),
             "Choose destination does not export or create a file");
-    require(!ui.export_options.include_content && !ui.export_options.include_provenance &&
+    require(!ui.export_options.include_provenance &&
             !ui.export_options.include_receiver_positions, "Export chooser preserves private defaults");
 
     begin_file_picker(ui, FilePickerPurpose::SaveSurvey, fixture.path("new-recording.sqlite"));

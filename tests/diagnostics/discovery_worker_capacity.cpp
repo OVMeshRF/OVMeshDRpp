@@ -11,6 +11,7 @@
 #include "spectrum.hpp"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -18,6 +19,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <numbers>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -35,7 +37,7 @@ constexpr double center_hz = 907500000;
 struct Options {
     unsigned seconds = 3;
     std::string scenario = "all", span = "all";
-    bool spectrum = false, help = false;
+    bool spectrum = false, decode = true, help = false;
 };
 
 Options options(int argc, char** argv) {
@@ -44,6 +46,7 @@ Options options(int argc, char** argv) {
         const std::string_view arg(argv[i]);
         if (arg == "--help") { out.help = true; continue; }
         if (arg == "--spectrum") { out.spectrum = true; continue; }
+        if (arg == "--no-decode") { out.decode = false; continue; }
         if (arg != "--seconds" && arg != "--scenario" && arg != "--span-mhz")
             throw std::invalid_argument("Unknown diagnostic option; use --help");
         if (++i == argc) throw std::invalid_argument("Missing diagnostic option value");
@@ -51,26 +54,29 @@ Options options(int argc, char** argv) {
         if (arg == "--seconds") {
             const auto parsed = std::from_chars(value.data(), value.data() + value.size(), out.seconds);
             if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() ||
-                out.seconds < 1 || out.seconds > 5)
-                throw std::invalid_argument("--seconds must be an integer from 1 to 5");
+                out.seconds < 1 || out.seconds > 30)
+                throw std::invalid_argument("--seconds must be an integer from 1 to 30");
         } else if (arg == "--scenario") out.scenario = value;
         else out.span = value;
     }
     if (out.scenario != "all" && out.scenario != "quiet" && out.scenario != "noise" &&
-        out.scenario != "cw" && out.scenario != "lora")
-        throw std::invalid_argument("--scenario must be all, quiet, noise, cw or lora");
-    if (out.span != "all" && out.span != "12" && out.span != "5")
-        throw std::invalid_argument("--span-mhz must be all, 12 or 5");
+        out.scenario != "cw" && out.scenario != "lora" && out.scenario != "packets")
+        throw std::invalid_argument("--scenario must be all, quiet, noise, cw, lora or packets");
+    if (out.span != "all" && out.span != "12" && out.span != "12.8" && out.span != "5")
+        throw std::invalid_argument("--span-mhz must be all, 12.8, 12 or 5");
     return out;
 }
 
 struct Source {
     // One second of unique noise avoids artificial short-block repetition at a
     // LoRa symbol lag. This period is reused in each second, explicitly; source
-    // synthesis is completed before timing begins. Peak source storage ~151 MiB
-    // while adding a bounded independent fixture; the retained period is 122 MiB.
+    // synthesis is completed before timing begins. The retained period is
+    // 122 MiB; one bounded fixture is constructed at a time and then discarded.
     std::vector<f::Complex> period;
     std::vector<f::FrameTruth> truth;
+    // Only generated packet fixtures have byte expectations; no keys or identities.
+    std::vector<std::array<uint8_t, 12>> payloads;
+    std::vector<uint8_t> coding_rates;
 };
 
 Source make_source(const std::string& scenario) {
@@ -100,15 +106,60 @@ Source make_source(const std::string& scenario) {
             out.truth.push_back(fixture.truth);
         }
     }
+    if (scenario == "packets") {
+        for (unsigned i = 0; i < 2; ++i) {
+            const ovmesh::PhyConfig phy{i ? 500000u : 250000u, 11,
+                static_cast<uint8_t>(i ? 8 : 5), 0x2b};
+            const std::array<uint8_t, 12> payload{0x53, 0x19, 0x71, 0x04, 0x27, 0x98,
+                0x43, 0x61, 0x81, 0x22, 0x0e, static_cast<uint8_t>(0x34 + i)};
+            // This complete-frame workload deliberately uses the application
+            // encoder. The independent analytic preamble workload above remains
+            // separate; this is capacity evidence, not independent codec proof.
+            const auto wave = ovmesh::modulate_lora(payload, phy, sample_rate);
+            const size_t leading = i ? 2400007 : 1920013;
+            if (wave.size() + leading + sample_rate / 20 > out.period.size())
+                throw std::logic_error("Complete packet and trailing guard exceed source period");
+            const double offset = i ? 1236518.25 : -1490345.5;
+            f::Complex oscillator{1, 0};
+            const auto step = std::polar(1.f, static_cast<float>(2 * std::numbers::pi * offset / sample_rate));
+            for (size_t j = 0; j < wave.size(); ++j) {
+                out.period[leading + j] += .08f * wave[j] * oscillator;
+                oscillator *= step;
+                if ((j & 4095) == 4095) oscillator /= std::abs(oscillator);
+            }
+            const double symbol = static_cast<double>(1u << phy.spreading_factor) * sample_rate / phy.bandwidth_hz;
+            f::FrameTruth truth;
+            truth.sample_rate_hz = sample_rate;
+            truth.start_sample = static_cast<double>(leading);
+            truth.preamble_end_sample = leading + 8 * symbol;
+            truth.sync_end_sample = leading + 10 * symbol;
+            truth.sfd_end_sample = leading + 12.25 * symbol;
+            truth.first_sample = leading;
+            truth.end_sample = leading + wave.size();
+            truth.symbol_samples = symbol;
+            truth.symbol_seconds = symbol / sample_rate;
+            truth.configured_center_offset_hz = truth.received_center_offset_hz = offset;
+            truth.lower_offset_hz = offset - phy.bandwidth_hz / 2.;
+            truth.upper_offset_hz = offset + phy.bandwidth_hz / 2.;
+            truth.bandwidth_hz = phy.bandwidth_hz;
+            truth.spreading_factor = phy.spreading_factor;
+            truth.preamble_symbols = 8;
+            truth.sync_word = phy.sync_word;
+            out.truth.push_back(truth);
+            out.payloads.push_back(payload);
+            out.coding_rates.push_back(phy.coding_rate);
+        }
+    }
     return out;
 }
 
 double seconds(Clock::duration duration) { return std::chrono::duration<double>(duration).count(); }
 
-void run(const Source& source, const std::string& scenario, unsigned span_mhz,
+void run(const Source& source, const std::string& scenario, double span_mhz,
          const Options& config) {
-    const uint32_t span_hz = span_mhz * 1000000;
-    Worker worker(sample_rate, center_hz, center_hz - span_hz / 2., center_hz + span_hz / 2.);
+    const auto span_hz = static_cast<uint32_t>(std::llround(span_mhz * 1000000));
+    ovmesh::DiscoveryDecoderOptions decoder; decoder.enabled = config.decode;
+    Worker worker(sample_rate, center_hz, center_hz - span_hz / 2., center_hz + span_hz / 2., decoder);
     const size_t subbands = worker.snapshot().subbands.size();
     ovmesh::DiscoveryObservations observations(sample_rate, subbands);
     std::unique_ptr<ovmesh::SpectrumProcessor> spectrum;
@@ -118,8 +169,47 @@ void run(const Source& source, const std::string& scenario, unsigned span_mhz,
     const auto tile = [&](ovmesh::SpectrumTile value) { ++tiles; spectrum_frames += value.frame_count; };
     const auto event = [&](ovmesh::SpectrumEvent) { ++spectrum_events; };
     uint64_t raw_results = 0, boundary_results = 0, merged_results = 0;
+    uint64_t received_frames = 0, crc_valid_frames = 0, unexpected_frames = 0, repeated_frames = 0;
+    uint64_t payload_mismatches = 0;
+    std::vector<bool> matched_packets(source.payloads.size() * config.seconds);
+    const auto matching_truth = [&](uint32_t bandwidth, unsigned sf, double center, double delimiter,
+                                    unsigned period, size_t index) {
+        const auto& truth = source.truth[index];
+        return bandwidth == truth.bandwidth_hz && sf == truth.spreading_factor &&
+            std::abs(center - (center_hz + truth.received_center_offset_hz)) <=
+                2. * truth.bandwidth_hz / (1u << truth.spreading_factor) &&
+            std::abs(delimiter - (static_cast<double>(source_origin) +
+                period * static_cast<double>(sample_rate) + truth.sync_end_sample)) <=
+                2. * sample_rate / truth.bandwidth_hz;
+    };
     uint64_t gap_records = 0, all_subband_gap_samples = 0, individual_subband_gap_samples = 0;
     const auto collect = [&] {
+        for (const auto& decoded : worker.take_frames()) {
+            ++received_frames;
+            const bool valid = decoded.frame.header_valid && decoded.frame.payload_crc_present &&
+                decoded.frame.payload_crc_valid;
+            if (valid) ++crc_valid_frames;
+            bool matched = false;
+            for (unsigned period = 0; period < config.seconds && !matched; ++period) {
+                for (size_t i = 0; i < source.payloads.size() && !matched; ++i) {
+                    if (!matching_truth(decoded.bandwidth_hz, decoded.spreading_factor,
+                        decoded.center_hz, decoded.delimiter_input_sample, period, i)) continue;
+                    matched = true;
+                    if (!valid || decoded.frame.coding_rate != source.coding_rates[i] ||
+                        !std::equal(decoded.frame.bytes.begin(), decoded.frame.bytes.end(),
+                            source.payloads[i].begin(), source.payloads[i].end())) {
+                        ++payload_mismatches;
+                        continue;
+                    }
+                    const size_t index = period * source.payloads.size() + i;
+                    if (matched_packets[index]) ++repeated_frames;
+                    matched_packets[index] = true;
+                }
+            }
+            if (!matched) ++unexpected_frames;
+            // Move-only handoff destruction erases transient bytes here. No
+            // received payload is printed or copied into retained metadata.
+        }
         for (const auto& result : worker.take_results()) {
             ++raw_results;
             if (!result.complete_in_requested_range) ++boundary_results;
@@ -206,6 +296,8 @@ void run(const Source& source, const std::string& scenario, unsigned span_mhz,
     }
     if (raw_results + state.result_overflows != discovered)
         throw std::runtime_error("Worker result-accounting invariant failed");
+    if (received_frames + state.automatic_decoder.frame_overflows != state.automatic_decoder.completed)
+        throw std::runtime_error("Worker frame-accounting invariant failed");
     const size_t expected = source.truth.size() * config.seconds;
     std::vector<bool> matched(expected);
     size_t unexpected = 0, repeated_match = 0;
@@ -236,7 +328,8 @@ void run(const Source& source, const std::string& scenario, unsigned span_mhz,
 
     std::cout << std::setprecision(9)
         << "scenario=" << scenario << " span_mhz=" << span_mhz << " subbands=" << subbands
-        << " spectrum=" << config.spectrum << " source_slots=" << Worker::source_capacity
+        << " spectrum=" << config.spectrum << " automatic_decode=" << config.decode
+        << " detector_workers=" << Worker::detector_workers << " source_slots=" << Worker::source_capacity
         << " nominal_input_seconds=" << config.seconds
         << " delivered_wall_seconds=" << seconds(delivery_end - start)
         << " drain_seconds=" << drain_seconds << " total_wall_seconds=" << total_wall
@@ -270,17 +363,54 @@ void run(const Source& source, const std::string& scenario, unsigned span_mhz,
         << " spectrum_seconds=" << spectrum_seconds << " spectrum_tiles=" << tiles
         << " spectrum_frames=" << spectrum_frames << " spectrum_events=" << spectrum_events
         << " spectrum_partial_samples=" << (spectrum ? spectrum->dropped_partial_samples() : 0)
+        << " decoder_candidates=" << state.automatic_decoder.candidates
+        << " decoder_started=" << state.automatic_decoder.started
+        << " decoder_active_at_end=" << before_drain.automatic_decoder.active_decoders
+        << " decoder_active_after_drain=" << state.automatic_decoder.active_decoders
+        << " decoder_completed=" << state.automatic_decoder.completed
+        << " decoder_crc_valid=" << state.automatic_decoder.crc_valid
+        << " decoder_preamble_candidates=" << state.automatic_decoder.phy.preamble_candidates
+        << " decoder_sync_matches=" << state.automatic_decoder.phy.sync_matches
+        << " decoder_sync_rejections=" << state.automatic_decoder.phy.sync_rejections
+        << " decoder_valid_headers=" << state.automatic_decoder.phy.headers_valid
+        << " decoder_failed_headers=" << state.automatic_decoder.phy.headers_failed
+        << " decoder_history_misses=" << state.automatic_decoder.history_misses
+        << " decoder_active_limit_hits=" << state.automatic_decoder.active_limit_hits
+        << " decoder_frame_overflows=" << state.automatic_decoder.frame_overflows
+        << " decoder_timeouts=" << state.automatic_decoder.timeouts
+        << " decoder_resets=" << state.automatic_decoder.resets
+        << " decoder_abandoned=" << state.automatic_decoder.abandoned_decoders
+        << " received_frames=" << received_frames << " crc_valid_frames=" << crc_valid_frames
+        << " expected_packets=" << matched_packets.size()
+        << " exact_payload_packets=" << std::count(matched_packets.begin(), matched_packets.end(), true)
+        << " payload_mismatches=" << payload_mismatches << " unexpected_frames=" << unexpected_frames
+        << " repeated_packet_matches=" << repeated_frames
         << " failed=" << state.failed << '\n';
     std::cout << "detector_queue_high_water=";
     for (size_t i = 0; i < state.detector_queue_high_water.size(); ++i)
         std::cout << (i ? "," : "") << state.detector_queue_high_water[i];
     std::cout << '\n';
+    // A small bounded row per PFB subband exposes uneven waveform-search work
+    // without imposing an assumption about fixed detector-thread ownership.
+    for (size_t i = 0; i < state.subbands.size(); ++i) {
+        const auto& band = state.subbands[i];
+        std::cout << "subband=" << i << " center_hz=" << band.band.center_hz
+            << " processed_samples=" << band.processed_output_samples
+            << " windows=" << band.windows << " ffts=" << band.fft_searches
+            << " candidate_limit_hits=" << band.candidate_limit_hits
+            << " discoveries=" << band.discoveries << " resets=" << band.resets_after_gap << '\n';
+    }
     if (state.failed) std::cout << "fault=" << state.fault << '\n';
-    for (const auto& found : observations.observations())
+    size_t printed = 0;
+    for (const auto& found : observations.observations()) {
+        if (printed++ == 64) break;
         std::cout << "observation id=" << found.id << " center_hz=" << found.received_center_hz
                   << " bandwidth_hz=" << found.bandwidth_hz << " sf=" << found.spreading_factor
                   << " delimiter_input_sample=" << found.delimiter_input_sample
                   << " contributing_subbands=" << found.contributing_subbands.size() << '\n';
+    }
+    if (observations.observations().size() > 64)
+        std::cout << "additional_observations_not_printed=" << observations.observations().size() - 64 << '\n';
     std::cout.flush();
 }
 } // namespace
@@ -289,22 +419,25 @@ int main(int argc, char** argv) {
     try {
         const auto config = options(argc, argv);
         if (config.help) {
-            std::cout << "Usage: discovery-worker-capacity [--seconds 1..5] "
-                         "[--scenario all|quiet|noise|cw|lora] [--span-mhz all|12|5] [--spectrum]\n"
-                         "Paced 16 MS/s, 1-second generated source period, 3 detector workers.\n"
+            std::cout << "Usage: discovery-worker-capacity [--seconds 1..30] "
+                         "[--scenario all|quiet|noise|cw|lora|packets] [--span-mhz all|12.8|12|5] "
+                         "[--spectrum] [--no-decode]\n"
+                         "Paced 16 MS/s, 1-second generated source period; automatic decode is enabled by default.\n"
                          "No hardware. No sample files. Final drain waits for the finite accepted queue.\n";
             return 0;
         }
         std::cout << "Offline paced experiment. Includes PFB, asynchronous detectors, bounded queues and "
                      "metadata collection; optional actual spectrum processing. Excludes storage, GUI, USB "
                      "and physical RF effects. Source generated before timing, 1-second period repeated. "
-                     "Strong analytic preambles are not sensitivity, payload or mesh-identity tests.\n";
-        for (const std::string scenario : {"quiet", "noise", "cw", "lora"}) {
+                     "Scenario lora uses independent analytic preambles without encoded payloads. Scenario packets "
+                     "uses complete generated PHY frames and reports exact-payload/CRC counts without printing bytes. "
+                     "Neither establishes sensitivity, mesh identity or real-RF capacity.\n";
+        for (const std::string scenario : {"quiet", "noise", "cw", "lora", "packets"}) {
             if (config.scenario != "all" && config.scenario != scenario) continue;
             const auto source = make_source(scenario);
-            for (unsigned span : {12u, 5u}) {
-                if (config.span != "all" && config.span != std::to_string(span)) continue;
-                run(source, scenario, span, config);
+            for (const std::string_view span : {"12.8", "12", "5"}) {
+                if (config.span != "all" && config.span != span) continue;
+                run(source, scenario, std::stod(std::string(span)), config);
             }
         }
     } catch (const std::exception& error) {

@@ -29,4 +29,8 @@ FileBrowserListing list_local_directory(const std::string& directory, size_t lim
 std::string choose_local_file(const std::string& directory, const std::string& filename,
                              FileChoiceKind kind, bool must_exist);
 
+// Opens only an existing local HTML file in the OS default browser, without a shell.
+// Throws on launch failure; the generated file remains available.
+void open_local_report(const std::string& path);
+
 } // namespace ovmesh

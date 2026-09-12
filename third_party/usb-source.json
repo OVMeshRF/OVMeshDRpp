@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "purpose": "Public source pins for repository-local USB libraries; no device, machine or recording identifiers.",
+  "components": [
+    {
+      "component": "libusb",
+      "version": "1.0.30",
+      "name": "libusb-1.0.30.tar.bz2",
+      "url": "https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.tar.bz2",
+      "source_directory": "libusb-1.0.30",
+      "bytes": 656112,
+      "sha256": "fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf",
+      "library_license": "LGPL-2.1-or-later",
+      "source_file_hashes": {
+        "configure": "de446b0380070122887c3474c9f684ae6cfd63009fb524438221c9d842787ab7",
+        "configure.ac": "0ac890c75715a3a69d9599fd7fc4ee9c00aed5be990f957d40f95be5fd11fb91",
+        "Makefile.am": "4a83b8ada68f1286218cf504315375ab3f0dd5729026105950a08892e2b7a1c2",
+        "libusb/Makefile.am": "9fd9d63c9ecc678f3c4de2b40365ed5b79cce790184658c678335826466dad3d",
+        "libusb/descriptor.c": "4e80077f28a033ba07befceac0347a64ea0e23c34c93b96cfaf8b188d69e401d",
+        "libusb/libusb.h": "a61260ab145b051b86df2b0575956f01810190abe2c7df6aca831c33bdc8082c",
+        "COPYING": "5df07007198989c622f5d41de8d703e7bef3d0e79d62e24332ee739a452af62a"
+      }
+    },
+    {
+      "component": "hackrf",
+      "version": "2024.02.1",
+      "name": "hackrf-2024.02.1.tar.xz",
+      "url": "https://github.com/greatscottgadgets/hackrf/releases/download/v2024.02.1/hackrf-2024.02.1.tar.xz",
+      "source_directory": "hackrf-2024.02.1",
+      "bytes": 21734672,
+      "sha256": "d9ced67e6b801cd02c18d0c4654ed18a4bcb36c24a64330c347dfccbd859ad16",
+      "library_license": "BSD-3-Clause",
+      "source_file_hashes": {
+        "host/libhackrf/CMakeLists.txt": "68f32c73f22ad79d99176566a8d658f6e468c3d584626ccd7516f386c3d50fe5",
+        "host/libhackrf/src/CMakeLists.txt": "4013799957297835ed3cf1e23d37958a1f4f58d8dbb6a3e3f3c20e7cf2b9b3da",
+        "host/libhackrf/src/hackrf.c": "c148fff21f4b3ccc668174c688d0640623f1fbddd1f63d98b4e41b407de9d5f4",
+        "host/libhackrf/src/hackrf.h": "789ed07d071ae34e4298c78fa61856e7c9dc387b01a229162b971d3039a7d93d",
+        "host/cmake/modules/FindUSB1.cmake": "a01b7b9918a04ac8af50a602716c58e6d8793818f0582052002cdef56c2d73fd",
+        "host/cmake/set_release.cmake": "ccdebfe22aa352b8a3a43693d750c13c4bbef3bcd3084751cf0ce9cbfd6acdf6"
+      }
+    }
+  ],
+  "build_configuration": {
+    "libusb": "Shared library only; examples, upstream device tests and system logging disabled. Linux uses netlink instead of libudev.",
+    "hackrf": "Static library only with explicit reviewed libusb paths and INSTALL_UDEV_RULES=OFF; no utilities or firmware.",
+    "prefix_relative": "build/deps/usb-1.0.30-local",
+    "system_install": false,
+    "device_access": false,
+    "source_changes": false
+  },
+  "integrity": {
+    "libusb_sha256_matches_official_release_asset": true,
+    "hackrf_archive_independent_confirmation": "SHA-256 matches the Arch Linux packager release-update announcement recording the previous 2024.02.1 source digest.",
+    "pgp_signature_verified": false,
+    "limitations": "Checksums and a local build receipt do not prove absence of vulnerabilities or authenticate a signing key.",
+    "hackrf_checksum_reference": "https://www.mail-archive.com/arch-commits%40lists.archlinux.org/msg960893.html"
+  }
+}

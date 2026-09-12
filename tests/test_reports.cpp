@@ -25,7 +25,35 @@ template<class F> void rejects(F action,const std::string& message) {
 std::string contents(const std::filesystem::path& path) {
     std::ifstream input(path,std::ios::binary);return {std::istreambuf_iterator<char>(input),{}};
 }
+void sql(const std::filesystem::path& path,const std::string& command) {
+    sqlite3* db=nullptr;require(sqlite3_open(path.string().c_str(),&db)==SQLITE_OK,"open synthetic legacy fixture");
+    const int code=sqlite3_exec(db,command.c_str(),nullptr,nullptr,nullptr);sqlite3_close(db);
+    require(code==SQLITE_OK,"construct exact synthetic legacy schema");
+}
+void inject_legacy_content(const std::filesystem::path& path) {
+    sql(path,"UPDATE receptions SET profile='LEGACY_PRIVATE_PROFILE',origin=305419896,destination=2271560481,packet_id=19088743,"
+        "port=1,hop_limit=3,hop_start=3,channel_hash=42,next_hop=12,relay_node=13,want_ack=1,via_mqtt=1,want_response=1,"
+        "kind='LEGACY_PRIVATE_KIND',text='=LEGACY_PRIVATE_TEXT()',node_id='LEGACY_PRIVATE_NODE',long_name='LEGACY_PRIVATE_LONG',"
+        "short_name='LEGACY_PRIVATE_SHORT',latitude=0.5555555,longitude=-0.6666666,altitude=54321,voltage=3.1415926,"
+        "temperature=27.182818,humidity=61.803398,battery=73,channel_utilization=37.12345,air_util_tx=21.54321,"
+        "reported_time=1701234567,hardware_model=17,role=4,routing_error=2,request_id=7654321,reply_id=1234567,"
+        "signature_present=1,routing_variant='LEGACY_PRIVATE_ROUTE' WHERE id=1;");
+    require(contents(path).find("LEGACY_PRIVATE_TEXT")!=std::string::npos,"synthetic legacy payload is present in source bytes");
+}
+void no_semantic_values(const std::filesystem::path& path) {
+    const auto value=contents(path);
+    for(const auto* marker:{"LEGACY_PRIVATE_","305419896","2271560481","19088743","0.5555555","-0.6666666"})
+        require(value.find(marker)==std::string::npos,"export excludes legacy semantic value "+std::string(marker));
+}
 using Record=std::map<std::string,std::string>;
+void no_semantic_columns(const Record& row) {
+    for(const auto* column:{"profile","profile_id","from","to","origin","destination","packet_id","port","hop_limit","hop_start",
+            "channel_hash","next_hop","relay_node","want_ack","via_mqtt","want_response","kind","content_kind","text","node_id","long_name","short_name",
+            "sender_latitude","sender_longitude","sender_altitude","latitude","longitude","altitude","voltage","temperature","humidity",
+            "battery","battery_percent","channel_utilization","air_util_tx","reported_time","hardware_model","role","routing_error","request_id","reply_id",
+            "signature_present","routing_variant","route","route_back","snr_towards_db_x4","snr_back_db_x4"})
+        require(!row.contains(column),"export omits semantic column "+std::string(column));
+}
 std::vector<Record> read_csv(const std::filesystem::path& path) {
     std::vector<std::vector<std::string>> rows;std::vector<std::string> row;std::string field;bool quoted=false;
     const auto data=contents(path);
@@ -65,6 +93,45 @@ SpectrumTile tile(const ReceiverConfig& config,uint64_t index,bool simultaneous=
     if(index!=1){t.receiver_start=position(t.elapsed_start_seconds,index==0?.1234567:.35);t.receiver_end=position(t.elapsed_end_seconds,index==0?.1234567:.35);}
     return t;
 }
+void low_activity_report(const std::filesystem::path& directory) {
+    const auto path=directory/"low-activity.sqlite", report=directory/"low-activity.html";
+    auto config=configuration(false);config.discover_lora=false;
+    {
+        SessionStore store;store.create(path.string(),config,"synthetic-low-activity");
+        for(uint64_t index=0;index<16;++index) {
+            auto t=tile(config,index);t.frame_count=128;t.first_sample=index*128*4096;t.end_sample=(index+1)*128*4096;
+            t.elapsed_start_seconds=double(t.first_sample)/config.sample_rate;t.elapsed_end_seconds=double(t.end_sample)/config.sample_rate;
+            t.utc_start_seconds=1700000000+t.elapsed_start_seconds;t.utc_end_seconds=1700000000+t.elapsed_end_seconds;
+            t.mean_dbfs.assign(21,-60);t.peak_dbfs.assign(21,-40);t.activity.assign(128*3,0);
+            t.receiver_start.reset();t.receiver_end.reset();
+            for(size_t frame=0;frame<128;++frame) {
+                t.activity[frame*3+1]=4; // Continuous receiver-center activity.
+                if(index==0 && frame<7)t.activity[frame*3]=1;
+                if(index==0 && frame<3)t.activity[frame*3+2]=16;
+            }
+            store.append(t);
+        }
+        Snapshot snapshot;snapshot.config=config;snapshot.elapsed_seconds=double(2048*4096)/config.sample_rate;
+        store.update(snapshot,true);
+    }
+    const auto before=contents(path);SessionStore reader;reader.open_readonly(path.string());
+    ReportOptions options;options.kind=ReportKind::Analysis;export_survey_report(reader,report.string(),options);
+    const auto html=contents(report);
+    const auto height=[&](const std::string& percent) {
+        const auto title=html.find("<title>Maximum bin occupancy: "+percent+"%</title>");
+        require(title!=std::string::npos,"original exact occupancy tooltip retained: "+percent);
+        const auto rect=html.rfind("<rect",title), attr=html.find("height=\"",rect);
+        require(rect!=std::string::npos && attr<title,"bar geometry accompanies percentage");
+        return std::stod(html.substr(attr+8));
+    };
+    require(height("0.342")>100 && height("0.146")>90,"sub-percent activity remains visible next to continuous center");
+    near(height("100.000"),195,"continuous activity remains at 100 percent");
+    near(height("0.000"),0,"zero occupancy has no invented activity");
+    for(const auto* label:{"0.001%","0.01%","0.1%","10%","Receiver-center guard","zero-preserving logarithmic"})
+        require(html.find(label)!=std::string::npos,"readable nonlinear chart legend");
+    require(contents(path)==before,"report rendering never modifies recorded measurements");
+}
+
 void make_session(const std::filesystem::path& path,bool compact,bool simultaneous=false) {
     const auto config=configuration(compact);SessionStore store;store.create(path.string(),config,"=SYNTHETIC_SESSION()");
     for(uint64_t i=0;i<3;++i){const auto t=tile(config,i,simultaneous);store.append(t);if(t.receiver_end)store.append(*t.receiver_end);}
@@ -74,15 +141,13 @@ void make_session(const std::filesystem::path& path,bool compact,bool simultaneo
     w.id=2;w.center_hz=908750000;w.bandwidth_hz=500000;w.delimiter_elapsed=.0025;w.first_observed_elapsed=.002;
     w.delimiter_utc=1700000000.0025;w.receiver_position.reset();store.append(w);
     Reception r;r.id=1;r.utc_seconds=1700000000.0005;r.elapsed_seconds=.0005;r.frequency_hz=906875000;r.bandwidth_hz=250000;
-    r.spreading_factor=11;r.coding_rate=5;r.header_valid=true;r.crc_valid=true;r.decoded.status=protocol::Status::decoded;
+    r.spreading_factor=11;r.coding_rate=5;r.header_valid=true;r.crc_valid=true;r.decoded.status=protocol::Status::classified;
     r.decoded.classification="likely Meshtastic";r.receiver_position=position(.0005);
-    protocol::AuthorizedContent a;a.profile_id="synthetic";a.port=1;a.from=1;a.to=0xffffffff;a.packet_id=17;
-    a.content.kind="text";a.content.text="=SYNTHETIC(\"hello\")\nquoted, value";
-    a.content.latitude=.5555555;a.content.longitude=-.6666666;r.decoded.authorized=a;store.append(r);
-    r.id=2;r.elapsed_seconds=.0025;r.frequency_hz=908750000;r.decoded.authorized.reset();r.decoded.status=protocol::Status::bad_phy_crc;
+    r.decoded.evidence=protocol::EnvelopeEvidence{1,false};store.append(r);
+    r.id=2;r.elapsed_seconds=.0025;r.frequency_hz=908750000;r.decoded.evidence.reset();r.decoded.status=protocol::Status::bad_phy_crc;
     r.decoded.classification="unknown LoRa";r.header_valid=false;r.crc_valid=false;store.append(r);
     Snapshot s;s.config=config;s.elapsed_seconds=double(3*16384)/config.sample_rate;s.input_seconds=s.measurement_seconds=s.elapsed_seconds;
-    s.delivered_samples=3*16384;s.total_receptions=2;s.authorized_messages=1;s.discovery.enabled=true;s.discovery.finished=true;s.discovery.observations=2;
+    s.delivered_samples=3*16384;s.total_receptions=2;s.classified_receptions=1;s.discovery.enabled=true;s.discovery.finished=true;s.discovery.observations=2;
     store.update(s,true);
 }
 void rtl_receiver_reports(const std::filesystem::path& directory) {
@@ -194,13 +259,39 @@ void specialized(const SessionStore& reader,const std::filesystem::path& directo
     require(full_precision,"track coordinate precision retained on request");
     options.query.elapsed_start=.002;rows=report(reader,directory,"track-time-filter",options);require(!rows.empty(),"time-selected GPS fix exists");
     for(const auto& row:rows)require(std::stod(row.at("elapsed_s"))>=.002,"track time filter honored");
-    options={};options.kind=ReportKind::AuthorizedContent;
-    rejects([&]{report(reader,directory,"content-without-optin",options);},"content export opt-in required");
-    options.privacy.include_content=true;rows=report(reader,directory,"content",options);require(rows.size()==1,"only accepted authorized record exported");
-    require(rows[0].at("text").starts_with("'=SYNTHETIC"),"decoded spreadsheet formula neutralized");
-    require(rows[0].at("authentication")=="not authenticated","content authentication limit retained");
-    require(!rows[0].contains("receiver_latitude"),"content export has independent receiver GPS opt-in");
-    require(rows[0].at("sender_latitude")=="0.556"&&rows[0].at("sender_longitude")=="-0.667","sender positions honor export coordinate precision like the detailed archive");
+}
+void metadata_only_exports(const SessionStore& reader,const std::filesystem::path& directory,const std::string& stem) {
+    for(const bool private_fields:{false,true}) {
+        ExportOptions privacy;privacy.include_receiver_positions=private_fields;privacy.include_provenance=private_fields;
+        privacy.coordinate_decimals=7;
+        const auto path=directory/(stem+(private_fields?"-located.csv":"-default.csv"));reader.export_csv(path.string(),privacy);
+        const auto rows=read_csv(path);require(!rows.empty(),"metadata archive has rows");no_semantic_columns(rows.front());no_semantic_values(path);
+        unsigned receptions=0,classified=0;
+        for(const auto& row:rows) {
+            if(row.at("record_type")=="session")require(row.at("total_receptions")=="2"&&row.at("classified_receptions")=="1","archive retains reception and classification counts");
+            if(row.at("record_type")!="reception")continue;
+            ++receptions;require(row.at("authentication")=="not authenticated","classification never claims authentication");
+            require(row.at("receiver_latitude").empty()!=private_fields,"archive GPS opt-in remains independent of protocol metadata");
+            if(row.at("classification")=="likely Meshtastic") {
+                ++classified;require(row.at("evidence_port")=="1"&&row.at("evidence_signature_present")=="0","archive retains envelope-only evidence");
+                require(row.at("frequency_hz")=="906875000"&&row.at("crc_valid")=="1","classified RF evidence remains intact");
+            }
+        }
+        require(receptions==2&&classified==1,"archive keeps classified and CRC-failed RF receptions");
+    }
+    ReportOptions options;options.privacy.include_receiver_positions=true;options.privacy.include_provenance=true;options.privacy.coordinate_decimals=7;
+    for(const auto kind:{ReportKind::FrequencySummary,ReportKind::TimeSummary,ReportKind::GeographicSummary,ReportKind::Waveforms,ReportKind::ReceiverTrack}) {
+        options.kind=kind;const auto name=stem+"-report-"+std::to_string(static_cast<int>(kind));
+        const auto rows=report(reader,directory,name,options);require(!rows.empty(),"metadata-only CSV report retains observations");
+        no_semantic_columns(rows.front());no_semantic_values(directory/(name+".csv"));
+    }
+    const auto geo=directory/(stem+".geojson");reader.export_geojson(geo.string(),options.privacy);no_semantic_values(geo);
+    for(const auto* column:{"text","node_id","long_name","short_name","sender_latitude","sender_longitude","packet_id","routing_variant"})
+        require(contents(geo).find("\""+std::string(column)+"\"")==std::string::npos,"GeoJSON omits semantic property "+std::string(column));
+    options.kind=ReportKind::Analysis;const auto html=directory/(stem+".html");export_survey_report(reader,html.string(),options);no_semantic_values(html);
+    require(contents(html).find("likely Meshtastic classifications: 1")!=std::string::npos,"narrative retains classification count without semantic content");
+    for(const auto* heading:{"<th>Text</th>","<th>Message", "<th>Sender", "<th>Node", "<th>Routing", "Authorized content"})
+        require(contents(html).find(heading)==std::string::npos,"narrative omits semantic content tables");
 }
 void compact_equivalence(const SessionStore& detailed,const SessionStore& compact,const std::filesystem::path& directory) {
     ReportOptions options;
@@ -273,16 +364,11 @@ void geographic_boundaries(const std::filesystem::path& directory) {
     const auto unicode=directory/"survey-\xc3\xa9.csv";export_survey_report(reader,unicode.string(),{});
     require(std::filesystem::exists(unicode),"UTF-8 report filename accepted");
 }
-void sql(const std::filesystem::path& path,const std::string& command) {
-    sqlite3* db=nullptr;require(sqlite3_open(path.string().c_str(),&db)==SQLITE_OK,"open synthetic legacy fixture");
-    const int code=sqlite3_exec(db,command.c_str(),nullptr,nullptr,nullptr);sqlite3_close(db);
-    require(code==SQLITE_OK,"construct exact synthetic legacy schema");
-}
 void legacy_availability(const std::filesystem::path& directory) {
-    const auto original=directory/"legacy-source.sqlite";make_session(original,false);
+    const auto original=directory/"legacy-source.sqlite";make_session(original,false);inject_legacy_content(original);
     for(const int version:{1,2,3,4}) {
         const auto path=directory/("legacy-v"+std::to_string(version)+".sqlite");std::filesystem::copy_file(original,path);
-        sql(path,"PRAGMA journal_mode=DELETE;DROP TABLE waveform_observations;DROP TABLE discovery_status;DROP TABLE discovery_bands;DROP TABLE discovery_gaps;ALTER TABLE session DROP COLUMN discover_lora;");
+        sql(path,"PRAGMA journal_mode=DELETE;DROP TABLE metadata_policy;DROP TABLE automatic_decoder;DROP TABLE waveform_observations;DROP TABLE discovery_status;DROP TABLE discovery_bands;DROP TABLE discovery_gaps;ALTER TABLE session DROP COLUMN discover_lora;");
         if(version<4)sql(path,"DROP TABLE spectrum_tiles;DROP TABLE spectrum_events;DROP TABLE coverage_gaps;DROP TABLE survey_metrology;");
         if(version<3)sql(path,"DROP TABLE route_details;ALTER TABLE receptions DROP COLUMN evidence_port;ALTER TABLE receptions DROP COLUMN evidence_signature_present;"
             "ALTER TABLE receptions DROP COLUMN request_id;ALTER TABLE receptions DROP COLUMN reply_id;ALTER TABLE receptions DROP COLUMN signature_present;ALTER TABLE receptions DROP COLUMN routing_variant;");
@@ -291,15 +377,30 @@ void legacy_availability(const std::filesystem::path& directory) {
         const auto before=contents(path);
         {
             SessionStore reader;reader.open_readonly(path.string());require(reader.schema_version()==version,"read-only schema getter preserves actual legacy version");
-            ReportOptions options;options.kind=ReportKind::AuthorizedContent;options.privacy.include_content=true;
-            const auto rows=report(reader,directory,"legacy-content-v"+std::to_string(version),options);
-            require(rows.size()==1&&rows[0].at("recording_schema_version")==std::to_string(version),"legacy report identifies source format");
-            for(const auto* key:{"request_id","reply_id","signature_present"})
-                require(rows[0].at(key)==(version<3?"":"0"),"unknown legacy fields are blank rather than invented zero");
-            for(const auto* key:{"routing_variant","route_back","snr_towards_db_x4","snr_back_db_x4"})
-                require(rows[0].at(key).empty(),"unavailable or empty route detail remains empty");
-            require(rows[0].at("offset_hz")== (version==1?"":"0"),"unknown schema-1 offset is not fabricated");
-            require(rows[0].at("fft_bin_width_hz").empty()==(version<4),"FFT metrology availability follows schema");
+            const auto archive=directory/("legacy-archive-v"+std::to_string(version)+".csv");reader.export_csv(archive.string(),{});
+            const auto rows=read_csv(archive);require(!rows.empty(),"legacy archive contains metadata");
+            require(rows.front().at("session_schema_version")==std::to_string(version),"legacy archive identifies source format");
+            no_semantic_columns(rows.front());no_semantic_values(archive);
+            unsigned receptions=0,classified=0,metrology=0;
+            for(const auto& row:rows) {
+                if(row.at("record_type")=="spectrum_metrology")++metrology;
+                if(row.at("record_type")!="reception")continue;
+                ++receptions;require(row.at("authentication")=="not authenticated","legacy classification retains authentication limit");
+                if(row.at("classification")=="likely Meshtastic") {
+                    ++classified;require(row.at("frequency_hz")=="906875000","legacy classified reception retains RF frequency");
+                    require(row.at("evidence_port")== (version<3?"":"1"),"legacy envelope-port availability follows schema");
+                    require(row.at("evidence_signature_present")== (version<3?"":"0"),"unavailable legacy envelope evidence is blank rather than invented");
+                }
+            }
+            require(receptions==2&&classified==1,"legacy semantic redaction preserves reception and classification counts");
+            require(metrology==(version<4?0u:1u),"FFT metrology availability follows schema");
+            ReportOptions options;
+            if(version==4) {
+                const auto frequency=report(reader,directory,"legacy-frequency-v4",options);
+                require(frequency.size()==2&&frequency[0].at("recording_schema_version")=="4","legacy report retains source schema metadata");
+                require(frequency[0].at("offset_hz")=="0"&&!frequency[0].at("fft_bin_width_hz").empty(),"legacy report retains recorded offset and FFT metrology");
+                no_semantic_columns(frequency.front());
+            }
             options.kind=ReportKind::Waveforms;
             const auto failed_name="legacy-waveforms-v"+std::to_string(version);
             rejects([&]{report(reader,directory,failed_name,options);},"pre-waveform schema fails instead of implying zero observations");
@@ -314,15 +415,15 @@ void narrative_analysis(const SessionStore& reader,const SessionStore& simultane
     const auto path=directory/"analysis.html";
     export_survey_report(reader,path.string(),o);const auto page=contents(path);
     for(const auto* expected:{"What was observed","Activity by frequency","When activity occurred","Receiver locations",
-            "LoRa waveform and decode evidence","Measurement setup and data quality","Interpretation and next survey work",
+            "LoRa waveform and protocol evidence","Measurement setup and data quality","Interpretation and next survey work",
             "SYNTHETIC SOURCE","2023-11-14 22:13:20 UTC","100.000%; 0.003072 s busy / 0.003072 s observed",
-            "Mean frequency-time occupancy</td><td>50.000%","eligible authorized decodes: 1","payload CRC failures: 1",
+            "Mean frequency-time occupancy</td><td>50.000%","likely Meshtastic classifications: 1","payload CRC failures: 1",
             "Coordinates and geographic cells were excluded","not antenna-port dBm","transmitter watts"}) {
         require(page.find(expected)!=std::string::npos,std::string("analysis contains ")+expected);
     }
     require(page.find("default-src 'none'")!=std::string::npos&&page.find("<script")==std::string::npos&&
         page.find("src=\"")==std::string::npos,"standalone report has restrictive CSP and no scripts/resources");
-    for(const auto* private_value:{"PRIVATE_TEST","SYNTHETIC_GPS","SYNTHETIC(&quot;hello","10.1234567","0.5555555"})
+    for(const auto* private_value:{"PRIVATE_TEST","SYNTHETIC_GPS","LEGACY_PRIVATE_","10.1234567","0.5555555"})
         require(page.find(private_value)==std::string::npos,"default narrative excludes notes, coordinates and message contents");
     require(page.size()<50000,"small fixture generates a manageable narrative report");
     const auto together=directory/"analysis-simultaneous.html";export_survey_report(simultaneous,together.string(),o);
@@ -359,6 +460,71 @@ void narrative_analysis(const SessionStore& reader,const SessionStore& simultane
     rejects([&]{export_survey_report(reader,(directory/"bad-analysis.html").string(),o);},"invalid time grouping rejected");
     require(!std::filesystem::exists(directory/"bad-analysis.html"),"failure removes partial HTML");
 }
+void acquisition_reports(const std::filesystem::path& directory) {
+    for(const bool compact:{false,true}) {
+        const auto stem=std::string(compact?"segments-compact":"segments-detailed");
+        auto first=configuration(compact);first.discover_lora=false;
+        auto second=first;second.center_hz=915000000;second.sample_rate=8000000;second.survey_span_hz=5000000;second.lna_gain=24;second.activity_threshold_dbfs=-65;
+        auto t1=tile(first,0);auto t2=tile(second,1);
+        t2.elapsed_start_seconds=1.;t2.elapsed_end_seconds=1.+double(t2.end_sample-t2.first_sample)/second.sample_rate;
+        t2.utc_start_seconds=1700000000+t2.elapsed_start_seconds;t2.utc_end_seconds=1700000000+t2.elapsed_end_seconds;
+        t2.receiver_start=position(t2.elapsed_start_seconds);t2.receiver_end=position(t2.elapsed_end_seconds);
+        const AcquisitionSegment a{1,0,t1.elapsed_end_seconds,true,first},b{2,1.,t2.elapsed_end_seconds,true,second};
+        const auto path=directory/(stem+".sqlite");
+        {
+            SessionStore store;store.create(path.string(),first,"synthetic-acquisition-report");store.enable_acquisitions();store.begin_acquisition(a);store.append(t1);
+            Snapshot state;state.config=first;state.acquisitions={a};state.elapsed_seconds=t1.elapsed_end_seconds;
+            state.input_seconds=state.measurement_seconds=state.elapsed_seconds;state.delivered_samples=t1.end_sample;store.update(state,true);
+            store.begin_acquisition(b);store.append(t2);
+            CoverageGap pause;pause.id=1;pause.elapsed_start_seconds=t1.elapsed_end_seconds;pause.elapsed_end_seconds=1.;pause.utc_start_seconds=1700000000+pause.elapsed_start_seconds;pause.utc_end_seconds=1700000001.;pause.reason="reception paused";store.append(pause);
+            state.config=second;state.acquisitions={a,b};state.elapsed_seconds=t2.elapsed_end_seconds;state.input_seconds=state.measurement_seconds=t1.elapsed_end_seconds+t2.elapsed_end_seconds-1.;state.delivered_samples=t2.end_sample;store.update(state,true);
+        }
+        SessionStore reader;reader.open_readonly(path.string());const auto summary=reader.read();
+        require(summary.acquisitions.size()==2,"reopen retains both acquisition configurations");
+        require(summary.config.sample_rate==first.sample_rate&&summary.acquisitions.back().config.sample_rate==second.sample_rate,"initial and resumed rates remain distinct");
+        size_t seen=0;reader.visit_tiles([&](const SpectrumTile&){++seen;});require(seen==2,"stream validates distinct acquisition grids");
+        const auto analysis=reader.analyze({});require(analysis.mixed_acquisitions&&analysis.bins.size()==4,"analysis preserves both real frequency grids");
+        near(analysis.observed_seconds,t1.elapsed_end_seconds+t2.elapsed_end_seconds-1.,"pause never adds observed time");
+        near(analysis.busy_seconds,analysis.observed_seconds,"per-acquisition sample rate gives exact activity time");
+        require(analysis.bin_width_hz==0&&analysis.center_guard_lower_hz==0,"mixed grids do not claim one spacing or center guard");
+        require(analysis.bins.front().center_hz<908000000&&analysis.bins.back().center_hz>914000000,"full-range query includes both tuned ranges");
+        const auto csv=directory/(stem+"-summary.csv");ReportOptions options;export_survey_report(reader,csv.string(),options);
+        const auto rows=read_csv(csv);require(rows.size()==4,"frequency report includes rows from both acquisitions");
+        for(const auto& row:rows){const bool later=row.at("acquisition_id")=="2";require(row.at("sample_rate_hz")==std::to_string(later?second.sample_rate:first.sample_rate),"row uses its acquisition sample rate");near(std::stod(row.at("threshold_dbfs")),later?-65:-55,"row uses its acquisition threshold");require(row.at("discovery_health_scope").find(later?"latest acquisition":"unavailable")!=std::string::npos,"earlier acquisition health is explicitly unavailable");}
+        options.kind=ReportKind::Analysis;const auto html=directory/(stem+".html");export_survey_report(reader,html.string(),options);
+        const auto document=contents(html);require(document.find("Acquisition 1")!=std::string::npos&&document.find("Acquisition 2")!=std::string::npos,"narrative report separates both configurations");
+        require(document.find("Unavailable for this earlier acquisition")!=std::string::npos,"narrative does not apply latest discovery health to earlier acquisition");
+        require(document.find("<!doctype html>")==document.rfind("<!doctype html>"),"segmented analysis remains one HTML document");
+        options.kind=ReportKind::GeographicSummary;options.privacy.include_receiver_positions=true;export_survey_report(reader,(directory/(stem+"-geo.csv")).string(),options);
+        const auto detail=directory/(stem+"-detail.csv");reader.export_csv(detail.string(),{});const auto detailed=read_csv(detail);size_t metadata=0;
+        for(const auto& row:detailed)if(row.at("record_type")=="acquisition_segment")++metadata;
+        require(metadata==2,"detailed export carries both acquisition provenance rows");
+        ExportOptions geo;geo.include_receiver_positions=true;const auto geojson=directory/(stem+".geojson");reader.export_geojson(geojson.string(),geo);
+        const auto geo_text=contents(geojson);require(geo_text.find("\"busy_seconds\":0.002048")!=std::string::npos&&geo_text.find("\"acquisition_id\":2")!=std::string::npos,"geographic detailed export uses resumed rate and acquisition identity");
+        const auto copy=directory/(stem+"-copy.sqlite");reader.save_copy(copy.string());SessionStore copied;copied.open_readonly(copy.string());
+        require(copied.read().acquisitions.size()==2&&copied.analyze({}).bins.size()==4,"save copy retains acquisition history and old measurements");
+        const auto invalid=directory/(stem+"-invalid.sqlite");reader.save_copy(invalid.string());sql(invalid,"UPDATE acquisition_segments SET elapsed_end=0.0001 WHERE id=1;");
+        rejects([&]{SessionStore bad;bad.open_readonly(invalid.string());bad.visit_tiles([](const auto&){});},"measurement crossing acquisition bounds is rejected");
+        const auto missing=directory/(stem+"-missing.sqlite");reader.save_copy(missing.string());sql(missing,"DELETE FROM acquisition_lanes; DELETE FROM acquisition_segments;");
+        rejects([&]{SessionStore bad;bad.open_readonly(missing.string());bad.read();},"marked recording never falls back to legacy config after provenance is deleted");
+        const auto guard_path=directory/(stem+"-guard.sqlite");
+        auto moved=first;moved.center_hz+=62500;
+        auto guarded=tile(first,0),usable=tile(moved,1);guarded.first_center_hz=usable.first_center_hz=double(first.center_hz);
+        usable.elapsed_start_seconds=1.;usable.elapsed_end_seconds=1.+double(usable.end_sample-usable.first_sample)/moved.sample_rate;
+        usable.utc_start_seconds=1700000001.;usable.utc_end_seconds=1700000000+usable.elapsed_end_seconds;
+        const AcquisitionSegment g1{1,0,guarded.elapsed_end_seconds,true,first},g2{2,1.,usable.elapsed_end_seconds,true,moved};
+        {
+            SessionStore store;store.create(guard_path.string(),first,"synthetic-moving-center-guard");store.enable_acquisitions();store.begin_acquisition(g1);store.append(guarded);
+            Snapshot state;state.config=first;state.acquisitions={g1};state.elapsed_seconds=guarded.elapsed_end_seconds;store.update(state,true);
+            store.begin_acquisition(g2);store.append(usable);state.config=moved;state.acquisitions={g1,g2};state.elapsed_seconds=usable.elapsed_end_seconds;store.update(state,true);
+        }
+        SessionStore guard_reader;guard_reader.open_readonly(guard_path.string());const auto guard_analysis=guard_reader.analyze({});
+        near(guard_analysis.outside_center_observed_seconds,usable.elapsed_end_seconds-1.,"center-only acquisition is excluded from outside-guard observation denominator");
+        near(guard_analysis.outside_center_busy_seconds,guard_analysis.outside_center_observed_seconds,"usable outside-guard interval remains 100 percent busy");
+        require(guard_analysis.observations.size()==2&&guard_analysis.observations.front().outside_center_observed_seconds==0&&guard_analysis.observations.back().outside_center_observed_seconds>0,"time buckets preserve unavailable versus measured outside-guard exposure");
+    }
+}
+
 }
 int main(int argc,char** argv) {
     const auto dir=std::filesystem::current_path()/("report-fixtures-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -366,10 +532,14 @@ int main(int argc,char** argv) {
         std::filesystem::create_directory(dir);
         const auto legacy=dir/"detailed.sqlite",compact=dir/"compact.sqlite",together=dir/"simultaneous.sqlite";
         make_session(legacy,false);make_session(compact,true);make_session(together,false,true);
+        inject_legacy_content(legacy);inject_legacy_content(compact);inject_legacy_content(together);
         SessionStore a,b,c;a.open_readonly(legacy.string());b.open_readonly(compact.string());c.open_readonly(together.string());
         frequency_and_time(a,c,dir);geography(a,dir);specialized(a,dir);compact_equivalence(a,b,dir);gaps_and_limits(dir);geographic_boundaries(dir);legacy_availability(dir);
+        metadata_only_exports(a,dir,"metadata-detailed");metadata_only_exports(b,dir,"metadata-compact");
         narrative_analysis(a,c,dir);
+        low_activity_report(dir);
         rtl_receiver_reports(dir);
+        acquisition_reports(dir);
         if(argc==2&&std::string(argv[1])=="--example")std::filesystem::copy_file(dir/"analysis.html","synthetic-analysis-example.html");
         std::cout<<checks<<" compact report checks passed\n";std::filesystem::remove_all(dir);return 0;
     } catch(const std::exception& e) {std::cerr<<"Report test failed: "<<e.what()<<"; fixture directory "<<dir<<'\n';return 1;}

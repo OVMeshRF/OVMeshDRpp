@@ -100,13 +100,17 @@ struct DiscoveryBandCoverage {
     uint64_t processed_samples = 0, abandoned_samples = 0;
     uint64_t source_gap_input_samples = 0;
     uint64_t candidate_limit_hits = 0, track_limit_hits = 0;
+    // Live acquisition diagnostics only; not part of the saved survey schema.
+    // Historical recordings leave availability false, rather than imply zero work.
+    bool runtime_diagnostics_available = false;
+    uint64_t fft_searches = 0, windows = 0, resets_after_gap = 0;
 };
 
 // Discovery coverage is separate from spectrum measurement coverage. Accepted
 // samples are not necessarily processed; preamble history is lost at each gap.
 struct DiscoveryStatus {
     bool enabled = false, finished = false, failed = false;
-    std::string method = "lora-preamble-v1";
+    std::string method = "lora-preamble-v2";
     std::string fault;
     uint64_t accepted_input_samples = 0, rejected_input_samples = 0;
     uint64_t channelized_input_samples = 0, abandoned_input_samples = 0;
@@ -145,6 +149,7 @@ struct SurveyObservation {
     double elapsed_start = 0, elapsed_end = 0;
     double observed_seconds = 0, busy_seconds = 0;
     double outside_center_busy_seconds = 0, center_busy_seconds = 0;
+    double outside_center_observed_seconds = 0;
     double mean_dbfs = -180, peak_dbfs = -180, background_dbfs = -180;
     uint32_t quality = 0;
     std::optional<PositionFix> receiver_position;
@@ -155,6 +160,8 @@ struct SurveyBin {
     double mean_dbfs = -180, peak_dbfs = -180;
 };
 struct SurveyAnalysis {
+    // Multiple acquisition settings may have distinct grids and center guards.
+    bool mixed_acquisitions = false;
     bool detailed_available = false, observations_truncated = false, events_truncated = false;
     bool observations_coarsened = false;
     uint64_t tile_count = 0, event_count = 0;
@@ -172,6 +179,7 @@ struct SurveyAnalysis {
     double center_guard_lower_hz = 0, center_guard_upper_hz = 0;
     size_t center_guard_bin_count = 0, outside_center_bin_count = 0;
     double outside_center_busy_seconds = 0, center_busy_seconds = 0;
+    double outside_center_observed_seconds = 0;
     uint32_t quality = 0;
     std::vector<SurveyBin> bins;
     std::vector<SurveyObservation> observations;

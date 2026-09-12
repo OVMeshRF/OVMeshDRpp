@@ -39,6 +39,7 @@ public:
         for(auto& tap:taps_)tap=static_cast<float>(tap/total);
     }
     void reset(){osc_={1,0};sums_={};for(auto& d:delay_)std::fill(d.begin(),d.end(),Complex{});history_={};pos_=tick_=history_pos_=history_count_=phase_=0;ticks_=0;}
+    ~Downconverter() { reset(); }
     double first_output_seconds() const{return first_output_seconds_;}
     void feed(std::span<const Complex> in,std::vector<Complex>& out) {
         out.clear();out.reserve(in.size()/coarse_/4+1);

@@ -45,6 +45,9 @@ struct ReceiverConfig {
     ConcentratorConfig concentrators;
     float activity_threshold_dbfs = -55.0f;
     bool discover_lora = false;
+    // Decode confirmed in-range waveforms using their measured modem settings.
+    // Low-level/CLI callers opt in; ordinary desktop derives this from settings.
+    bool automatic_decode = false;
     // New surveys retain fine activity timing but summarize routine power at
     // approximately one second. False preserves detailed 20 ms recording.
     bool compact_recording = true;
@@ -62,6 +65,21 @@ struct ReceiverConfig {
 uint64_t tuned_center_hz(const ReceiverConfig& config);
 // Stable display/provenance label; never enumerates or opens a device.
 const char* receiver_source_name(const ReceiverConfig& config) noexcept;
+
+// One uninterrupted acquisition within a survey. Receiver settings and exact
+// elapsed bounds preserve provenance when reception is paused and reconfigured.
+// Device paths/serials and channel keys are never persisted in this record.
+struct AcquisitionSegment {
+    uint64_t id = 0;
+    double elapsed_start_seconds = 0;
+    double elapsed_end_seconds = 0;
+    bool finalized = false;
+    ReceiverConfig config;
+};
+// Throws when an extended recording has no acquisition covering the time.
+// Legacy recordings without segments use their original session config.
+const ReceiverConfig& acquisition_config_at(const std::vector<AcquisitionSegment>&,
+    const ReceiverConfig& legacy, double elapsed_seconds);
 
 struct Reception {
     uint64_t id = 0;
@@ -96,12 +114,23 @@ struct LaneHealth {
     uint64_t frequency_hz = 0;
     double processed_seconds = 0;
     uint64_t frames = 0;
-    uint64_t decoded = 0;
+    uint64_t classified = 0;
     uint64_t crc_failures = 0;
     uint64_t resets = 0;
     std::string state = "idle";
     // Live aggregate acquisition diagnostics. No samples or undecoded bytes;
     // not yet persisted by the version-one survey schema.
+    PhyDiagnostics phy;
+};
+
+// Current acquisition only. No IQ, payload bytes, keys or sender identities.
+struct AutomaticDecoderStatus {
+    bool available = false, enabled = false, finished = false;
+    uint64_t candidates = 0, started = 0, completed = 0, crc_valid = 0, classified = 0;
+    uint64_t history_misses = 0, active_limit_hits = 0, duplicate_candidates = 0;
+    uint64_t excluded_candidates = 0, outside_range_candidates = 0, unsupported_candidates = 0;
+    uint64_t timeouts = 0, resets = 0, abandoned_decoders = 0, frame_overflows = 0;
+    size_t active_decoders = 0, history_samples = 0;
     PhyDiagnostics phy;
 };
 
@@ -117,6 +146,7 @@ struct GpsConnectionStatus {
 
 struct Snapshot {
     ReceiverConfig config;
+    std::vector<AcquisitionSegment> acquisitions;
     bool running = false;
     bool recording = false;
     bool historical = false;
@@ -136,13 +166,14 @@ struct Snapshot {
     uint64_t dropped_samples = 0;
     bool upstream_loss_unknown = true;
     uint64_t total_receptions = 0;
-    uint64_t authorized_messages = 0;
+    uint64_t classified_receptions = 0;
     uint64_t spectrum_sequence = 0;
     std::vector<float> spectrum_dbfs;
     std::vector<Reception> receptions; // Bounded most recent first.
     std::vector<FrequencySummary> frequencies;
     std::vector<PositionFix> track;
     std::vector<LaneHealth> lane_health;
+    AutomaticDecoderStatus automatic_decoder;
     uint64_t spectrum_tiles = 0, spectrum_events = 0, clipped_samples = 0;
     uint32_t spectrum_fft_size = 4096;
     double spectrum_bin_width_hz = 0, spectrum_enbw_hz = 0;
@@ -158,7 +189,6 @@ struct Snapshot {
 };
 
 struct ExportOptions {
-    bool include_content = false;
     bool include_receiver_positions = false;
     unsigned coordinate_decimals = 3;
     bool include_provenance = false;
@@ -183,6 +213,9 @@ public:
     ~Engine();
     Engine(const Engine&) = delete;
     Engine& operator=(const Engine&) = delete;
+    // Starts a fresh survey or resumes its current in-memory workspace. Each
+    // resume records a new acquisition and leaves prior measurements untouched.
+    // Historical files cannot be resumed; New is the only clearing operation.
     bool start(const ReceiverConfig&, bool explicit_hardware_permission, std::string& error);
     void stop();
     Snapshot snapshot() const;
@@ -197,6 +230,8 @@ public:
     size_t configured_key_count() const;
     std::vector<KeyRecordInfo> key_records() const;
     void clear_keys();
+    bool set_public_meshtastic_key_enabled(bool enabled, std::string& error);
+    bool public_meshtastic_key_enabled() const;
     void set_fixed_position(double latitude, double longitude, std::optional<double> altitude = {});
     void clear_position();
     bool connect_gps(const std::string& serial_path, unsigned baud, std::string& error);

@@ -12,7 +12,7 @@ namespace ovmesh {
 namespace {
 void validate(PhyConfig c) {
     if(c.spreading_factor<7 || c.spreading_factor>12 || c.coding_rate<5 || c.coding_rate>8 ||
-        (c.bandwidth_hz!=125000 && c.bandwidth_hz!=250000 && c.bandwidth_hz!=500000))
+        !supported_lora_bandwidth(c.bandwidth_hz))
         throw std::invalid_argument("Unsupported LoRa profile");
 }
 }

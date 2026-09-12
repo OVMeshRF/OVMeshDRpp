@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "discovery_iq_wipe.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -16,15 +17,15 @@ namespace ovmesh {
 // Experimental rolling replacement for the four-lag differential chirp screen.
 // No detection/identity claim follows from this inexpensive screen. Global
 // every-fourth-sample selection matches the original at N/4 checkpoints.
-// Shared DC/energy statistics cover 32 (N,delay) pairs; 72 correlations cover
-// all 18 BW/SF hypotheses and four lags. Transient IQ storage is fixed.
+// Shared DC/energy statistics cover nine symbol periods. Correlations cover
+// 62.5/125/250/500 kHz SF7-12 and 15.625 kHz SF7-10. Storage is fixed.
 // Near cancellation, potentially passing decisions use the original direct
 // sum to avoid changing its energy/DC subtraction boundary through roundoff.
 class DiscoveryChirpScreen {
     using C = std::complex<float>;
     using D = std::complex<double>;
 public:
-    static constexpr std::size_t capacity = 131072, lag_count = 4;
+    static constexpr std::size_t capacity = 262144, lag_count = 4;
     struct Statistic {
         D correlation{}, dc{};
         double energy = 0, residual = 0;
@@ -40,29 +41,39 @@ public:
     DiscoveryChirpScreen& operator=(const DiscoveryChirpScreen&) = delete;
 
     void reset() noexcept {
-        std::fill(history_.begin(), history_.end(), C{});
+        if (initialized_) {
+            // Only global indices divisible by four are stored. Round each
+            // exclusive endpoint up without overflowing near UINT64_MAX.
+            const auto first = begin_ / 4 + static_cast<bool>(begin_ % 4);
+            const auto end = end_ / 4 + static_cast<bool>(end_ % 4);
+            discovery_detail::wipe_ring(history_, first, end - first);
+        }
         common_ = {}; cross_ = {};
         begin_ = end_ = 0; initialized_ = false; recomputations_ = 0;
     }
 
     void push(C value, std::uint64_t index) {
-        const double power = std::norm(D(value));
+        // All samples still require validation, including those not used by
+        // the screen. Finite float components cannot overflow a double norm.
         if (!std::isfinite(value.real()) || !std::isfinite(value.imag()) ||
-            !std::isfinite(power) || index == std::numeric_limits<std::uint64_t>::max() ||
+            index == std::numeric_limits<std::uint64_t>::max() ||
             (initialized_ && index != end_)) {
             reset();
             throw std::invalid_argument("Invalid differential-screen sample or discontinuity; history reset");
         }
         if (!initialized_) { begin_ = end_ = index; initialized_ = true; }
-        if (!(index & 3)) update(D(value), index);
-        history_[index & (capacity - 1)] = value;
+        if (!(index & 3)) {
+            update(D(value), index);
+            history_[(index >> 2) & (history_.size() - 1)] = value;
+        }
         end_ = index + 1;
     }
 
     Statistic statistic(std::uint32_t bandwidth, unsigned sf, std::size_t lag) const {
         const auto b = bandwidth_index(bandwidth);
         validate_sf_lag(sf, lag);
-        const auto period = static_cast<std::size_t>(sf - 5) - b;
+        if (b == 0 && sf > 10) throw std::invalid_argument("Tiny discovery supports SF7 through SF10");
+        const auto period = static_cast<std::size_t>(sf - 2) - b;
         const std::size_t n = std::size_t{512} << period;
         Statistic result; result.count = n / 4;
         if (!ready(n, n / (8u << lag))) return result;
@@ -85,7 +96,8 @@ public:
     bool passes(std::uint32_t bandwidth, unsigned sf) const {
         const auto b = bandwidth_index(bandwidth);
         validate_sf_lag(sf, 0);
-        const auto period = static_cast<std::size_t>(sf - 5) - b;
+        if (b == 0 && sf > 10) throw std::invalid_argument("Tiny discovery supports SF7 through SF10");
+        const auto period = static_cast<std::size_t>(sf - 2) - b;
         const std::size_t n = std::size_t{512} << period;
         for (std::size_t lag = 0; lag < lag_count; ++lag) {
             if (!ready(n, n / (8u << lag))) continue;
@@ -104,14 +116,14 @@ public:
 
 private:
     struct Common { D dc{}; double energy = 0; };
-    using References = std::array<std::array<std::vector<C>, lag_count>, 3>;
+    using References = std::array<std::array<std::vector<C>, lag_count>, 6>;
     static const References& references() {
         static const auto table = [] {
             References result;
-            for (std::size_t b = 0; b < 3; ++b)
+            for (std::size_t b = 0; b < 6; ++b)
                 for (std::size_t lag = 0; lag < lag_count; ++lag) {
                     auto& row = result[b][lag];
-                    row.resize((std::size_t{128} << lag) >> b);
+                    row.resize((std::size_t{1024} << lag) >> b);
                     for (std::size_t i = 0; i < row.size(); ++i) {
                         const double angle = -2 * std::numbers::pi * static_cast<double>(i) / static_cast<double>(row.size());
                         row[i] = {static_cast<float>(std::cos(angle)), static_cast<float>(std::sin(angle))};
@@ -122,9 +134,11 @@ private:
         return table;
     }
     static std::size_t bandwidth_index(std::uint32_t bandwidth) {
-        if (bandwidth == 125000) return 0;
-        if (bandwidth == 250000) return 1;
-        if (bandwidth == 500000) return 2;
+        if (bandwidth == 15625) return 0;
+        if (bandwidth == 62500) return 2;
+        if (bandwidth == 125000) return 3;
+        if (bandwidth == 250000) return 4;
+        if (bandwidth == 500000) return 5;
         throw std::invalid_argument("Unsupported differential-screen bandwidth");
     }
     static void validate_sf_lag(unsigned sf, std::size_t lag) {
@@ -134,7 +148,9 @@ private:
     bool ready(std::size_t n, std::size_t delay) const noexcept {
         return initialized_ && end_ - begin_ >= n + delay && !(end_ % (n / 4));
     }
-    D sample(std::uint64_t index) const noexcept { return D(history_[index & (capacity - 1)]); }
+    // Every caller uses a global index divisible by four: the update cadence,
+    // all delays, and all checkpoint/local-window offsets are multiples of four.
+    D sample(std::uint64_t index) const noexcept { return D(history_[(index >> 2) & (history_.size() - 1)]); }
 
     static bool needs_recompute(double energy, double residual, double correlated) noexcept {
         // A passing original decision requires correlation >= 8*energy*1e-12.
@@ -144,7 +160,7 @@ private:
     }
     Statistic recompute(std::size_t b, unsigned sf, std::size_t lag) const {
         if (recomputations_ < std::numeric_limits<std::uint64_t>::max()) ++recomputations_;
-        const std::size_t n = std::size_t{512} << (static_cast<std::size_t>(sf - 5) - b);
+        const std::size_t n = std::size_t{512} << (static_cast<std::size_t>(sf - 2) - b);
         const auto delay = n / (8u << lag);
         const auto& reference = references()[b][lag];
         Statistic result; result.count = n / 4; result.available = result.recomputed = true;
@@ -158,13 +174,13 @@ private:
     }
 
     void update(D value, std::uint64_t index) {
-        std::array<D, 11> new_products{};
-        std::array<double, 11> new_energy{};
+        std::array<D, 12> new_products{};
+        std::array<double, 12> new_energy{};
         for (std::size_t i = 0; i < new_products.size(); ++i) {
             new_products[i] = value * std::conj(sample(index - (std::uint64_t{8} << i)));
             new_energy[i] = std::norm(new_products[i]);
         }
-        std::array<std::array<D, lag_count>, 8> deltas{};
+        std::array<std::array<D, lag_count>, 9> deltas{};
         for (std::size_t p = 0; p < common_.size(); ++p) {
             const std::uint64_t n = std::uint64_t{512} << p;
             const auto previous = sample(index - n);
@@ -178,17 +194,21 @@ private:
             }
         }
         const auto& reference = references();
-        for (std::size_t b = 0; b < cross_.size(); ++b)
-            for (std::size_t s = 0; s < cross_[b].size(); ++s)
-                for (std::size_t lag = 0; lag < lag_count; ++lag) {
-                    const auto& row = reference[b][lag];
-                    cross_[b][s][lag] += deltas[s + 2 - b][lag] * D(row[index & (row.size() - 1)]);
-                }
+        for (const auto b : std::array<std::size_t, 5>{0, 2, 3, 4, 5})
+            for (std::size_t lag = 0; lag < lag_count; ++lag) {
+                const auto& row = reference[b][lag];
+                const D coefficient(row[index & (row.size() - 1)]);
+                const auto sf_count = b == 0 ? std::size_t{4} : cross_[b].size();
+                for (std::size_t s = 0; s < sf_count; ++s)
+                    cross_[b][s][lag] += deltas[s + 5 - b][lag] * coefficient;
+            }
     }
 
-    std::array<C, capacity> history_{};
-    std::array<std::array<Common, lag_count>, 8> common_{};
-    std::array<std::array<std::array<D, lag_count>, 6>, 3> cross_{};
+    // The logical history/cadence is unchanged; unused intermediate samples
+    // are never retained. This is storage compaction, not additional decimation.
+    std::array<C, capacity / 4> history_{};
+    std::array<std::array<Common, lag_count>, 9> common_{};
+    std::array<std::array<std::array<D, lag_count>, 6>, 6> cross_{};
     std::uint64_t begin_ = 0, end_ = 0;
     mutable std::uint64_t recomputations_ = 0;
     bool initialized_ = false;

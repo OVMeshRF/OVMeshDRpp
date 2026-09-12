@@ -1,5 +1,7 @@
 # Documentation
 
+Current packet handling follows [ADR-0010: metadata-only surveys](decisions/0010-metadata-only-surveys.md). Semantic-message interpretation and content exports have been removed; dated content-related records and screenshots are historical.
+
 OVMeshDR++ is an experimental receive-only RF survey application. Start with the user guide and current capability summary; measurement and protocol references provide the details needed to interpret or extend it.
 
 ## Using the application
@@ -10,7 +12,8 @@ OVMeshDR++ is an experimental receive-only RF survey application. Start with the
 - [RAK5146 USB/LBT setup](operations/rak5146.md): one/two-board selection, scan/profile controls, platform limits and troubleshooting.
 - [Build and packaging](operations/deployment.md): local builds, dependencies, storage locations and platform limits.
 - [Linux build setup](operations/linux-build.md): local OpenSSL preparation, prerequisites and configure-error troubleshooting.
-- [Screenshot gallery](screenshots/README.md): current interface examples and separately labeled sample reports.
+- [Apple Silicon packaging](../packaging/macos/README.md) and [Ubuntu packaging](../packaging/linux/README.md): package recipes, library/source materials and platform-specific acceptance checks. See [current package status](operations/deployment.md#platform-and-distribution-limits) before treating a candidate as a release.
+- [Screenshot gallery](screenshots/README.md): historical synthetic interface examples and separately labeled sample reports.
 - [Support playbook](operations/support-playbook.md): troubleshooting and useful diagnostic information.
 - [Current capabilities and limitations](engineering/implementation-status.md).
 
@@ -27,7 +30,7 @@ OVMeshDR++ is an experimental receive-only RF survey application. Start with the
 
 - [Architecture](design/architecture.md) and [Meshtastic wire reference](research/meshtastic-wire-baseline.md).
 - [RAK5146 HAL provenance](../third_party/sx1302_hal/PROVENANCE.md): minimal receive-only Semtech source intake, USB transport hardening and scanner interpretation.
-- [Dependencies and licensing](engineering/dependencies-and-licensing.md), [third-party notices](../THIRD_PARTY_NOTICES.md), [OpenSSL intake](security/openssl-intake.md) and [Nanopb intake](security/nanopb-intake.md).
+- [Dependencies and licensing](engineering/dependencies-and-licensing.md), [third-party notices](../THIRD_PARTY_NOTICES.md), [OpenSSL intake](security/openssl-intake.md), [USB intake](security/usb-intake.md) and [Nanopb intake](security/nanopb-intake.md).
 - [Security and privacy](security/security-and-privacy.md) and [test-data provenance](../tests/README.md).
 - [Roadmap](product/roadmap.md), [development and releases](engineering/development-and-releases.md), and [source-release checklist](operations/github-publication.md).
 - [Governance](governance/project-governance.md) and [documentation policy](governance/documentation-policy.md).

@@ -4,12 +4,14 @@
         std::vector<std::unique_ptr<RakProcess>> receivers;
         std::vector<double> last_record(c.concentrators.boards.size(),monotonic_now());
         std::vector<double> previous_scan_end(c.concentrators.boards.size(),0);
-        uint64_t scan_id=0,packet_id=0;
+        uint64_t scan_id=view.concentrator_scans,packet_id=view.total_receptions;
         double last_save=monotonic_now(),last_fix_saved=-1;
         const double clock_shift=monotonic_now()-rak_monotonic_now()-started;
         auto checkpoint=[&](bool final=false) {
             Snapshot saved;uint64_t request=0;
-            {std::lock_guard lock(mutex);view.elapsed_seconds=monotonic_now()-started;saved=view;request=save_requested;}
+            {std::lock_guard lock(mutex);view.elapsed_seconds=monotonic_now()-started;
+                if(!view.acquisitions.empty()){view.acquisitions.back().elapsed_end_seconds=view.elapsed_seconds;view.acquisitions.back().finalized=final;}
+                saved=view;request=save_requested;}
             if(store) {
                 // Fixed/manual and serial GPS share the existing association
                 // rules. GPS is receiver position, never a transmitter location.
@@ -90,13 +92,13 @@
                 // Preamble duration and measured frequency error are
                 // unavailable; leave them unset at their existing zero.
                 if(c.concentrators.decode_enabled)
-                    r.decoded=protocol::decode_meshtastic(m.payload,m.crc_valid,profiles);
+                    r.decoded=protocol::classify_meshtastic(m.payload,m.crc_valid,profiles);
                 if(!m.payload.empty())OPENSSL_cleanse(m.payload.data(),m.payload.size());m.payload.clear();
                 r.receiver_position=associated_position(now);
                 if(store)store->append(r);
                 std::lock_guard lock(mutex);auto& h=view.concentrator_health[i];++h.receptions;
                 if(!r.crc_valid)++h.crc_failures;
-                if(r.decoded.authorized)++view.authorized_messages;
+                if(r.decoded.status==protocol::Status::classified && r.decoded.evidence)++view.classified_receptions;
                 ++view.total_receptions;view.receptions.insert(view.receptions.begin(),std::move(r));if(view.receptions.size()>512)view.receptions.pop_back();
             }
         };

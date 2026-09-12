@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ovmesh/report.hpp"
 #include "storage.hpp"
+#include "occupancy_scale.hpp"
 #include <algorithm>
 #include <bit>
 #include <cctype>
@@ -13,6 +14,7 @@
 #include <map>
 #include <numbers>
 #include <sstream>
+#include <set>
 #include <stdexcept>
 #include <tuple>
 
@@ -43,13 +45,11 @@ std::string percent(double numerator, double denominator) {
 double rounded(double value, unsigned decimals) {
     const double scale = std::pow(10., double(decimals)); return std::round(value * scale) / scale;
 }
-std::string optional_coordinate(const std::optional<double>& value,unsigned decimals) {
-    return value?number(rounded(*value,decimals)):std::string();
-}
 struct Csv {
     const std::function<void(std::string_view)>& emit;
     size_t rows = 0, columns = 0;
     void header(const std::vector<std::string>& cells) {
+        if(columns){if(columns!=cells.size())throw std::runtime_error("Internal report header mismatch");return;}
         columns = cells.size(); write(cells);
     }
     void write(const std::vector<std::string>& cells) {
@@ -86,6 +86,7 @@ struct Context {
     const ReportOptions& options;
     Snapshot summary;
     int schema = 0;
+    bool discovery_health_available = true;
     double lower = 0, upper = 0, end = 0;
     explicit Context(const ReportOptions& o, Snapshot s, int version) : options(o), summary(std::move(s)), schema(version) {
         const auto& q = o.query;
@@ -93,6 +94,10 @@ struct Context {
             if (!std::isfinite(bound) || bound < 0 || bound > 1e10) throw std::runtime_error("Invalid report selection bound");
         lower = q.lower_hz > 0 ? q.lower_hz : double(summary.config.center_hz) - summary.config.survey_span_hz / 2.;
         upper = q.upper_hz > 0 ? q.upper_hz : double(summary.config.center_hz) + summary.config.survey_span_hz / 2.;
+        for(const auto& segment:summary.acquisitions) {
+            if(q.lower_hz==0)lower=std::min(lower,double(segment.config.center_hz)-segment.config.survey_span_hz/2.);
+            if(q.upper_hz==0)upper=std::max(upper,double(segment.config.center_hz)+segment.config.survey_span_hz/2.);
+        }
         end = q.elapsed_end > 0 ? q.elapsed_end : 1e10;
         if (lower >= upper || end <= q.elapsed_start) throw std::runtime_error("Empty or reversed report selection");
         if (q.geographic_filter && (!std::isfinite(q.south) || !std::isfinite(q.north) ||
@@ -108,8 +113,6 @@ struct Context {
             throw std::runtime_error("Geographic cell size must be between 10 and 10000 metres");
         if ((o.kind == ReportKind::GeographicSummary || o.kind == ReportKind::ReceiverTrack) && !o.privacy.include_receiver_positions)
             throw std::runtime_error("This report requires receiver GPS export to be enabled; geographic grouping is not anonymization");
-        if (o.kind == ReportKind::AuthorizedContent && !o.privacy.include_content)
-            throw std::runtime_error("Authorized-content export must be explicitly enabled");
         if (o.kind == ReportKind::Waveforms && schema < 5)
             throw std::runtime_error("Waveform observations are unavailable in this legacy recording format");
     }
@@ -117,7 +120,7 @@ struct Context {
         std::vector<std::string> result{"session_id","recording_schema_version","source","sample_rate_hz","receiver_center_hz","offset_hz",
             "lna_gain_db","vga_gain_db","rf_amplifier","threshold_dbfs","fft_bin_width_hz","hann_enbw_hz",
             "recording_incomplete","geographic_filter_applied","session_dropped_samples","requested_lower_hz","requested_upper_hz",
-            "rtl_tuner_gain_db","rtl_auto_gain"};
+            "rtl_tuner_gain_db","rtl_auto_gain","acquisition_id","acquisition_start_s","acquisition_end_s","acquisition_scope","discovery_health_scope"};
         if (options.privacy.include_provenance) append(result,{"antenna_description","receiver_description","survey_notes"});
         return result;
     }
@@ -130,6 +133,11 @@ struct Context {
             (rtl||rak)?"":integer(c.vga_gain),(rtl||rak)?"":integer(c.amplifier),rak?"":number(c.activity_threshold_dbfs),(schema>=4&&!rak)?number(summary.spectrum_bin_width_hz):"",
             (schema>=4&&!rak)?number(summary.spectrum_enbw_hz):"",integer(summary.incomplete),integer(options.query.geographic_filter),integer(summary.dropped_samples),number(lower),number(upper),
             rtl&&!c.rtl_auto_gain?number(c.rtl_gain_tenths_db/10.0):"",rtl?integer(c.rtl_auto_gain):""};
+        if(summary.acquisitions.size()>1)for(int i:{3,4,5,6,7,8,9,10,11,17,18})result[static_cast<size_t>(i)].clear();
+        if(summary.acquisitions.size()==1) {
+            const auto& segment=summary.acquisitions.front();append(result,{integer(segment.id),number(segment.elapsed_start_seconds),number(segment.elapsed_end_seconds),text("one acquisition; pause intervals are unobserved")});
+        } else append(result,{"","","",text(summary.acquisitions.empty()?"legacy single configuration":"multiple acquisitions; configuration varies")});
+        result.push_back(text(discovery_health_available?"latest acquisition diagnostics":"unavailable for this earlier acquisition"));
         if (options.privacy.include_provenance) append(result,{text(c.antenna_description),text(c.receiver_description),text(c.survey_notes)});
         return result;
     }
@@ -239,6 +247,8 @@ struct AggregateReport {
         return times[index];
     }
     void consume(const SpectrumTile& tile) {
+        // A report section is scoped to one acquisition before grid validation.
+        if(tile.elapsed_end_seconds<=c.options.query.elapsed_start || tile.elapsed_start_seconds>=c.end)return;
         if (tile.first_sample < previous_sample || tile.elapsed_start_seconds < previous_elapsed - 1e-8)
             throw std::runtime_error("Overlapping or unordered spectrum measurements");
         previous_sample=tile.end_sample; previous_elapsed=tile.elapsed_end_seconds;
@@ -402,7 +412,7 @@ void waveform_report(const SessionStore& store,const Context& c,Csv& csv) {
             number(w.first_observed_elapsed),number(w.delimiter_elapsed),number(w.delimiter_utc),number(w.up_match),number(w.down_match),
             integer(w.contributing_subbands),integer(w.complete_in_requested_range),integer(w.association_ambiguous),text(c.summary.discovery.method),
             text("unknown; waveform evidence is not Meshtastic/MeshCore identity"),text("observed preamble only; not packet airtime"),
-            integer(c.summary.discovery.failed),integer(c.summary.discovery.rejected_input_samples),integer(c.summary.discovery.abandoned_input_samples),integer(c.summary.discovery.result_overflows)};
+            c.discovery_health_available?integer(c.summary.discovery.failed):"",c.discovery_health_available?integer(c.summary.discovery.rejected_input_samples):"",c.discovery_health_available?integer(c.summary.discovery.abandoned_input_samples):"",c.discovery_health_available?integer(c.summary.discovery.result_overflows):""};
         if(c.options.privacy.include_receiver_positions)append(row,position_fields(w.receiver_position,c.options.privacy));append(row,c.metadata());csv.write(row);
     });
 }
@@ -422,31 +432,6 @@ void track_report(const SessionStore& store,const Context& c,Csv& csv) {
         if(!fix.valid||elapsed<c.options.query.elapsed_start||elapsed>=c.end||!in_region(fix,c.options.query))return;
         std::vector<std::string> row{number(elapsed),text("original fix UTC minus acquisition UTC anchor; frequency selection describes survey context")};
         append(row,position_fields(fix,c.options.privacy));append(row,c.metadata());csv.write(row);
-    });
-}
-template<class T> std::string list(const std::vector<T>& values) {
-    std::string result;for(const auto& v:values){if(!result.empty())result+=';';result+=std::to_string(v);}return text(result);
-}
-void content_report(const SessionStore& store,const Context& c,Csv& csv) {
-    std::vector<std::string> header{"reception_id","utc_s","elapsed_s","frequency_hz","bandwidth_hz","spreading_factor","coding_rate",
-        "classification","authentication","profile_id","origin","destination","packet_id","port","hop_limit","hop_start","channel_hash",
-        "next_hop","relay_node","want_ack","via_mqtt","want_response","request_id","reply_id","signature_present",
-        "content_kind","text","node_id","long_name","short_name","sender_latitude","sender_longitude","sender_altitude_m",
-        "voltage","temperature","humidity","battery_percent","channel_utilization","air_util_tx","reported_time","hardware_model","role",
-        "routing_error","routing_variant","route","route_back","snr_towards_db_x4","snr_back_db_x4","concentrator_board_index","packet_rssi_dbm_uncalibrated","board_hardware_timestamp_us","bandwidth_interpretation","hardware_timestamp_provenance"};
-    if(c.options.privacy.include_receiver_positions)append(header,position_header());append(header,c.metadata_header());csv.header(header);
-    store.visit_receptions([&](const Reception& r){
-        if(!r.crc_valid||r.decoded.status!=protocol::Status::decoded||!r.decoded.authorized||!c.selected(r.frequency_hz,r.bandwidth_hz,r.elapsed_seconds,r.receiver_position))return;
-        const auto& a=*r.decoded.authorized;const auto& p=a.content;
-        std::vector<std::string> row{integer(r.id),number(r.utc_seconds),number(r.elapsed_seconds),integer(r.frequency_hz),integer(r.bandwidth_hz),integer(r.spreading_factor),integer(r.coding_rate),
-            text(r.decoded.classification),text(r.decoded.authentication),text(a.profile_id),integer(a.from),integer(a.to),integer(a.packet_id),integer(a.port),integer(a.hop_limit),integer(a.hop_start),integer(a.channel_hash),
-            integer(a.next_hop),integer(a.relay_node),integer(a.want_ack),integer(a.via_mqtt),integer(a.want_response),c.schema>=3?integer(a.request_id):"",c.schema>=3?integer(a.reply_id):"",c.schema>=3?integer(a.signature_present):"",
-            text(p.kind),text(p.text),text(p.node_id),text(p.long_name),text(p.short_name),optional_coordinate(p.latitude,c.options.privacy.coordinate_decimals),optional_coordinate(p.longitude,c.options.privacy.coordinate_decimals),optional_number(p.altitude),
-            optional_number(p.voltage),optional_number(p.temperature),optional_number(p.humidity),optional_number(p.battery_percent),optional_number(p.channel_utilization),optional_number(p.air_util_tx),
-            optional_number(p.reported_time),optional_number(p.hardware_model),optional_number(p.role),optional_number(p.routing_error),c.schema>=3?text(p.routing_variant):"",list(p.route),c.schema>=3?list(p.route_back):"",c.schema>=3?list(p.snr_towards):"",c.schema>=3?list(p.snr_back):""};
-        if(r.concentrator)append(row,{integer(r.concentrator->board_index),number(r.concentrator->rssi_dbm),integer(r.concentrator->hardware_timestamp_us),text("hardware configured modem bandwidth; not measured signal width"),text("board-local wrapping microsecond counter; not synchronized across boards or GPS")});
-        else append(row,std::vector<std::string>(5));
-        if(c.options.privacy.include_receiver_positions)append(row,position_fields(r.receiver_position,c.options.privacy));append(row,c.metadata());csv.write(row);
     });
 }
 #include "analysis_report.hpp"
@@ -498,17 +483,48 @@ void rak_csv_report(const SessionStore& store,const Context& c,Csv& csv) {
     });
     for(const auto& [key,a]:groups)write(key.first,key.second,a);
 }
-void rak_html_report(const SessionStore& store,const Context& c,const std::function<void(std::string_view)>& emit) {
+void rak_html_report(const SessionStore& store,const Context& c,const std::function<void(std::string_view)>& output) {
+    HtmlReport bounded{output};
+    const auto emit=[&](const std::string& text){bounded.raw(text);};
     std::map<std::pair<unsigned,uint64_t>,RakAggregate> groups;
     store.visit_concentrator_scans([&](const ConcentratorScan& s){if(!rak_selected(s,c))return;auto key=std::pair{s.board_index,s.frequency_hz};if(!groups.contains(key)&&groups.size()>=aggregate_limit)throw std::runtime_error("Too many concentrator report frequencies");groups[key].add(s,rak_boundary(s,c));});
-    emit("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Concentrator RF survey</title><style>body{font:16px system-ui;max-width:1200px;margin:2em auto;padding:1em}table{border-collapse:collapse;width:100%}th,td{padding:.5em;border-bottom:1px solid #bbb;text-align:left}small{color:#444}</style><h1>Concentrator RF survey</h1>");
+    emit("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta http-equiv='Content-Security-Policy' content=\"default-src &apos;none&apos;; style-src &apos;unsafe-inline&apos;; base-uri &apos;none&apos;; form-action &apos;none&apos;\"><title>Concentrator RF survey</title><style>body{font:16px system-ui;max-width:1200px;margin:2em auto;padding:1em}table{border-collapse:collapse;width:100%}th,td{padding:.5em;border-bottom:1px solid #bbb;text-align:left}small{color:#444}</style><h1>Concentrator RF survey</h1>");
     emit("<p>"+html_escape(c.summary.session_id)+"</p><p>"+html_escape(rak_method)+".</p><p>"+html_escape(rak_limit)+"</p><p>Sample threshold: <strong>-87 dBm</strong>, a 4 dB histogram boundary. This nominal vendor power scale has not been calibrated. Scan centers describe overlapping receiver filters; their sample counts must not be added as independent band occupancy.</p>");
     emit("<p>Requested frequency interval: "+human_number(c.lower/1e6,6)+"–"+human_number(c.upper/1e6,6)+" MHz. Requested elapsed interval: "+human_number(c.options.query.elapsed_start)+"–"+(c.options.query.elapsed_end>0?human_number(c.end):std::string("end"))+" s. Recording "+(c.summary.incomplete?std::string("incomplete"):std::string("completed"))+".</p>");
     emit("<p>Scan step: "+integer(c.summary.config.concentrators.scan_step_hz)+" Hz. Offset: "+number(double(c.summary.config.tuning_offset_hz))+" Hz; physical tune commands add this offset to the nominal scan centers. Geographic filter: "+std::string(c.options.query.geographic_filter?"applied":"none")+".</p>");
     if(c.options.privacy.include_provenance)emit("<p>Antenna: "+html_escape(c.summary.config.antenna_description)+"<br>Receiver: "+html_escape(c.summary.config.receiver_description)+"<br>Notes: "+html_escape(c.summary.config.survey_notes)+"</p>");
-    emit("<h2>Configured packet receivers</h2><p>These are configured modem settings, not measured signal bandwidths. Packet decoding covers these profiles only; RSSI scanning does not identify protocols.</p><ul>");
-    for(size_t i=0;i<c.summary.config.concentrators.boards.size();++i){const auto& b=c.summary.config.concentrators.boards[i];emit("<li>Board "+integer(i+1)+": "+human_number(double(b.frequency_hz)/1e6,6)+" MHz, "+integer(b.bandwidth_hz)+" Hz, SF"+integer(b.spreading_factor)+", sync word "+integer(b.sync_word)+"; packets "+(b.packets_enabled?"enabled":"disabled")+".</li>");}
-    emit("</ul><p>Authorized payload decoding "+std::string(c.summary.config.concentrators.decode_enabled?"enabled":"disabled")+". Keys and device paths are not included.</p><h2>Samples by frequency</h2><table><thead><tr><th>Board</th><th>Center MHz</th><th>Scans / samples</th><th>Samples at or above -87 dBm</th><th>Host elapsed interval (s)</th><th>Host UTC interval</th><th>Boundary scans</th><th>RSSI histogram</th>");
+    emit("<h2>Survey findings</h2>");
+    if (groups.empty()) emit("<p>No RSSI samples intersect this selection. Activity is unassessed.</p>");
+    for (size_t board=0; board<c.summary.config.concentrators.boards.size(); ++board) {
+        uint64_t scans=0,samples=0,missing=0,above=0; size_t centers=0,active=0;
+        double first=std::numeric_limits<double>::infinity(),last=0,low=0,high=0;
+        for (const auto& [key,a]:groups) if(key.first==board) {
+            if(!centers) low=double(key.second)-117150; high=double(key.second)+117150;
+            ++centers; scans+=a.scans; samples+=a.samples; above+=a.above; missing+=a.missing_gps;
+            if(a.above) ++active; first=std::min(first,a.first); last=std::max(last,a.last);
+        }
+        if(!centers) continue;
+        emit("<p><strong>Board "+integer(board+1)+"</strong>: "+integer(centers)+" scan centers, "+integer(scans)+" scans, "+integer(samples)+" RSSI samples. "+integer(active)+" centers had samples at or above -87 dBm. Host interval "+human_number(first)+"–"+human_number(last)+" s; this elapsed interval is not continuous observation time. Scans without a receiver fix: "+integer(missing)+".</p>");
+        emit("<p>Outermost nominal filter edges: "+human_number(low/1e6,6)+"–"+human_number(high/1e6,6)+" MHz. These bounds do not prove complete frequency or time coverage; frequencies outside them were not sampled by this board.</p>");
+        if(!above) emit("<p><strong>No recorded samples reached the threshold.</strong> This does not mean no RF signals were present: weaker signals and transmissions between visits can be missed. The histograms below retain the measured levels below the threshold.</p>");
+        emit("<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1000 245' role='img' aria-label='Sampled RSSI exceedance by frequency, logarithmic display' style='width:100%;height:auto'>");
+        constexpr double ticks[]={0,.00001,.0001,.001,.01,.1,1};
+        constexpr const char* labels[]={"0%","0.001%","0.01%","0.1%","1%","10%","100%"};
+        for(size_t i=0;i<7;++i){const auto y=210-195*low_activity_height(ticks[i]);emit("<line x1='75' x2='985' y1='"+human_number(y)+"' y2='"+human_number(y)+"' stroke='#c8d3da'/><text x='68' y='"+human_number(y+4)+"' text-anchor='end' font-size='12'>"+labels[i]+"</text>");}
+        for(const auto& [key,a]:groups) if(key.first==board && double(key.second)>=c.lower && double(key.second)<=c.upper) {
+            const double x=75+910*(double(key.second)-c.lower)/(c.upper-c.lower);
+            const double ratio=a.samples?double(a.above)/double(a.samples):0;
+            emit("<circle cx='"+human_number(x)+"' cy='"+human_number(210-195*low_activity_height(ratio))+"' r='2' fill='#087e8b'><title>"+human_number(double(key.second)/1e6,6)+" MHz: "+human_percent(double(a.above),double(a.samples))+" of RSSI samples at or above -87 dBm; "+integer(a.samples)+" samples</title></circle>");
+        }
+        emit("<text x='75' y='235' font-size='12'>"+human_number(c.lower/1e6,3)+" MHz</text><text x='985' y='235' text-anchor='end' font-size='12'>"+human_number(c.upper/1e6,3)+" MHz</text></svg>");
+        emit("<p><small>Each dot is a sampled scan center, not a channel or measured signal width. Zero dots mean no samples reached -87 dBm. A zero-preserving logarithmic display reveals low sample fractions; these percentages are not SDR busy time or packet airtime.</small></p>");
+    }
+    if(std::any_of(c.summary.config.concentrators.boards.begin(),c.summary.config.concentrators.boards.end(),[](const auto& b){return b.packets_enabled;})) {
+        emit("<h2>Configured packet receivers</h2><p>These are configured modem settings, not measured signal bandwidths. RSSI scanning does not identify protocols.</p><ul>");
+        for(size_t i=0;i<c.summary.config.concentrators.boards.size();++i){const auto& b=c.summary.config.concentrators.boards[i];if(b.packets_enabled)emit("<li>Board "+integer(i+1)+": "+human_number(double(b.frequency_hz)/1e6,6)+" MHz, "+integer(b.bandwidth_hz)+" Hz, SF"+integer(b.spreading_factor)+", sync word "+integer(b.sync_word)+".</li>");}
+        emit("</ul><p>Key-scoped classification "+std::string(c.summary.config.concentrators.decode_enabled?"enabled":"disabled")+". No message contents, keys or device paths are included.</p>");
+    } else emit("<p>Spectrum-only survey: packet reception and protocol identification were disabled.</p>");
+    emit("<h2>Samples by frequency</h2><table><thead><tr><th>Board</th><th>Center MHz</th><th>Scans / samples</th><th>Samples at or above -87 dBm</th><th>Host elapsed interval (s)</th><th>Host UTC interval</th><th>Boundary scans</th><th>RSSI histogram</th>");
     if(c.options.privacy.include_receiver_positions)emit("<th>Last included receiver fix</th>");emit("</tr></thead><tbody>");
     for(const auto& [key,a]:groups){emit("<tr><td>"+integer(key.first+1)+"</td><td>"+human_number(double(key.second)/1e6,6)+"</td><td>"+integer(a.scans)+" / "+integer(a.samples)+"</td><td>"+human_percent(double(a.above),double(a.samples))+"</td><td>"+human_number(a.first)+"–"+human_number(a.last)+"</td><td>"+html_escape(human_utc(a.utc_first))+"–"+html_escape(human_utc(a.utc_last))+"</td><td>"+integer(a.boundaries)+"</td><td><details><summary>33 bins</summary><pre>");
         for(unsigned i=0;i<33;++i){const std::string band=i==0?">= -11":i==32?"< -135":"["+number(concentrator_bin_lower_dbm(i))+", "+number(concentrator_bin_lower_dbm(i-1))+")";emit(html_escape(band)+" dBm: "+integer(a.counts[i])+"\n");}emit("</pre></details></td>");if(c.options.privacy.include_receiver_positions)emit("<td>"+(a.last_fix?human_number(a.last_fix->latitude,c.options.privacy.coordinate_decimals)+", "+human_number(a.last_fix->longitude,c.options.privacy.coordinate_decimals):std::string("Unavailable"))+"</td>");emit("</tr>");}
@@ -523,7 +539,6 @@ const char* report_kind_name(ReportKind kind) {
         case ReportKind::GeographicSummary:return "Frequency by geographic area";
         case ReportKind::Waveforms:return "Waveform observations";
         case ReportKind::ReceiverTrack:return "Receiver GPS track";
-        case ReportKind::AuthorizedContent:return "Authorized decoded content";
         case ReportKind::Analysis:return "RF survey analysis";
     }
     throw std::runtime_error("Unknown report kind");
@@ -542,15 +557,47 @@ void export_survey_report(const SessionStore& store,const std::string& path,cons
             if(options.kind==ReportKind::FrequencySummary||options.kind==ReportKind::TimeSummary||options.kind==ReportKind::GeographicSummary){rak_csv_report(store,context,csv);return;}
             if(options.kind==ReportKind::Waveforms)throw std::runtime_error("Concentrator surveys do not contain software waveform-discovery observations");
         }
-        switch(options.kind) {
-            case ReportKind::FrequencySummary:case ReportKind::TimeSummary:case ReportKind::GeographicSummary: {
-                AggregateReport report{context};store.visit_tiles([&](const SpectrumTile& tile){report.consume(tile);});
-                store.visit_gaps([&](const CoverageGap& gap){report.gap(gap);});report.write(csv);break;
+        const auto write_one=[&](const Context& selected,bool first_document,bool last_document) {
+            switch(options.kind) {
+                case ReportKind::FrequencySummary:case ReportKind::TimeSummary:case ReportKind::GeographicSummary: {
+                    AggregateReport report{selected};store.visit_tiles([&](const SpectrumTile& tile){report.consume(tile);});
+                    store.visit_gaps([&](const CoverageGap& gap){report.gap(gap);});report.write(csv);break;
+                }
+                case ReportKind::Waveforms:waveform_report(store,selected,csv);break;
+                case ReportKind::ReceiverTrack:track_report(store,selected,csv);break;
+                case ReportKind::Analysis:analysis_report(store,selected,emit,first_document,last_document);break;
             }
-            case ReportKind::Waveforms:waveform_report(store,context,csv);break;
-            case ReportKind::ReceiverTrack:track_report(store,context,csv);break;
-            case ReportKind::AuthorizedContent:content_report(store,context,csv);break;
-            case ReportKind::Analysis:analysis_report(store,context,emit);break;
+        };
+        if(context.summary.acquisitions.empty() || options.kind==ReportKind::ReceiverTrack) {
+            write_one(context,true,true);return;
+        }
+        // Keep gain/threshold/rate changes in separate report rows and sections.
+        // Distinct FFT grids are never resampled into fictional common channels.
+        std::vector<AcquisitionSegment> selected_segments;
+        for(const auto& segment:context.summary.acquisitions) {
+            const double from=std::max(options.query.elapsed_start,segment.elapsed_start_seconds);
+            const double to=std::min(context.end,segment.elapsed_end_seconds);
+            if(to>from && double(segment.config.center_hz)+segment.config.survey_span_hz/2.>context.lower &&
+               double(segment.config.center_hz)-segment.config.survey_span_hz/2.<context.upper)selected_segments.push_back(segment);
+        }
+        if(options.kind!=ReportKind::Waveforms) {
+            std::set<uint64_t> with_data;
+            store.visit_tiles([&](const SpectrumTile& tile){for(const auto& segment:selected_segments)
+                if(tile.elapsed_start_seconds>=segment.elapsed_start_seconds-1e-8 && tile.elapsed_start_seconds<segment.elapsed_end_seconds &&
+                   tile.elapsed_end_seconds>options.query.elapsed_start && tile.elapsed_start_seconds<context.end && in_region(tile.receiver_end,options.query) &&
+                   tile.first_center_hz+(double(tile.mean_dbfs.size())-.5)*tile.bin_width_hz>context.lower && tile.first_center_hz-.5*tile.bin_width_hz<context.upper)with_data.insert(segment.id);});
+            std::erase_if(selected_segments,[&](const auto& segment){return !with_data.contains(segment.id);});
+        }
+        if(selected_segments.empty())throw std::runtime_error("No acquisition measurements intersect this report selection");
+        for(size_t i=0;i<selected_segments.size();++i) {
+            const auto& segment=selected_segments[i];auto selected_options=options;
+            selected_options.query.elapsed_start=std::max(options.query.elapsed_start,segment.elapsed_start_seconds);
+            selected_options.query.elapsed_end=std::min(context.end,segment.elapsed_end_seconds);
+            auto selected_summary=context.summary;selected_summary.config=segment.config;selected_summary.acquisitions={segment};
+            selected_summary.spectrum_bin_width_hz=double(segment.config.sample_rate)/4096.;selected_summary.spectrum_enbw_hz=selected_summary.spectrum_bin_width_hz*1.5;
+            Context selected(selected_options,std::move(selected_summary),context.schema);
+            selected.discovery_health_available=segment.id==context.summary.acquisitions.back().id;
+            write_one(selected,i==0,i+1==selected_segments.size());
         }
     });
 }

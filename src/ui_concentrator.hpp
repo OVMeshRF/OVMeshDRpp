@@ -3,9 +3,24 @@
 
 void concentrator_settings(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
     label("RAK concentrators");
-    wrapped("Choose one or two USB/LBT boards. Each has one configured LoRa receiver and a separate swept energy scanner.");
+    wrapped(desktop_lora_enabled ? "Choose one or two USB/LBT boards. Each has one configured LoRa receiver and a separate swept energy scanner." :
+        "Choose one or two USB/LBT boards for sampled RF energy scans across the survey range.");
     if (!ui.concentrator_inventory_loaded && !ui.passive_smoke && !snapshot.historical) ui.refresh_concentrators();
-    const bool locked = snapshot.running || snapshot.historical || ui.operation_busy();
+    ImGui::BeginDisabled(ui.passive_smoke || snapshot.historical || ui.operation_busy());
+    if (ImGui::Button("Refresh USB candidates")) ui.refresh_concentrators();
+    ImGui::EndDisabled();
+    if (!ui.concentrator_devices.error.empty()) wrapped(ui.concentrator_devices.error.c_str(), red);
+    else {
+        ImGui::Text("USB candidates found: %zu", ui.concentrator_devices.devices.size());
+        if (ui.concentrator_devices.devices.empty())
+            wrapped("Connect a USB concentrator, then refresh. GPS receivers are not concentrator candidates.", amber);
+    }
+    wrapped("0483:5740 is a generic STM32 identity. Select only a concentrator you recognize; listing candidates does not open their ports.", amber);
+    const bool session_started = !snapshot.session_id.empty();
+    if (session_started && !snapshot.historical)
+        wrapped(desktop_lora_enabled ? "Choose New to change concentrator boards or scan/packet settings. Start and Stop preserve the current survey setup." :
+            "Choose New to change concentrator boards or scan settings. Start and Stop preserve the current survey setup.", amber);
+    const bool locked = snapshot.running || snapshot.historical || session_started || ui.operation_busy();
     ImGui::BeginDisabled(locked);
     auto historical = snapshot.config.concentrators;
     auto& cfg = snapshot.historical ? historical : ui.config.concentrators;
@@ -20,18 +35,33 @@ void concentrator_settings(Engine& engine, DesktopState& ui, const Snapshot& sna
         }
         changed = true;
     }
-    ImGui::BeginDisabled(ui.passive_smoke);
-    if (ImGui::Button("Refresh USB candidates")) ui.refresh_concentrators();
-    ImGui::EndDisabled();
-    wrapped("0483:5740 is a generic STM32 identity. Select only a concentrator you recognize; listing candidates does not open their ports.", amber);
-    if (!ui.concentrator_devices.error.empty()) wrapped(ui.concentrator_devices.error.c_str(), red);
     for (size_t i = 0; i < cfg.boards.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
         auto& board = cfg.boards[i];
         ImGui::Separator(); ImGui::Text("Board %zu", i + 1);
+        const auto used_by_other_board = [&](const ConcentratorDevice& device) {
+            for (size_t j = 0; j < cfg.boards.size(); ++j)
+                if (j != i && (cfg.boards[j].device_id == device.stable_id || cfg.boards[j].device_path == device.path)) return true;
+            return false;
+        };
+        if (board.device_id.empty() && board.device_path.empty() && ui.concentrator_devices.error.empty()) {
+            const ConcentratorDevice* available = nullptr;
+            size_t eligible = 0;
+            for (const auto& device : ui.concentrator_devices.devices)
+                if (!used_by_other_board(device) && select_concentrator_device(ui.concentrator_devices.devices, device.stable_id)) {
+                    available = &device; ++eligible;
+                }
+            if (eligible == 1) {
+                const auto description = "Available: " + available->label + " / " + available->path;
+                wrapped(description.c_str());
+                if (ImGui::Button("Select this board")) {
+                    board.device_id = available->stable_id; board.device_path = available->path; changed = true;
+                }
+            }
+        }
         const auto selected = ui.concentrator_devices.error.empty()
             ? select_concentrator_device(ui.concentrator_devices.devices, board.device_id) : std::nullopt;
-        const std::string title = snapshot.historical ? "Recorded profile / USB identity not retained" : selected ? ui.concentrator_devices.devices[*selected].label + " / " + ui.concentrator_devices.devices[*selected].path :
+        const std::string title = snapshot.historical ? "Recorded board / USB identity not retained" : selected ? ui.concentrator_devices.devices[*selected].label + " / " + ui.concentrator_devices.devices[*selected].path :
             board.device_id.empty() ? "Choose USB concentrator..." : "Remembered board unavailable or ambiguous";
         ImGui::SetNextItemWidth(-1);
         if (ImGui::BeginCombo("##boardDevice", title.c_str())) {
@@ -40,9 +70,7 @@ void concentrator_settings(Engine& engine, DesktopState& ui, const Snapshot& sna
             }
             for (size_t d = 0; d < ui.concentrator_devices.devices.size(); ++d) {
                 const auto& device = ui.concentrator_devices.devices[d];
-                bool used = false;
-                for (size_t j = 0; j < cfg.boards.size(); ++j)
-                    if (j != i && (cfg.boards[j].device_id == device.stable_id || cfg.boards[j].device_path == device.path)) used = true;
+                const bool used = used_by_other_board(device);
                 const bool unique = select_concentrator_device(ui.concentrator_devices.devices, device.stable_id).has_value();
                 ImGui::BeginDisabled(used || !unique || !ui.concentrator_devices.error.empty());
                 const auto option = device.label + " / " + device.path + (used ? " (already selected)" : "") + "###candidate" + std::to_string(d);
@@ -53,21 +81,31 @@ void concentrator_settings(Engine& engine, DesktopState& ui, const Snapshot& sna
             }
             ImGui::EndCombo();
         }
+        if (desktop_lora_enabled) {
         if (ImGui::Checkbox("Receive LoRa packets", &board.packets_enabled)) changed = true;
         ImGui::BeginDisabled(!board.packets_enabled);
-        int preset = board.frequency_hz == 906875000 && board.bandwidth_hz == 250000 && board.spreading_factor == 11 && board.sync_word == 0x2b ? 0 :
-            board.frequency_hz == 908750000 && board.bandwidth_hz == 500000 && board.spreading_factor == 11 && board.sync_word == 0x2b ? 1 : 2;
-        constexpr const char* presets[] = {"LongFast / 906.875 MHz", "LongTurbo / 908.750 MHz"};
-        if (ImGui::BeginCombo("Apply preset", preset < 2 ? presets[preset] : "Manual settings")) {
-            for (int choice = 0; choice < 2; ++choice) if (ImGui::Selectable(presets[choice], preset == choice)) {
-                board.frequency_hz = choice ? 908750000 : 906875000;
-                board.bandwidth_hz = choice ? 500000 : 250000;
-                board.spreading_factor = 11; board.sync_word = 0x2b;
-                changed = true;
+        const meshtastic::Preset* matching_preset = nullptr;
+        for (const auto& preset : meshtastic::presets)
+            if (preset.bandwidth_hz == board.bandwidth_hz && preset.spreading_factor == board.spreading_factor && board.sync_word == 0x2b) {
+                matching_preset = &preset; break;
+            }
+        const auto preset_preview = matching_preset ? std::string(matching_preset->name) : std::string("Manual settings");
+        if (ImGui::BeginCombo("Apply preset", preset_preview.c_str())) {
+            for (const auto& preset : meshtastic::presets) {
+                const bool supported = rak_preset_supported(preset);
+                const auto title = std::string(preset.name) + (preset.historical_only ? " (historical)" : preset.deprecated ? " (deprecated)" : "") +
+                    (!supported ? " (requires SDR support)" : "");
+                ImGui::BeginDisabled(!supported);
+                if (ImGui::Selectable(title.c_str(), matching_preset == &preset)) {
+                    board.bandwidth_hz = preset.bandwidth_hz; board.spreading_factor = preset.spreading_factor;
+                    board.sync_word = 0x2b; changed = true;
+                }
+                ImGui::EndDisabled();
             }
             ImGui::EndCombo();
         }
-        ImGui::TextDisabled("Edit the fields below for a custom receive profile.");
+        ImGui::TextDisabled("Preset changes modulation only; frequency stays unchanged. Edit fields below for custom reception.");
+        ImGui::TextDisabled("RAK: 125/250/500 kHz, SF7-12. Narrower presets require SDR support; CR comes from the packet header.");
         double frequency = board.frequency_hz / 1e6;
         if (ImGui::InputDouble("Packet frequency / MHz", &frequency, 0, 0, "%.6f") && std::isfinite(frequency)) {
             board.frequency_hz = static_cast<uint64_t>(std::clamp(frequency, 902.0, 928.0) * 1e6); changed = true;
@@ -81,6 +119,7 @@ void concentrator_settings(Engine& engine, DesktopState& ui, const Snapshot& sna
         int word = board.sync_word == 0x12 ? 1 : board.sync_word == 0x34 ? 2 : 0;
         if (ImGui::Combo("Sync word", &word, "0x2B / Meshtastic\0 0x12 / private LoRa\0 0x34 / public LoRaWAN\0")) { board.sync_word = words[word]; changed = true; }
         ImGui::EndDisabled();
+        }
         ImGui::PopID();
     }
     ImGui::Spacing(); ImGui::Separator();
@@ -92,18 +131,23 @@ void concentrator_settings(Engine& engine, DesktopState& ui, const Snapshot& sna
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     if (changed) ui.persist_preferences();
-    wrapped("Scanning revisits frequencies sequentially. Unobserved intervals remain unknown. Packet reception searches only the explicit frequency, bandwidth, spreading factor and sync word on each board.");
+    wrapped("Scanning revisits frequencies sequentially. Unobserved intervals remain unknown.");
+    if (desktop_lora_enabled) {
+    wrapped("Packet reception searches only the explicit frequency, bandwidth, spreading factor and sync word on each board.");
     ImGui::Text("Configured key records: %zu", ui.key_count(engine));
     if (ImGui::Button("Configure authorized keys...")) { ui.show_keys = true; ui.authorize_keys = false; erase_secret(ui.key_input); }
-    wrapped("A sync word or CRC-valid packet is not authenticated device identity. Only supported traffic with an explicitly configured key can produce retained decoded content.");
+    wrapped("A sync word or CRC-valid packet is not authenticated device identity. Explicitly configured keys permit likely Meshtastic envelope classification. This may produce false positives; message contents are not interpreted or retained.");
+    }
 }
 
 void concentrator_health_view(const Snapshot& snapshot) {
     for (size_t i = 0; i < snapshot.concentrator_health.size(); ++i) {
         const auto& h = snapshot.concentrator_health[i];
         ImGui::TextColored(h.ready ? accent : amber, "Board %zu / %s", i + 1, h.state.c_str());
-        ImGui::SameLine(); ImGui::TextDisabled("%llu scans / %llu receptions / %llu CRC failures",
+        ImGui::SameLine();
+        if (desktop_lora_enabled) ImGui::TextDisabled("%llu scans / %llu receptions / %llu CRC failures",
             static_cast<unsigned long long>(h.scans), static_cast<unsigned long long>(h.receptions), static_cast<unsigned long long>(h.crc_failures));
+        else ImGui::TextDisabled("%llu scans", static_cast<unsigned long long>(h.scans));
     }
 }
 
@@ -149,7 +193,7 @@ void concentrator_scan_view(const DesktopState& ui, const Snapshot& snapshot, fl
     draw->AddText({left,origin.y+chart_h-22},IM_COL32(139,163,181,255),first.c_str());
     draw->AddText({origin.x+width-ImGui::CalcTextSize(last.c_str()).x,origin.y+chart_h-22},IM_COL32(139,163,181,255),last.c_str());
     wrapped("Cyan 0% / orange 100% / gray no displayed sample. Each cell may have a different age; hover for its time. Colors do not identify transmitters.");
-    if (scans.empty()) wrapped(cfg.concentrators.scan_enabled ? "Waiting for sampled RF readings. Packet reception and scanning have separate counters." : "RF scanning is disabled for this session.", amber);
+    if (scans.empty()) wrapped(cfg.concentrators.scan_enabled ? "Waiting for sampled RF readings." : "RF scanning is disabled for this session.", amber);
     if (!show_table) return;
     const auto flags = ImGuiTableFlags_RowBg|ImGuiTableFlags_BordersInnerH|ImGuiTableFlags_ScrollY|ImGuiTableFlags_Resizable;
     if (ImGui::BeginTable("concentratorSamples",7,flags,{0,std::max(100.f,height-chart_h-110)})) {

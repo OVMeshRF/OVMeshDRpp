@@ -56,7 +56,7 @@ struct HtmlReport {
 };
 
 void analysis_report(const SessionStore& store, const Context& c,
-                     const std::function<void(std::string_view)>& emit) {
+                     const std::function<void(std::string_view)>& emit,bool document_start=true,bool document_end=true) {
     if (c.schema < 4) throw std::runtime_error("This legacy recording lacks fine spectrum history for an analysis report");
     ReportOptions frequency_options = c.options, time_options = c.options, geo_options = c.options;
     frequency_options.kind = ReportKind::FrequencySummary;
@@ -116,12 +116,12 @@ void analysis_report(const SessionStore& store, const Context& c,
     store.visit_receptions([&](const Reception& r) {
         if (!c.selected(r.frequency_hz,r.bandwidth_hz,r.elapsed_seconds,r.receiver_position)) return;
         ++receptions;
-        if (r.crc_valid && r.decoded.status==protocol::Status::decoded && r.decoded.authorized) ++decoded;
+        if (r.crc_valid && r.decoded.status==protocol::Status::classified) ++decoded;
         if (r.decoded.status==protocol::Status::bad_phy_crc) ++bad_crc;
     });
 
     HtmlReport h{emit};
-    h.raw(R"HTML(<!doctype html><html lang="en"><head><meta charset="utf-8">
+    if(document_start)h.raw(R"HTML(<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
 <title>RF survey analysis — OVMeshDR++</title><style>
@@ -136,6 +136,12 @@ th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #d6e1e7}th{backgr
 @media print{:root{background:white}body{max-width:none;margin:0;padding:0;border:0}h2{break-after:avoid}tr,svg{break-inside:avoid}thead{display:table-header-group}}
 </style></head><body><div class="eyebrow">OVMeshDR++ / RF SURVEY</div><h1>Measured activity &amp; survey findings</h1>
 )HTML");
+    if(!document_start)h.raw("<hr>");
+    if(c.summary.acquisitions.size()==1) {
+        const auto& segment=c.summary.acquisitions.front();
+        h.heading("Acquisition " + std::to_string(segment.id));
+        h.paragraph("This section covers one receiver setup, elapsed " + human_number(segment.elapsed_start_seconds,6) + "–" + human_number(segment.elapsed_end_seconds,6) + " seconds. Pauses are unobserved. Other acquisition sections retain their own frequency grid, gain and threshold; they are not directly comparable when settings differ.");
+    }
     h.paragraph("Generated " + human_utc(double(std::time(nullptr))) + "; application " + Engine::version() + "; report method 1; recording schema " + std::to_string(c.schema) + ".");
     h.paragraph("Source session ID: " + c.summary.session_id);
     if (c.options.privacy.include_provenance) {
@@ -182,19 +188,40 @@ th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #d6e1e7}th{backgr
     h.heading("2. Activity by frequency");
     // Peak-preserving display columns. All bin values are retained below.
     const size_t columns=std::min<size_t>(320,frequency.bins.size());
-    h.raw("<svg class=\"plot\" viewBox=\"0 0 1000 245\" role=\"img\" aria-label=\"Frequency occupancy on a linear zero to one hundred percent scale\">");
-    h.raw("<text x=\"4\" y=\"18\">100%</text><text x=\"8\" y=\"210\">0%</text><path d=\"M55 15V210H985\" fill=\"none\" stroke=\"#677d8d\"/>");
+    h.paragraph("Reveal low activity (log scale). This uses the same zero-preserving logarithmic display as the app. Tick labels and tooltips show the original occupancy percentages.");
+    constexpr double plot_left=75,plot_width=910,plot_bottom=210,plot_height=195;
+    h.raw("<svg class=\"plot\" viewBox=\"0 0 1000 245\" role=\"img\" aria-label=\"Frequency occupancy: reveal low activity logarithmic scale, zero to one hundred percent\">");
+    const double ticks[]={0,.00001,.0001,.001,.01,.1,1};
+    const char* tick_labels[]={"0%","0.001%","0.01%","0.1%","1%","10%","100%"};
+    for(size_t i=0;i<7;++i) {
+        const auto y=human_number(plot_bottom-plot_height*low_activity_height(ticks[i]));
+        h.raw("<path d=\"M75 "+y+"H985\" stroke=\"#b9c8d1\"/><text x=\"65\" y=\""+
+            human_number(plot_bottom-plot_height*low_activity_height(ticks[i])+4)+"\" text-anchor=\"end\">"+tick_labels[i]+"</text>");
+    }
     for(size_t col=0;col<columns;++col) {
         const size_t begin=col*frequency.bins.size()/columns, finish=(col+1)*frequency.bins.size()/columns;
         double maximum=0; bool any=false;
         for(size_t i=begin;i<finish;++i) {const auto& a=frequency.bins[i]; if(a.observed>0){any=true;maximum=std::max(maximum,a.busy/a.observed);}}
         if(!any)continue;
-        const double height=maximum>0?std::max(1.,195*std::clamp(maximum,0.,1.)):0;
-        h.raw("<rect x=\""+human_number(55+930*double(col)/double(columns))+"\" y=\""+human_number(210-height)+"\" width=\""+
-            human_number(930/double(columns))+"\" height=\""+human_number(height)+"\" fill=\"#008d87\"><title>Maximum bin occupancy: "+human_percent(maximum,1)+"</title></rect>");
+        const double height=maximum>0?std::max(1.,plot_height*low_activity_height(maximum)):0;
+        h.raw("<rect x=\""+human_number(plot_left+plot_width*double(col)/double(columns))+"\" y=\""+human_number(plot_bottom-height)+"\" width=\""+
+            human_number(plot_width/double(columns))+"\" height=\""+human_number(height)+"\" fill=\"#008d87\"><title>Maximum bin occupancy: "+human_percent(maximum,1)+"</title></rect>");
     }
-    h.raw("<text x=\"55\" y=\"237\">"+human_number(frequency.covered_lower()/1e6,6)+" MHz</text><text x=\"985\" y=\"237\" text-anchor=\"end\">"+human_number(frequency.covered_upper()/1e6,6)+" MHz</text></svg>");
-    h.paragraph("Each plotted column preserves the highest bin occupancy within its frequency span. Positive values have a one-pixel minimum for visibility; the table gives exact percentages. Plot includes the center guard. All summaries retain the original fixed detection threshold.");
+    const double guard_low=std::max(frequency.covered_lower(),double(c.summary.config.center_hz)-2.5*frequency.width);
+    const double guard_high=std::min(frequency.covered_upper(),double(c.summary.config.center_hz)+2.5*frequency.width);
+    const double chart_span=frequency.covered_upper()-frequency.covered_lower();
+    if(guard_high>guard_low && chart_span>0) {
+        h.raw("<rect x=\""+human_number(plot_left+plot_width*(guard_low-frequency.covered_lower())/chart_span)+"\" y=\"15\" width=\""+
+            human_number(plot_width*(guard_high-guard_low)/chart_span)+"\" height=\"195\" fill=\"#c18319\" fill-opacity=\"0.15\" stroke=\"#a26700\" stroke-dasharray=\"3 2\"><title>Receiver-center guard: possible internal artifact; measured activity is retained</title></rect>");
+    }
+    for(size_t i=0;i<5;++i) {
+        const double fraction=double(i)/4;
+        h.raw("<text x=\""+human_number(plot_left+plot_width*fraction)+"\" y=\"237\" text-anchor=\""+
+            (i==0?std::string("start"):i==4?std::string("end"):std::string("middle"))+"\">"+
+            human_number((frequency.covered_lower()+chart_span*fraction)/1e6,3)+" MHz</text>");
+    }
+    h.raw("</svg>");
+    h.paragraph("Each plotted column preserves the highest bin occupancy within its frequency span. Positive values have a one-pixel minimum for visibility; zero stays zero and unobserved bins have no bar. The table retains the original percentages. The amber outlined band marks the receiver-center guard, where an internal artifact is possible; no measurements are removed. All summaries retain the acquisition detection threshold.");
     h.raw("<details><summary>Complete selected frequency table ("+std::to_string(frequency.bins.size())+" bins)</summary>");
     h.table({"Lower MHz","Upper MHz","Observed s","Busy s","Occupancy","Mean dBFS","Peak dBFS"});
     for(size_t i=0;i<frequency.bins.size();++i) {
@@ -248,16 +275,16 @@ th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #d6e1e7}th{backgr
         h.paragraph("Locations belong to the receiver, not transmitters. Attribution uses the recorded tile-end fix; cells can be affected by GPS drift, missing fixes and movement during a tile. Coordinate rounding and cell grouping are not anonymization. The original saved fixes remain unchanged.");
     }
 
-    h.heading("5. LoRa waveform and decode evidence");
+    h.heading("5. LoRa waveform and protocol evidence");
     h.paragraph(c.schema<5?"Waveform discovery records are unavailable in this legacy schema. This does not mean no LoRa was present.":
         std::to_string(wave_count)+" waveform observations intersect the frequency/time/area selection. Counts are observations, not guaranteed unique packets or device identities.");
     h.table({"Inferred BW kHz","SF","Observations","Observed center range MHz","Partial-range observations","Ambiguous associations"});
     for(const auto& [key,g]:waves) h.row({human_number(double(key.first)/1000,1),std::to_string(key.second),std::to_string(g.count),
         human_number(g.low/1e6,6)+" – "+human_number(g.high/1e6,6),std::to_string(g.partial),std::to_string(g.ambiguous)});
     h.end_table();
-    h.paragraph("Selected legacy receptions: "+std::to_string(receptions)+"; eligible authorized decodes: "+std::to_string(decoded)+"; payload CRC failures: "+std::to_string(bad_crc)+
-        ". CRC failures are not proof of a collision. No received message text, sender identifier, key or sender-reported position is included in this report. Authorized-content CSV remains a separate explicit export.");
-    h.paragraph("A LoRa waveform does not identify Meshtastic, MeshCore, LoRaWAN, a meter or an alarm. Automatic discovered-waveform payload dispatch, MeshCore decoding and recipient PKI are incomplete or unsupported. The configured legacy decoder does not enumerate all traffic in the survey span; unsuccessful decoding does not make traffic non-mesh.");
+    h.paragraph("Selected receptions: "+std::to_string(receptions)+"; likely Meshtastic classifications: "+std::to_string(decoded)+"; payload CRC failures: "+std::to_string(bad_crc)+
+        ". CRC failures are not proof of a collision. No received message text, sender identifier, key or sender-reported position is included in this report.");
+    h.paragraph("A LoRa waveform does not identify Meshtastic, MeshCore, LoRaWAN, a meter or an alarm. SDR automatic decoding attempts supported discovered waveforms at their detected frequencies. It is experimental and bounded by discovery, transient history, decoder capacity and PHY success; it does not enumerate all traffic in the survey span. MeshCore decoding and recipient PKI remain unsupported. Unsuccessful decoding does not make traffic non-mesh.");
 
     h.heading("6. Measurement setup and data quality");
     const auto& config=c.summary.config;const auto& d=c.summary.discovery;
@@ -275,18 +302,24 @@ th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #d6e1e7}th{backgr
     h.row({"Selected quality flags",quality_name(quality)});
     h.row({"Input drops / clipped samples (whole session)",std::to_string(c.summary.dropped_samples)+" / "+std::to_string(c.summary.clipped_samples)});
     h.row({"Energy events (whole session; not packets)",std::to_string(c.summary.spectrum_events)});
-    h.row({"Discovery state (whole session)",c.schema<5?"Unavailable":!d.enabled?"Disabled":d.failed?"Failed":d.finished?"Finished":"Unfinished"});
-    h.row({"Discovery rejected / abandoned input samples (whole session)",std::to_string(d.rejected_input_samples)+" / "+std::to_string(d.abandoned_input_samples)});
-    h.row({"Discovery queue drops / resets / result overflows (whole session)",std::to_string(d.source_queue_drops)+" / "+std::to_string(d.stream_resets)+" / "+std::to_string(d.result_overflows)});
+    h.row({"Discovery state (latest acquisition)",c.schema<5?"Unavailable":!c.discovery_health_available?"Unavailable for this earlier acquisition":!d.enabled?"Disabled":d.failed?"Failed":d.finished?"Finished":"Unfinished"});
+    const auto& a=c.summary.automatic_decoder;
+    const bool auto_available=c.discovery_health_available&&a.available;
+    h.row({"Automatic PHY decoding (latest acquisition)",!auto_available?"Unavailable":!a.enabled?"Disabled":a.finished?"Finished":"Unfinished"});
+    h.row({"Automatic candidates / started / completed (latest acquisition)",auto_available?std::to_string(a.candidates)+" / "+std::to_string(a.started)+" / "+std::to_string(a.completed):"Unavailable"});
+    h.row({"Automatic CRC-valid / classified (latest acquisition)",auto_available?std::to_string(a.crc_valid)+" / "+std::to_string(a.classified):"Unavailable"});
+    h.row({"Automatic history misses / capacity hits / timeouts / frame overflows (latest acquisition)",auto_available?std::to_string(a.history_misses)+" / "+std::to_string(a.active_limit_hits)+" / "+std::to_string(a.timeouts)+" / "+std::to_string(a.frame_overflows):"Unavailable"});
+    h.row({"Discovery rejected / abandoned input samples (latest acquisition)",c.discovery_health_available?std::to_string(d.rejected_input_samples)+" / "+std::to_string(d.abandoned_input_samples):"Unavailable for this earlier acquisition"});
+    h.row({"Discovery queue drops / resets / result overflows (latest acquisition)",c.discovery_health_available?std::to_string(d.source_queue_drops)+" / "+std::to_string(d.stream_resets)+" / "+std::to_string(d.result_overflows):"Unavailable for this earlier acquisition"});
     h.end_table();
     h.paragraph("Power is uncalibrated received digital power (dBFS), not antenna-port dBm, field strength or transmitter watts. Strong received signals can come from nearby low-power radios. Distance, antenna orientation/gain, obstructions, fading and receiver settings prevent identifying a one-watt radio or excessive transmit power from received strength alone. Relative comparisons require consistent setup and no overload.");
     h.paragraph("Activity uses retained FFT-frame masks; no gap is filled as quiet. Compact power blocks may span up to about one second and can cross a narrower query. Peak values need not coincide in time. The recorded threshold cannot be changed retrospectively from this data. Calibration, antenna/cable response, analog overload, sensitivity and upstream USB loss are not fully established. Zero clipped samples does not prove linear analog operation.");
-    if(d.failed||d.rejected_input_samples||d.abandoned_input_samples||d.stream_resets||d.result_overflows||d.gap_overflows)
+    if(c.discovery_health_available&&(d.failed||d.rejected_input_samples||d.abandoned_input_samples||d.stream_resets||d.result_overflows||d.gap_overflows))
         h.paragraph("Discovery reported failure, loss or discontinuity during this session. Its coverage is separate from spectrum coverage; do not interpret missing waveform observations as absent LoRa traffic.");
 
     h.heading("7. Interpretation and next survey work");
     h.paragraph("Use this report to compare measured activity across the supplied range and revisit busy areas. Before proposing a regional channel, repeat visits at different times and days, use consistent receiver/antenna settings, examine the entire intended channel width and adjacent activity, and compare several representative locations. A short route samples places at different times; it cannot separate time variation from geographic variation by itself.");
     h.paragraph("Not established by this report: exhaustive emitter/protocol inventory; packet collision rate; calibrated occupied/emission bandwidth; transmitter output power or model; an uncertainty budget or statistical confidence interval; rolling busy-hour/channel-access statistics; cross-session regional coverage; interference-free operation or FCC compliance. Low observed occupancy is evidence for further investigation, not a channel recommendation.");
     h.paragraph("Method reference: ITU-R SM.2256-2 (June 2026), spectrum occupancy measurements and evaluation. This report records its own detector and coverage definitions; it does not claim conformance to that recommendation family.");
-    h.raw("<footer>Local, deterministic analysis of retained measurements. No cloud or AI service was contacted. Print from your browser to save a PDF. Expand the frequency table first if you want it included in the printout.</footer></body></html>\n");
+    if(document_end)h.raw("<footer>Local, deterministic analysis of retained measurements. No cloud or AI service was contacted. Print from your browser to save a PDF. Expand the frequency table first if you want it included in the printout.</footer></body></html>\n");
 }

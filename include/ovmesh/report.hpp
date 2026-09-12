@@ -6,8 +6,7 @@ namespace ovmesh {
 class SessionStore;
 enum class ReportKind {
     FrequencySummary, TimeSummary, GeographicSummary,
-    Waveforms, ReceiverTrack, AuthorizedContent,
-    Analysis = 7 // Value 6 is reserved by the desktop's detailed-archive selector.
+    Waveforms, ReceiverTrack, Analysis
 };
 struct ReportOptions {
     ReportKind kind = ReportKind::FrequencySummary;

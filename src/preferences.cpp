@@ -311,7 +311,7 @@ DesktopPreferences parse(const std::string& text) {
     while (start < text.size()) {
         const auto end = text.find('\n', start);
         const auto equal = text.find('=', start);
-        if (end == std::string::npos || equal == std::string::npos || equal >= end || equal == start || fields.size() >= 41)
+        if (end == std::string::npos || equal == std::string::npos || equal >= end || equal == start || fields.size() >= 42)
             throw std::runtime_error("Malformed desktop settings");
         if (!fields.emplace(text.substr(start, equal - start), text.substr(equal + 1, end - equal - 1)).second)
             throw std::runtime_error("Duplicate desktop preference");
@@ -320,7 +320,7 @@ DesktopPreferences parse(const std::string& text) {
     for (const auto* name : {"version", "gps_enabled", "recording_enabled", "recording_directory", "gps_device_id", "gps_baud"})
         if (!fields.contains(name)) throw std::runtime_error("Missing desktop preference");
     const auto& version = fields.at("version");
-    if (version != "1" && version != "2" && version != "3" && version != "4" && version != "5" && version != "6" && version != "7")
+    if (version != "1" && version != "2" && version != "3" && version != "4" && version != "5" && version != "6" && version != "7" && version != "8")
         throw std::runtime_error("Unsupported desktop settings version");
     if ((version == "1" && fields.size() != 6) ||
         (version == "2" && (fields.size() != 7 || !fields.contains("tuning_offset_hz"))) ||
@@ -328,8 +328,8 @@ DesktopPreferences parse(const std::string& text) {
         (version == "4" && (fields.size() != 9 || !fields.contains("tuning_offset_hz") ||
             !fields.contains("discover_lora") || !fields.contains("compact_recording"))))
         throw std::runtime_error("Missing or unknown desktop preference");
-    if (version == "5" || version == "6" || version == "7") {
-        if (version != "7" && fields.size() != (version == "6" ? 22 : 20)) throw std::runtime_error("Missing or unknown desktop preference");
+    if (version >= "5") {
+        if (version < "7" && fields.size() != (version == "6" ? 22 : 20)) throw std::runtime_error("Missing or unknown desktop preference");
         for (const auto* name : {"tuning_offset_hz", "discover_lora", "compact_recording", "spectrum_only", "receiver_source",
                 "center_hz", "sample_rate", "survey_span_hz", "lna_gain", "vga_gain", "amplifier", "mixed_fonts",
                 "mobile_position_display", "decode_enabled"})
@@ -362,10 +362,10 @@ DesktopPreferences parse(const std::string& text) {
         result.gps_baud = result.gps_baud * 10 + static_cast<unsigned>(digit - '0');
     }
     if (version != "1") integer("tuning_offset_hz", result.tuning_offset_hz);
-    if (version == "5" || version == "6" || version == "7") {
+    if (version >= "5") {
         const auto& source = fields.at("receiver_source");
         if (source != "synthetic" && source != "hackrf" && !(version >= "6" && source == "rtl_sdr") &&
-            !(version == "7" && source == "rak5146"))
+            !(version >= "7" && source == "rak5146"))
             throw std::runtime_error("Unsupported preferred receiver");
         result.receiver_source = source == "hackrf" ? DesktopReceiver::HackRf :
             source == "rtl_sdr" ? DesktopReceiver::RtlSdr : source == "rak5146" ? DesktopReceiver::Rak5146 : DesktopReceiver::Synthetic;
@@ -380,14 +380,14 @@ DesktopPreferences parse(const std::string& text) {
         result.mixed_fonts = boolean("mixed_fonts");
         result.mobile_position_display = boolean("mobile_position_display");
     }
-    if (version == "6" || version == "7") {
+    if (version >= "6") {
         integer("rtl_gain_tenths_db", result.rtl_gain_tenths_db);
         result.rtl_auto_gain = boolean("rtl_auto_gain");
     }
-    if (version == "7") {
+    if (version >= "7") {
         unsigned count = 0;
         integer("rak_board_count", count);
-        if (count < 1 || count > 2 || fields.size() != 27 + count * 7)
+        if (count < 1 || count > 2 || fields.size() != (version == "8" ? 28 : 27) + count * 7)
             throw std::runtime_error("Missing or unknown concentrator preference");
         result.concentrators.scan_enabled = boolean("rak_scan_enabled");
         result.concentrators.decode_enabled = boolean("rak_decode_enabled");
@@ -406,13 +406,14 @@ DesktopPreferences parse(const std::string& text) {
             integer((prefix + "sync_word").c_str(), board.sync_word);
         }
     }
+    if (version == "8") result.public_meshtastic_key_enabled = boolean("public_meshtastic_key_enabled");
     validate_preferences(result);
     return result;
 }
 
 std::string serialize(const DesktopPreferences& preferences) {
     validate_preferences(preferences);
-    std::string result = std::string("version=7\ngps_enabled=") + (preferences.gps_enabled ? "1" : "0") +
+    std::string result = std::string("version=8\ngps_enabled=") + (preferences.gps_enabled ? "1" : "0") +
         "\nrecording_enabled=" + (preferences.recording_enabled ? "1" : "0") +
         "\nrecording_directory=" + hex_encode(preferences.recording_directory) +
         "\ngps_device_id=" + hex_encode(preferences.gps_device_id) +
@@ -421,6 +422,7 @@ std::string serialize(const DesktopPreferences& preferences) {
         "\ndiscover_lora=" + (preferences.discover_lora ? "1" : "0") +
         "\ncompact_recording=" + (preferences.compact_recording ? "1" : "0") +
         "\ndecode_enabled=" + (preferences.decode_enabled ? "1" : "0") +
+        "\npublic_meshtastic_key_enabled=" + (preferences.public_meshtastic_key_enabled ? "1" : "0") +
         "\nspectrum_only=" + (preferences.spectrum_only ? "1" : "0") +
         "\nreceiver_source=" + (preferences.receiver_source == DesktopReceiver::HackRf ? "hackrf" :
             preferences.receiver_source == DesktopReceiver::RtlSdr ? "rtl_sdr" :

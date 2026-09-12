@@ -3,6 +3,8 @@
 import hashlib
 import importlib.util
 import io
+import json
+import os
 from pathlib import Path
 import tarfile
 import tempfile
@@ -53,6 +55,59 @@ class BootstrapTests(unittest.TestCase):
         out.mkdir()
         result = helper.extract_verified(path, out, "openssl-test")
         self.assertEqual((result / "a").read_bytes(), b"test")
+
+    def test_private_snapshot_survives_source_replacement(self):
+        path = self.archive([("openssl-test/a", tarfile.REGTYPE)])
+        original = path.read_bytes()
+        entry = {"bytes": len(original), "sha256": hashlib.sha256(original).hexdigest()}
+        copied = helper.snapshot_archive(path, self.root / "private.tar.gz", entry)
+        path.write_bytes(b"replaced after verification")
+        self.assertEqual(copied.read_bytes(), original)
+        self.assertEqual(copied.stat().st_mode & 0o777, 0o600)
+        out = self.root / "out"
+        out.mkdir()
+        self.assertEqual((helper.extract_verified(copied, out, "openssl-test") / "a").read_bytes(), b"test")
+
+    def test_snapshot_rejects_wrong_content_size_and_nonregular_input(self):
+        path = self.archive([("openssl-test/a", tarfile.REGTYPE)])
+        entry = {"bytes": path.stat().st_size, "sha256": "0" * 64}
+        with self.assertRaisesRegex(ValueError, "SHA-256"):
+            helper.snapshot_archive(path, self.root / "bad-hash", entry)
+        with self.assertRaisesRegex(ValueError, "reviewed size"):
+            helper.snapshot_archive(path, self.root / "bad-size", {**entry, "bytes": 1})
+        if hasattr(os, "mkfifo"):
+            fifo = self.root / "fifo"
+            os.mkfifo(fifo)
+            with self.assertRaisesRegex(ValueError, "regular file"):
+                helper.snapshot_archive(fifo, self.root / "bad-type", entry)
+
+    def test_bootstrap_uses_private_snapshot_after_verification(self):
+        path = self.archive([("openssl-test/a", tarfile.REGTYPE)])
+        original = path.read_bytes()
+        (self.root / "third_party").mkdir()
+        (self.root / "third_party/openssl-source.json").write_text(json.dumps({
+            "version": "test", "files": [{"name": "fixture.tar.gz", "bytes": len(original),
+                "sha256": hashlib.sha256(original).hexdigest()}],
+            "source_file_hashes": {"a": hashlib.sha256(b"test").hexdigest()},
+            "build_configuration": {"configure_arguments": [], "targets": []}}))
+        verify = helper.verify_archive
+        def replace_original(checked, entry):
+            verify(checked, entry)
+            self.assertNotEqual(checked, path)
+            self.assertTrue(checked.is_relative_to(self.root / "build/deps"))
+            path.write_bytes(b"replacement after private verification")
+        def build_boundary(command, cwd, log):
+            self.assertEqual((cwd / "a").read_bytes(), b"test")
+            raise ValueError("synthetic build boundary; no execution")
+        with patch.object(helper, "native_target", return_value="linux-x86_64"), \
+                patch.object(helper.shutil, "which", return_value="fixture-tool"), \
+                patch.object(helper.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
+                patch.object(helper, "verify_archive", side_effect=replace_original), \
+                patch.object(helper, "run", side_effect=build_boundary) as execute:
+            with self.assertRaisesRegex(ValueError, "synthetic build boundary"):
+                helper.bootstrap(self.root, path, False, self.root / "build/crypto", 1)
+        execute.assert_called_once()
+        self.assertFalse((self.root / "build/crypto").exists())
 
     def test_rejects_unsafe_entries_before_writing_anything(self):
         for name, kind in [
@@ -127,6 +182,35 @@ class BootstrapTests(unittest.TestCase):
         with patch.object(helper.platform, "system", return_value="Windows"):
             with self.assertRaises(ValueError):
                 helper.native_target()
+
+    def test_relocatable_paths_preserve_hardening_without_staging_path(self):
+        manifest = json.loads((Path(__file__).resolve().parents[1] /
+                               "third_party/openssl-source.json").read_text())
+        stage = self.root / "build/packaging crypto"
+        before = list(manifest["build_configuration"]["configure_arguments"])
+        args = helper.configure_arguments(manifest, "darwin64-arm64-cc", stage, True)
+        self.assertIn("--prefix=/ovmesh/disabled", args)
+        self.assertIn("--openssldir=/ovmesh/disabled/ssl", args)
+        self.assertFalse(any(str(self.root) in arg or "${" in arg for arg in args))
+        self.assertEqual(args[0], "darwin64-arm64-cc")
+        self.assertEqual([arg for arg in args if arg.startswith("no-")],
+                         [arg for arg in before if arg.startswith("no-")])
+        self.assertEqual(manifest["build_configuration"]["configure_arguments"], before)
+        self.assertEqual(helper.checked_output_path(self.root, stage), stage)
+        self.assertFalse(stage.exists())
+
+    def test_default_compiled_paths_remain_local_and_unknown_variables_fail(self):
+        manifest = {"build_configuration": {"configure_arguments": [
+            "${OPENSSL_TARGET}", "--prefix=${REPO_ROOT}/build/crypto",
+            "--openssldir=${REPO_ROOT}/build/crypto/ssl"]}}
+        stage = self.root / "build/crypto"
+        args = helper.configure_arguments(manifest, "linux-x86_64", stage)
+        self.assertEqual(args, ["linux-x86_64", "--prefix=" + str(stage),
+                               "--openssldir=" + str(stage / "ssl")])
+        manifest["build_configuration"]["configure_arguments"].append("${UNRESOLVED}")
+        for enabled in (False, True):
+            with self.assertRaisesRegex(ValueError, "unresolved"):
+                helper.configure_arguments(manifest, "linux-x86_64", stage, enabled)
 
 
 if __name__ == "__main__":

@@ -118,8 +118,9 @@ void serial_lifecycle() {
     source.send(current_rmc());
     require(until([&]{return engine.gps_connection_status().state==GpsConnectionState::ValidFix;}),
         "New epoch restores valid fix");
+    const auto before_resume=engine.snapshot().input_seconds;
     require(engine.start(config,false,error),error);
-    require(until([&]{return engine.snapshot().input_seconds>.15;}),"RF resumed before simulated serial loss");
+    require(until([&]{return engine.snapshot().input_seconds>before_resume+.15;}),"RF resumed before simulated serial loss");
     source.disconnect();
     require(until([&]{return engine.gps_connection_status().state==GpsConnectionState::ReadError;}),
         "Serial hangup reports read error rather than satellite fix loss");
@@ -130,11 +131,23 @@ void serial_lifecycle() {
         engine.snapshot().track.size()==before_disconnect&&engine.snapshot().gps_status=="GPS disconnected",
         "Explicit disconnect invalidates future GPS association but preserves prior track");
     require(engine.snapshot().running,"GPS disconnect leaves an active RF survey running");
-    engine.stop();
+    engine.stop();const auto stopped=engine.snapshot();
     require(engine.start(config,false,error),error);
-    require(until([&]{return engine.snapshot().input_seconds>.15;}),"Synthetic RF restarted after GPS disconnect");
+    const auto resumed_at=engine.snapshot().acquisitions.back().elapsed_start_seconds;
+    require(until([&]{return engine.snapshot().input_seconds>stopped.input_seconds+.15;}),"Synthetic RF resumed after GPS disconnect");
+    engine.stop();const auto resumed=engine.snapshot();
+    require(resumed.session_id==stopped.session_id&&resumed.track.size()==before_disconnect&&resumed.gps_status=="GPS disconnected",
+        "Resume preserves prior receiver positions while GPS remains disconnected");
+    unsigned new_events=0;
+    for(const auto& event:resumed.recent_spectrum_events)if(event.elapsed_start_seconds>=resumed_at-1e-8) {
+        ++new_events;require(!event.receiver_start&&!event.receiver_end,"New reception cannot inherit a disconnected receiver's last fix");
+    }
+    require(new_events>0,"Resumed measurements exercise missing GPS association");
+    require(engine.new_session(error,true),error);
+    require(engine.start(config,false,error),error);
+    require(until([&]{return engine.snapshot().input_seconds>.15;}),"Explicit New starts a separate synthetic RF survey");
     require(engine.snapshot().track.empty()&&engine.snapshot().gps_status=="GPS disconnected",
-        "New survey cannot inherit the disconnected receiver's last fix");
+        "Explicit New has no prior track or disconnected receiver fix");
     engine.stop();
 }
 #endif

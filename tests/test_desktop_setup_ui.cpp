@@ -28,8 +28,7 @@ struct Fixture {
 };
 void configure_synthetic(DesktopState& ui) {
     ui.source=0;ui.config.sample_rate=8000000;ui.config.survey_span_hz=5000000;
-    // Keep the operator's armed profile intact while bounding this storage-only
-    // fixture to energy measurements. No waveform discovery worker is needed.
+    // Bound this hardware-free recording check to energy measurements.
     ui.spectrum_only=true;ui.config.discover_lora=false;
 }
 void wait_for_survey(Engine& engine) {
@@ -49,8 +48,8 @@ void defaults_folder_and_optouts(const Fixture& fixture) {
         "Fresh desktop setup initializes explicit local settings");
     require(first.gps_enabled&&first.save_session&&first.focus_serial_gps,
         "Ordinary desktop defaults enable GPS and recording and expose serial GPS setup");
-    require(first.config.discover_lora&&first.decode_enabled&&!first.spectrum_only&&first.config.lanes.size()==1,
-        "Fresh ordinary setup enables discovery and arms a profile without implicitly adding a key");
+    require(!first.config.discover_lora&&!first.config.automatic_decode&&!first.decode_enabled&&first.spectrum_only&&first.config.lanes.empty()&&!first.public_meshtastic_key_enabled&&!first.automatic_decode_requested(),
+        "Fresh ordinary setup enables spectrum surveying without discovery, packet decoding or public keys");
     require(first.gps_devices.devices.empty()&&!first.selected_gps,
         "Tests explicitly skip OS device discovery");
     require(!first.session_path.empty()&&file_path(first.session_path).extension()==".sqlite"&&
@@ -156,52 +155,90 @@ void rtl_setup_survives_restart(const Fixture& fixture) {
         "HackRF availability never masquerades as RTL support");
     reopened.spectrum_only=false;reopened.config.discover_lora=true;
     reopened.config.sample_rate=1000000;reopened.config.survey_span_hz=800000;reopened.prepare_discovery_rate();
-    require(reopened.config.sample_rate==2000000&&reopened.config.survey_span_hz==800000,
-        "Enabling RTL discovery selects the supported rate without widening the selected survey");
+    require(reopened.config.sample_rate==1000000&&reopened.config.survey_span_hz==800000&&
+        reopened.spectrum_only&&!reopened.config.discover_lora,
+        "Stale RTL discovery requests are disabled without changing the selected rate or survey span");
     reopened.select_receiver(1);
     require(reopened.source==1&&reopened.config.hardware_receiver==HardwareReceiver::HackRf&&
         reopened.config.sample_rate==16000000&&reopened.config.survey_span_hz==10000000&&reopened.config.tuning_offset_hz==0,
         "Returning to HackRF restores a supported wideband setup and clears the other receiver's Offset");
 }
 void consecutive_recordings(const Fixture& fixture) {
+    const auto paths=preference_paths(fixture.path("recording-profile"));
+    auto legacy=load_preferences(paths);
+    legacy.discover_lora=true;legacy.decode_enabled=true;legacy.spectrum_only=false;
+    legacy.public_meshtastic_key_enabled=true;
+    legacy.concentrators.decode_enabled=true;legacy.concentrators.boards.front().packets_enabled=true;
+    save_preferences(paths,legacy);
     DesktopState ui;ui.initialize_preferences(fixture.path("recording-profile"),false);
+    require(ui.spectrum_only&&!ui.config.discover_lora&&!ui.decode_enabled&&!ui.public_meshtastic_key_enabled&&
+        !ui.config.concentrators.decode_enabled&&!ui.config.concentrators.boards.front().packets_enabled,
+        "Stale saved LoRa, packet and key preferences cannot reactivate desktop decoding");
+    require(ui.gps_enabled&&ui.save_session&&ui.config.center_hz==legacy.center_hz&&
+        ui.config.sample_rate==legacy.sample_rate&&ui.config.survey_span_hz==legacy.survey_span_hz&&
+        ui.preferences.recording_directory==legacy.recording_directory,
+        "Applying spectrum-only policy preserves GPS, recording folder and receiver settings");
     configure_synthetic(ui);Engine engine;
+    // Exercise stale in-memory/launch choices again at the actual Engine start
+    // boundary; hiding controls alone would leave these workers enabled.
+    ui.spectrum_only=false;ui.config.discover_lora=true;ui.config.automatic_decode=true;
+    ui.decode_enabled=true;ui.config.lanes={LaneConfig{}};ui.public_meshtastic_key_enabled=true;
+    std::string key_error;
+    require(engine.set_public_meshtastic_key_enabled(true,key_error),key_error);
+    ui.apply_public_key(engine);
+    require(!engine.public_meshtastic_key_enabled()&&engine.configured_key_count()==0,
+        "Desktop policy removes a previously activated public key from the backend");
+    ui.spectrum_only=false;ui.config.discover_lora=true;ui.config.automatic_decode=true;
+    ui.decode_enabled=true;ui.config.lanes={LaneConfig{}};
     const auto first_path=ui.session_path;
     ui.start(engine,false);
     require(!ui.notice_error&&engine.snapshot().running&&engine.snapshot().recording,
         "Normal desktop synthetic start saves by default");
     require(engine.gps_connection_status().state==GpsConnectionState::Disconnected,
-        "Synthetic start does not connect GPS even when the convenience preference is enabled");
+        "Synthetic start does not connect GPS");
     wait_for_survey(engine);engine.stop();
-    require(!engine.snapshot().incomplete&&fs::is_regular_file(file_path(first_path)),
-        "First bounded synthetic recording is complete");
-    const auto first_bytes=contents(first_path);
-    require(!first_bytes.empty()&&ui.recording_path_used,"Completed start marks the chosen recording path used");
+    const auto before=engine.snapshot();
+    require(!before.incomplete&&fs::is_regular_file(file_path(first_path)),"Initial acquisition saved");
+    require(!before.config.discover_lora&&!before.config.automatic_decode&&before.config.lanes.empty()&&
+        !before.discovery.enabled&&!before.automatic_decoder.enabled&&before.lane_health.empty()&&
+        before.waveforms.empty()&&before.total_receptions==0,
+        "Actual desktop Engine start creates no discovery worker, decoder lanes or classified packets");
+    require(before.measurement_seconds>0&&!before.frequencies.empty()&&before.spectrum_tiles>0,
+        "Spectrum frequency measurements continue to accumulate with LoRa disabled");
+    const auto persisted=load_preferences(paths);
+    require(persisted.spectrum_only&&!persisted.discover_lora&&!persisted.decode_enabled&&
+        !persisted.public_meshtastic_key_enabled&&persisted.recording_enabled&&persisted.gps_enabled,
+        "Saving normalized desktop settings preserves measurement and GPS defaults without rearming LoRa");
     ui.start(engine,false);
-    require(!ui.notice_error&&engine.snapshot().running&&engine.snapshot().recording&&ui.session_path!=first_path,
-        "Second desktop start automatically uses a fresh file");
-    const auto second_path=ui.session_path;
-    wait_for_survey(engine);engine.stop();
-    require(!engine.snapshot().incomplete&&fs::is_regular_file(file_path(second_path))&&
-        contents(first_path)==first_bytes,"Second recording completes without modifying the first survey");
-    const auto second_bytes=contents(second_path);
+    require(!ui.notice_error&&engine.snapshot().running&&engine.snapshot().recording&&ui.session_path==first_path&&
+        engine.snapshot().session_id==before.session_id,"Resume keeps the same recording and session");
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(5);
+    while(engine.snapshot().input_seconds<=before.input_seconds+.15&&std::chrono::steady_clock::now()<deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    engine.stop();const auto resumed=engine.snapshot();
+    require(!resumed.incomplete&&resumed.input_seconds>before.input_seconds&&resumed.spectrum_tiles>before.spectrum_tiles,
+        "Resume accumulates measurements rather than replacing history");
+    const auto first_bytes=contents(first_path);
     ui.config.sample_rate=0;ui.start(engine,false);
-    const auto failed_path=ui.session_path;
-    require(ui.notice_error&&!engine.snapshot().running&&failed_path!=first_path&&failed_path!=second_path&&
-        !fs::exists(file_path(failed_path)),"Invalid synthetic configuration stops before recording to a newly allocated path");
+    require(ui.notice_error&&!engine.snapshot().running&&ui.session_path==first_path&&contents(first_path)==first_bytes,
+        "Invalid resume preserves selected survey and saved bytes");
+    std::string error;
+    require(engine.new_session(error),error);
     configure_synthetic(ui);ui.start(engine,false);
-    require(!ui.notice_error&&engine.snapshot().running&&ui.session_path!=failed_path,
-        "Retry after failed startup allocates another fresh destination");
+    const auto second_path=ui.session_path;
+    require(!ui.notice_error&&second_path!=first_path&&engine.snapshot().session_id!=before.session_id,
+        "Only explicit New selects a new survey file");
     wait_for_survey(engine);engine.stop();
-    require(!engine.snapshot().incomplete&&contents(first_path)==first_bytes&&contents(second_path)==second_bytes,
-        "Failed start and successful retry preserve both earlier recordings byte for byte");
-    std::string error;Engine reopened;
+    require(!engine.snapshot().incomplete&&contents(first_path)==first_bytes,
+        "New survey leaves previous recording unchanged");
+    Engine reopened;
     require(reopened.open_session(first_path,error)&&reopened.snapshot().historical&&
-        reopened.snapshot().spectrum_tiles>0&&!reopened.snapshot().incomplete,
-        "First recording remains a readable completed measurement survey");
-    require(reopened.open_session(second_path,error)&&reopened.snapshot().historical&&
-        reopened.snapshot().spectrum_tiles>0&&!reopened.snapshot().incomplete,
-        "Second recording is independently readable");
+        reopened.snapshot().input_seconds>=resumed.input_seconds&&!reopened.snapshot().incomplete&&
+        !reopened.snapshot().config.discover_lora&&!reopened.snapshot().config.automatic_decode&&
+        reopened.snapshot().config.lanes.empty()&&!reopened.snapshot().frequencies.empty(),
+        "The resumed survey reopens with its combined measurements");
+    require(reopened.open_session(second_path,error)&&reopened.snapshot().historical&&!reopened.snapshot().incomplete,
+        "The separate second recording remains independently readable");
 }
 
 // Test the desktop's real start/selection control flow without opening any
@@ -212,6 +249,7 @@ struct StartupReceiver {
     unsigned rf_starts=0, gps_opens=0, gps_closes=0;
     bool gps_fails=false, rf_fails=false, prior_serial_fix=false;
     bool running=false, permission_seen=false;
+    Snapshot snapshot() const { return {}; }
     GpsConnectionStatus gps_connection_status() const { return gps; }
     void disconnect_gps() { ++gps_closes;gps={};prior_serial_fix=false; }
     bool connect_gps(const std::string& path,unsigned baud,std::string& error) {
@@ -248,12 +286,14 @@ void concentrator_selection_and_start(const Fixture& fixture) {
     require(!ui.notice_error && receiver.rf_starts==1 && receiver.requested.concentrators.boards[0].device_path==a.path &&
         receiver.requested.concentrators.boards[1].device_path==b.path,"Explicit board identities are rechecked and moved ports resolve separately");
     require(!receiver.requested.discover_lora && receiver.requested.lanes.empty() &&
-        !receiver.requested.concentrators.decode_enabled && receiver.requested.concentrators.boards[0].packets_enabled,
-        "Concentrator packet metadata remains enabled when payload decoding is off");
+        !receiver.requested.automatic_decode && !receiver.requested.concentrators.decode_enabled &&
+        !receiver.requested.concentrators.boards[0].packets_enabled && !receiver.requested.concentrators.boards[1].packets_enabled &&
+        receiver.requested.concentrators.scan_enabled,
+        "Concentrator RF scans remain enabled while all packet reception and decoding is disabled");
     ui.spectrum_only=true; receiver={}; ui.start(receiver,true,gps,inventory);
     require(receiver.rf_starts==1 && !receiver.requested.concentrators.boards[0].packets_enabled &&
-        !receiver.requested.concentrators.boards[1].packets_enabled && ui.config.concentrators.boards[0].packets_enabled,
-        "Spectrum only suppresses effective packet reception and preserves saved profiles");
+        !receiver.requested.concentrators.boards[1].packets_enabled && !ui.config.concentrators.boards[0].packets_enabled,
+        "Repeated start cannot restore packet reception from the stored board configuration");
     ui.persist_preferences(); require(ui.preferences_error.empty(),ui.preferences_error);
     DesktopState restored; restored.initialize_preferences(fixture.path("rak-setup-profile"),false);
     require(restored.source==3 && restored.config.concentrators==ui.config.concentrators && !restored.concentrator_inventory_loaded,
@@ -265,17 +305,20 @@ void concentrator_selection_and_start(const Fixture& fixture) {
     DesktopState explicit_path; explicit_path.select_receiver(3);
     explicit_path.config.concentrators.boards[0].device_path=a.path;
     explicit_path.config.lanes.clear(); explicit_path.config.discover_lora=false;
+    explicit_path.config.concentrators.decode_enabled=true;
+    explicit_path.config.concentrators.boards[0].packets_enabled=true;
     explicit_path.use_launch_detection(explicit_path.config);
-    require(!explicit_path.spectrum_only && explicit_path.decode_enabled,
-        "An explicit RAK launch preserves packet/decode choices despite having no SDR lanes");
+    require(explicit_path.spectrum_only && !explicit_path.decode_enabled &&
+        !explicit_path.config.concentrators.decode_enabled && !explicit_path.config.concentrators.boards[0].packets_enabled,
+        "An explicit desktop RAK launch cannot reactivate packet reception or decoding");
     explicit_path.config.concentrators.decode_enabled=false;
     explicit_path.use_launch_detection(explicit_path.config);
-    require(!explicit_path.spectrum_only && !explicit_path.decode_enabled,
-        "RAK metadata-only packet reception remains distinct from spectrum-only mode");
+    require(explicit_path.spectrum_only && !explicit_path.decode_enabled,
+        "Desktop RAK launch remains scan-only even with legacy metadata-only packet choices");
     receiver={};explicit_path.start(receiver,true,gps,inventory);
     require(receiver.rf_starts==1 && receiver.requested.concentrators.boards[0].device_id==a.stable_id &&
-        receiver.requested.concentrators.boards[0].packets_enabled,
-        "Explicit CLI path resolves only its matching unique metadata and preserves requested packets");
+        !receiver.requested.concentrators.boards[0].packets_enabled && receiver.requested.concentrators.scan_enabled,
+        "Explicit desktop launch path resolves only its matching unique device and starts scans only");
     explicit_path.config.concentrators.boards[0].packets_enabled=false;
     explicit_path.use_launch_detection(explicit_path.config);
     require(explicit_path.spectrum_only,"Explicit scan-only launch remains spectrum only");

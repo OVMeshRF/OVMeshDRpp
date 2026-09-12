@@ -29,7 +29,6 @@ void request_new_session(Engine& engine, DesktopState& ui, bool discard = false)
         ui.prepare_recording_file(); ui.new_requested = false;
         if (ui.preferences_active && ui.gps_enabled && ui.source != 0 && !ui.passive_smoke && !ui.prepared_run)
             ui.connect_selected_gps(engine);
-        if (ui.restart_after_new) { ui.restart_after_new = false; ui.start(engine, ui.source != 0); }
     });
 }
 
@@ -66,64 +65,91 @@ void open_session_chooser(Engine& engine, DesktopState& ui, const Snapshot& snap
 }
 
 void session_toolbar(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
-    if (ImGui::BeginTable("sessionToolbar", 2, ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Session", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, 468 * ui.ui_scale);
-        ImGui::TableNextRow(); ImGui::TableNextColumn();
-        ImGui::TextColored(accent, "OVMeshDR++"); ImGui::SameLine(0, 18);
-        const auto& title = snapshot.session_id.empty() ? std::string(ui.session_title.data()) : snapshot.config.session_title;
-        ImGui::TextUnformatted(title.c_str());
-        if (snapshot.historical) ImGui::TextColored(secondary, "Saved session / Read only");
-        else if (snapshot.session_id.empty()) ImGui::TextDisabled("New survey / No previous results loaded");
-        else ImGui::TextDisabled(snapshot.running ? "Current survey" : "Stopped / Results retained");
-        ImGui::TableNextColumn();
-        ImGui::BeginDisabled(ui.operation_busy() || ui.managed_started || ui.passive_smoke);
-        if (ImGui::Button("New session")) {
-            if (has_session_data(snapshot) && snapshot.config.session_path.empty()) ui.new_requested = true;
-            else request_new_session(engine, ui);
-        }
-        ImGui::SameLine(); ImGui::BeginDisabled(snapshot.running);
-        if (ImGui::Button("Open...")) open_session_chooser(engine, ui, snapshot);
-        ImGui::EndDisabled(); ImGui::SameLine();
-        ImGui::BeginDisabled(snapshot.session_id.empty() || snapshot.historical || snapshot.config.session_path.empty());
-        if (ImGui::Button("Save session")) request_save_session(engine, ui);
-        ImGui::EndDisabled(); ImGui::SameLine();
-        if (ImGui::Button("...##sessionActions")) ImGui::OpenPopup("Session actions");
-        if (ImGui::BeginPopup("Session actions")) {
-            ImGui::BeginDisabled(snapshot.config.session_path.empty() || snapshot.session_id.empty());
-            if (ImGui::MenuItem("Save a copy...")) {
-                begin_file_picker(ui, FilePickerPurpose::SaveCopy, ui.copy_path, snapshot.config.session_path);
-                ui.file_chosen = [&engine, &ui](const std::string& path) {
-                    ui.copy_path = path;
-                    ui.begin_operation("Saving session copy...", [&engine, path] {
-                        std::string error; const bool ok = engine.save_session_copy(path, error);
-                        return DesktopState::OperationResult{ok, ok ? "Session copy saved. Current recording is unchanged." : error};
-                    });
-                };
-            }
-            ImGui::EndDisabled(); ImGui::EndPopup();
-        }
-        ImGui::EndDisabled(); ImGui::SameLine();
-        if (ImGui::Button("Settings")) ui.show_settings = true;
-        ImGui::EndTable();
+    ImGui::TextColored(accent, "OVMeshDR++");
+    const auto title = snapshot.session_id.empty() ? std::string(ui.session_title.data()) : snapshot.config.session_title;
+    wrapped(title.c_str());
+    ImGui::BeginDisabled(ui.operation_busy() || ui.managed_started || ui.passive_smoke);
+    const float button_width = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * 2) / 3;
+    if (ImGui::Button("New", {button_width, 0})) {
+        if (has_session_data(snapshot) && snapshot.config.session_path.empty()) ui.new_requested = true;
+        else request_new_session(engine, ui);
     }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Start an empty survey. Existing recordings remain on disk.");
+    ImGui::SameLine(); ImGui::BeginDisabled(snapshot.running);
+    if (ImGui::Button("Open...", {button_width, 0})) open_session_chooser(engine, ui, snapshot);
+    ImGui::EndDisabled(); ImGui::SameLine();
+    ImGui::BeginDisabled(snapshot.session_id.empty() || snapshot.historical || snapshot.config.session_path.empty());
+    if (ImGui::Button("Save", {button_width, 0})) request_save_session(engine, ui);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Save a checkpoint of this survey. Recording continues automatically.");
+    ImGui::EndDisabled();
+    if (ImGui::Button("More...")) ImGui::OpenPopup("Session actions");
+    if (ImGui::BeginPopup("Session actions")) {
+        ImGui::BeginDisabled(snapshot.config.session_path.empty() || snapshot.session_id.empty());
+        if (ImGui::MenuItem("Save a copy...")) {
+            begin_file_picker(ui, FilePickerPurpose::SaveCopy, ui.copy_path, snapshot.config.session_path);
+            ui.file_chosen = [&engine, &ui](const std::string& path) {
+                ui.copy_path = path;
+                ui.begin_operation("Saving session copy...", [&engine, path] {
+                    std::string error; const bool ok = engine.save_session_copy(path, error);
+                    return DesktopState::OperationResult{ok, ok ? "Session copy saved. Current recording is unchanged." : error};
+                });
+            };
+        }
+        ImGui::EndDisabled(); ImGui::EndPopup();
+    }
+    ImGui::EndDisabled(); ImGui::SameLine();
+    if (ImGui::Button("Settings")) ui.show_settings = true;
+}
+
+void reception_control(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
+    ImGui::BeginDisabled(ui.operation_busy() || ui.passive_smoke || (!snapshot.running && ui.managed_started));
+    if (snapshot.running) {
+        ImGui::PushStyleColor(ImGuiCol_Button, {0.26f,.13f,.17f,1});
+        ImGui::PushStyleColor(ImGuiCol_Text, {1,.73f,.76f,1});
+        if (ImGui::Button("Stop reception", {-1,40})) {
+            ui.begin_operation("Stopping reception...", [&engine] {
+                engine.stop(); const auto final = engine.snapshot();
+                return DesktopState::OperationResult{final.error.empty(), final.error.empty() ? "Reception stopped. Results remain open." : final.error};
+            });
+        }
+        ImGui::PopStyleColor(2);
+    } else {
+        const bool unavailable = !receiver_source_available(ui.source, snapshot);
+        ImGui::BeginDisabled(unavailable || snapshot.historical || (ui.save_session && ui.session_path.empty()));
+        ImGui::PushStyleColor(ImGuiCol_Button, accent); ImGui::PushStyleColor(ImGuiCol_Text, {0.03f,.10f,.11f,1});
+        const char* action = has_session_data(snapshot) ? "Resume reception" : ui.source == 0 ? "Start demo" : "Start reception";
+        if (ImGui::Button(action, {-1,40})) ui.start(engine, ui.source != 0);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(snapshot.historical ? "This saved survey is read-only. Use New to start a survey." :
+                "Start or resume reception in this survey. Stop keeps your results; only New clears the workspace.");
+        ImGui::PopStyleColor(2); ImGui::EndDisabled();
+        if (unavailable) wrapped(ui.source == 3 ? "RAK5146 support is unavailable in this build." : ui.source == 2 ? "RTL-SDR support is unavailable in this build." : "HackRF support is unavailable in this build.", amber);
+        if (ui.save_session && ui.session_path.empty()) {
+            wrapped("Choose a recording folder to start.", amber);
+            if (ImGui::SmallButton("Recording settings")) { ui.settings_page = 2; ui.show_settings = true; }
+        }
+    }
+    ImGui::EndDisabled(); ImGui::Spacing();
+    wrapped(ui.source == 0 ? "Synthetic source / no radio" : "Receive only / local to this computer");
 }
 
 void receiver_controls(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
-    label(snapshot.historical ? "Recorded receiver" : has_session_data(snapshot) && !snapshot.running ? "Receiver / next session" : "Receiver");
+    label(snapshot.historical ? "Recorded receiver" : "Receiver");
     const bool locked = snapshot.running || snapshot.historical || ui.operation_busy();
     auto& cfg = ui.config;
     const auto& displayed = snapshot.historical ? snapshot.config : cfg;
     bool changed = false;
     ImGui::BeginDisabled(locked);
     int source = snapshot.historical ? receiver_source_index(snapshot.config) : ui.source;
-    ImGui::SetNextItemWidth(-1); ImGui::BeginDisabled(ui.prepared_run);
+    ImGui::SetNextItemWidth(-1); ImGui::BeginDisabled(ui.prepared_run || has_session_data(snapshot));
     if (ImGui::Combo("##source", &source, "Synthetic / demo\0HackRF One / USB\0RTL-SDR / USB\0RAK5146 USB/LBT\0")) {
         ui.select_receiver(source); changed = true;
         if (source == 0) engine.disconnect_gps();
         else if (ui.preferences_active && ui.gps_enabled && !ui.passive_smoke) ui.connect_selected_gps(engine);
     }
     ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Use New before switching receiver types. Stop / Resume retains this survey and its receiver.");
     const bool rtl = source == 2;
     const bool rak = source == 3;
     ImGui::Spacing(); ImGui::TextDisabled("Center frequency / MHz");
@@ -152,7 +178,7 @@ void receiver_controls(Engine& engine, DesktopState& ui, const Snapshot& snapsho
     if (rtl) {
         if (ImGui::BeginCombo("##sample", displayed.sample_rate == 1000000 ? "1 MS/s" : "2 MS/s")) {
             ImGui::BeginDisabled(cfg.discover_lora && !ui.spectrum_only);
-            if (ImGui::Selectable("1 MS/s / discovery off", displayed.sample_rate == 1000000)) {
+            if (ImGui::Selectable(desktop_lora_enabled ? "1 MS/s / discovery off" : "1 MS/s", displayed.sample_rate == 1000000)) {
                 cfg.sample_rate = 1000000; cfg.survey_span_hz = std::min(cfg.survey_span_hz, 800000U); changed = true;
             }
             ImGui::EndDisabled();
@@ -208,73 +234,52 @@ void receiver_controls(Engine& engine, DesktopState& ui, const Snapshot& snapsho
     ImGui::EndDisabled();
     if (changed) ui.persist_preferences();
     ImGui::Spacing(); ImGui::Spacing();
-    ImGui::BeginDisabled(ui.operation_busy() || ui.passive_smoke || (!snapshot.running && ui.managed_started));
-    if (snapshot.running) {
-        ImGui::PushStyleColor(ImGuiCol_Button, {0.26f,.13f,.17f,1});
-        ImGui::PushStyleColor(ImGuiCol_Text, {1,.73f,.76f,1});
-        if (ImGui::Button("Stop reception", {-1,40})) {
-            ui.begin_operation("Stopping reception...", [&engine] {
-                engine.stop(); const auto final = engine.snapshot();
-                return DesktopState::OperationResult{final.error.empty(), final.error.empty() ? "Reception stopped. Results remain open." : final.error};
-            }, [&ui] { ui.prepare_recording_file(); });
-        }
-        ImGui::PopStyleColor(2);
-    } else {
-        const bool unavailable = !receiver_source_available(ui.source, snapshot);
-        ImGui::BeginDisabled(unavailable || (ui.save_session && ui.session_path.empty()));
-        ImGui::PushStyleColor(ImGuiCol_Button, accent); ImGui::PushStyleColor(ImGuiCol_Text, {0.03f,.10f,.11f,1});
-        const char* action = has_session_data(snapshot) ? "Start new session" : ui.source == 0 ? "Start demo" : "Start reception";
-        if (ImGui::Button(action, {-1,40})) {
-            if (has_session_data(snapshot) && snapshot.config.session_path.empty()) { ui.new_requested = true; ui.restart_after_new = true; }
-            else if (has_session_data(snapshot)) { ui.restart_after_new = true; request_new_session(engine, ui); }
-            else ui.start(engine, ui.source != 0);
-        }
-        ImGui::PopStyleColor(2); ImGui::EndDisabled();
-        if (unavailable) wrapped(ui.source == 3 ? "RAK5146 support is unavailable in this build." : ui.source == 2 ? "RTL-SDR support is unavailable in this build." : "HackRF support is unavailable in this build.", amber);
-        if (ui.save_session && ui.session_path.empty()) {
-            wrapped("Choose a recording folder to start.", amber);
-            if (ImGui::SmallButton("Recording settings")) { ui.settings_page = 2; ui.show_settings = true; }
-        }
-    }
-    ImGui::EndDisabled(); ImGui::Spacing();
-    wrapped(ui.source == 0 ? "Synthetic source / no radio" : "Receive only / local to this computer");
+
 }
 
 void detection_settings(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
-    label("Detection & decoding");
+    if (!desktop_lora_enabled) return;
+    label("Detection & classification");
+    ImGui::BeginDisabled(snapshot.running || snapshot.historical || ui.operation_busy());
+    if (ImGui::Checkbox("Use Meshtastic public default key (AQ==)", &ui.public_meshtastic_key_enabled)) {
+        ui.apply_public_key(engine); ui.persist_preferences();
+    }
+    ImGui::EndDisabled();
+    wrapped("Shared across presets and channel names using the public key. Private channels need their own key.");
     if (ui.source == 3) {
         wrapped("RAK packet reception uses one explicit profile per board. Its energy scanner does not discover modem settings.");
         ImGui::BeginDisabled(snapshot.running || snapshot.historical || ui.operation_busy());
         if (ImGui::Checkbox("Spectrum only / disable packet reception", &ui.spectrum_only)) ui.persist_preferences();
         ImGui::BeginDisabled(ui.spectrum_only);
-        if (ImGui::Checkbox("Decode authorized messages", &ui.decode_enabled)) ui.persist_preferences();
+        if (ImGui::Checkbox("Classify Meshtastic with configured keys", &ui.decode_enabled)) ui.persist_preferences();
         ImGui::EndDisabled(); ImGui::EndDisabled();
         if (ImGui::Button("RAK boards and receive profiles...")) ui.settings_page = 6;
         ImGui::Text("Configured key records: %zu", ui.key_count(engine));
         if (ImGui::Button("Configure keys...")) { ui.show_keys = true; ui.authorize_keys = false; erase_secret(ui.key_input); }
-        wrapped("Packet RF metadata is retained when decoding is disabled. Keys remain in memory and are never saved in preferences.");
+        wrapped("Packet RF metadata is retained when classification is disabled. Private keys remain in memory; the public-key switch is remembered.");
+        meshtastic_preset_catalog(true);
         return;
     }
     wrapped("Choose what the survey looks for across the supplied range.");
-    ImGui::BeginDisabled(snapshot.running || ui.operation_busy());
+    ImGui::BeginDisabled(snapshot.running || snapshot.historical || ui.operation_busy());
     int mode = ui.spectrum_only ? 1 : 0;
     if (ImGui::RadioButton("Spectrum + LoRa", &mode, 0)) { ui.spectrum_only = false; ui.prepare_discovery_rate(); ui.persist_preferences(); }
     if (ImGui::RadioButton("Spectrum only", &mode, 1)) { ui.spectrum_only = true; ui.persist_preferences(); }
     ImGui::Spacing(); ImGui::BeginDisabled(ui.spectrum_only);
     if (ImGui::Checkbox("Discover LoRa waveforms", &ui.config.discover_lora)) { ui.prepare_discovery_rate(); ui.persist_preferences(); }
     wrapped("Estimate center frequency, modem bandwidth and spreading factor.");
-    if (ImGui::Checkbox("Decode authorized messages", &ui.decode_enabled)) ui.persist_preferences();
-    wrapped("Use only configured keys and supported receive profiles.");
+    if (ImGui::Checkbox("Classify Meshtastic with configured keys", &ui.decode_enabled)) ui.persist_preferences();
+    wrapped(ui.preferences_active || ui.config.automatic_decode
+        ? "When discovery and classification are enabled, supported signals anywhere within the supplied range are passed to the decoder automatically. No preset frequency is assumed."
+        : "This explicit launch keeps its requested decoder mode. Ordinary desktop startup arms automatic decoding when discovery and classification are enabled.");
     ImGui::EndDisabled(); ImGui::EndDisabled();
     ImGui::Spacing(); ImGui::Separator();
     ImGui::Text("Configured key records: %zu", ui.key_count(engine));
     if (ImGui::Button("Configure keys...")) { ui.show_keys = true; ui.authorize_keys = false; erase_secret(ui.key_input); }
-    if (ui.config.lanes.empty() && !ui.spectrum_only) {
-        wrapped("No receive profiles configured. Waveform discovery can still run.", amber);
-        ImGui::BeginDisabled(snapshot.running);
-        if (ImGui::Button("Add receive profile")) ui.config.lanes.push_back(LaneConfig{});
-        ImGui::EndDisabled();
-    }
+    automatic_decoder_status(snapshot, ui.automatic_decode_requested());
+    if (!ui.config.discover_lora && ui.decode_enabled && !ui.spectrum_only)
+        wrapped("Automatic decoding needs Discover LoRa waveforms. With discovery off, only enabled manual profiles are used.", amber);
+    meshtastic_preset_catalog();
     if (ImGui::CollapsingHeader("Advanced / Legacy decode profiles")) legacy_profile_settings(engine, ui, snapshot);
     const double lower = double(ui.config.center_hz) - ui.config.survey_span_hz * .5;
     const double upper = double(ui.config.center_hz) + ui.config.survey_span_hz * .5;
@@ -283,25 +288,27 @@ void detection_settings(Engine& engine, DesktopState& ui, const Snapshot& snapsh
     });
     if (outside) ImGui::TextWrapped("%zu legacy profile(s) are outside this survey range and will be skipped. Their settings are preserved.", static_cast<size_t>(outside));
     if (ui.source == 2 && ui.config.sample_rate == 1000000)
-        wrapped("At 1 MS/s, legacy decoding supports 125/250 kHz profiles. 500 kHz profiles are skipped; use 2 MS/s for those profiles and waveform discovery.", amber);
+        wrapped("At 1 MS/s, manual decoding supports 15.625/62.5/125/250 kHz profiles. 500 kHz profiles are skipped; use 2 MS/s for those profiles and waveform discovery.", amber);
     ImGui::Spacing();
-    wrapped("Waveform discovery does not identify a mesh network. Automatic decoding of discovered signals is still in development.", secondary);
+    wrapped("Automatic decoding is experimental and bounded by available processing/history. CRC validation is required before key classification; no key can repair a bad CRC.", secondary);
     if (ImGui::CollapsingHeader("Supported decoding and measurement limits")) {
-        wrapped("Discovery searches supported 125/250/500 kHz, SF7-12 waveforms throughout the supplied range. A match is an estimate, not a unique packet or authenticated sender. Detection is experimental and may miss signals.");
-        wrapped("Payload decoding currently uses explicit Meshtastic profiles. MeshCore and recipient private-key decoding are not enabled. Spectrum only suppresses both discovery and payload decoding without erasing their settings.");
+        wrapped("Discovery searches supported bandwidths and spreading factors throughout the supplied range. The preset catalog lists unavailable modes explicitly. A waveform match is an estimate, not a unique packet or authenticated sender; detection may miss signals.");
+        wrapped("Discovered waveforms and optional manual profiles use the same survey keyring. Message contents are not interpreted. Envelope classification is unauthenticated and can produce false positives. MeshCore and recipient private-key processing are unavailable. Spectrum only suppresses discovery and physical packet decoding without erasing setup.");
     }
 }
 
 void settings_window(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
     if (!ui.show_settings) return;
+    if (!desktop_lora_enabled && ui.settings_page == 0) ui.settings_page = 1;
     const auto* viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowSize({std::min(900.f*ui.ui_scale, viewport->WorkSize.x-30), std::min(730.f*ui.ui_scale,viewport->WorkSize.y-30)}, ImGuiCond_Appearing);
     ImGui::SetNextWindowPos(viewport->GetWorkCenter(), ImGuiCond_Appearing, {.5f,.5f});
     if (ImGui::Begin("Settings", &ui.show_settings, ImGuiWindowFlags_NoCollapse)) {
-        const char* categories[] = {"Detection & decoding","GPS & location","Recording","Display","Measurement & equipment","About & licenses","RAK concentrators"};
+        const char* categories[] = {"Detection & classification","GPS & location","Recording","Display","Measurement & equipment","About & licenses","RAK concentrators"};
         const float footer = ImGui::GetFrameHeightWithSpacing() + 8;
         ImGui::BeginChild("settingsNavigation", {210*ui.ui_scale,-footer}, false);
         for (int i=0;i<7;++i) {
+            if (!desktop_lora_enabled && i == 0) continue;
             ImGui::PushID(i);
             if (ImGui::Selectable(categories[i], ui.settings_page==i,0,{0,39*ui.ui_scale})) ui.settings_page=i;
             ImGui::PopID();
@@ -310,7 +317,7 @@ void settings_window(Engine& engine, DesktopState& ui, const Snapshot& snapshot)
         ImGui::BeginChild("settingsPage", {0,-footer}, false);
         ImGui::BeginDisabled(ui.operation_busy());
         if (ui.settings_page == 6) concentrator_settings(engine,ui,snapshot);
-        else if (ui.settings_page == 0) detection_settings(engine,ui,snapshot);
+        else if (desktop_lora_enabled && ui.settings_page == 0) detection_settings(engine,ui,snapshot);
         else if (ui.settings_page == 1) {
             ImGui::BeginDisabled(ui.passive_smoke || snapshot.historical || snapshot.running);
             gps_settings(engine,ui,snapshot);
@@ -348,19 +355,22 @@ void settings_window(Engine& engine, DesktopState& ui, const Snapshot& snapshot)
             wrapped("Local RF survey / receive only / open source");
             if (ImGui::Button("Open-source licenses & notices")) ui.show_licenses=true;
             if (ImGui::CollapsingHeader("Help / session workflow",ImGuiTreeNodeFlags_DefaultOpen)) {
-                wrapped("New clears the workspace after preserving the prior recording. Open views a saved session read-only. Save writes a checkpoint; Save a copy creates a separate database. Export creates a report.");
-                wrapped("GPS connects automatically on ordinary startup when enabled and uniquely recognized. Keys stay in this process and must be configured for authorized decoding.");
+                wrapped("Start and Stop resume the same survey without clearing results. New clears the workspace after preserving the prior recording. Open views a saved session read-only. Save writes a checkpoint; Save a copy reconstructs a separate metadata-only database. Pre-policy historical files require metadata export. Export creates a report.");
+                wrapped("GPS connects automatically on ordinary startup when enabled and uniquely recognized.");
+                if (desktop_lora_enabled)
+                    wrapped("The public Meshtastic key is enabled by default and can be switched off. Private keys stay in this process and must be configured explicitly.");
             }
         }
         ImGui::EndDisabled(); ImGui::EndChild();
         ImGui::Separator();
-        ImGui::TextDisabled(snapshot.running ? "Stop reception before changing acquisition settings." : "Receiver and recording settings apply to the next session.");
+        ImGui::TextDisabled(snapshot.running ? "Stop reception before changing acquisition settings." : "Receiver settings apply when reception resumes. Recording location applies to a new survey.");
         ImGui::SameLine(); if (ImGui::Button("Done")) ui.show_settings=false;
     }
     ImGui::End();
 }
 
 void compact_signal_table(DesktopState& ui, const Snapshot& snapshot, float height) {
+    if (!desktop_lora_enabled) return;
     const double now = ImGui::GetTime();
     if (ui.waveform_session != snapshot.session_id || ui.waveform_refresh < 0 || now-ui.waveform_refresh >= 1 || !snapshot.running) {
         ui.waveform_rows = snapshot.waveforms; ui.waveform_session=snapshot.session_id; ui.waveform_refresh=now;
@@ -396,7 +406,7 @@ void compact_analysis_tab(Engine& engine, DesktopState& ui, const Snapshot& snap
     if (is_concentrator(snapshot.session_id.empty() ? ui.config : snapshot.config)) {
         ImGui::TextUnformatted("Concentrator survey measurements");
         ImGui::BeginDisabled(!saved || ui.operation_busy());
-        if (ImGui::Button("Generate analysis report...")) { prepare_report_export(ui,snapshot); ui.export_kind=7; }
+        if (ImGui::Button("Generate analysis report...")) { prepare_report_export(ui,snapshot); ui.export_kind=6; }
         ImGui::SameLine(); if (ImGui::Button("Export report...")) prepare_report_export(ui,snapshot);
         ImGui::EndDisabled();
         if (!saved) wrapped("Record a session to retain all scan history and generate reports. The current readings remain visible without recording.");
@@ -417,7 +427,7 @@ void compact_analysis_tab(Engine& engine, DesktopState& ui, const Snapshot& snap
     }
     ImGui::TextUnformatted("Frequency activity"); ImGui::SameLine();
     ImGui::BeginDisabled(!saved || ui.operation_busy());
-    if(ImGui::Button("Generate analysis report...")) {prepare_report_export(ui,snapshot);ui.export_kind=7;}
+    if(ImGui::Button("Generate analysis report...")) {prepare_report_export(ui,snapshot);ui.export_kind=6;}
     ImGui::SameLine();
     if(ImGui::Button("Export report..."))prepare_report_export(ui,snapshot);
     ImGui::EndDisabled();
@@ -445,21 +455,23 @@ void compact_analysis_tab(Engine& engine, DesktopState& ui, const Snapshot& snap
     if(ui.analysis_loaded){
         const auto& a=ui.analysis;
         wrapped(analysis_frequency_text(a).c_str(),secondary);
+        if(a.mixed_acquisitions) wrapped("This selection spans receiver adjustments. Measurements retain their acquisition settings; compare individual intervals for consistent sensitivity.");
         ImGui::TextDisabled("Elapsed %.1f - %.1f s / saved measurements",a.resolved_elapsed_start,a.resolved_elapsed_end);
         if(a.observed_seconds>0){
             const bool guarded=guarded_view(ui);const double busy=guarded?a.outside_center_busy_seconds:a.busy_seconds;
-            const bool measured=!guarded||a.outside_center_bin_count>0;
+            const double observed=guarded?a.outside_center_observed_seconds:a.observed_seconds;
+            const bool measured=observed>0&&(!guarded||a.outside_center_bin_count>0);
             if(ImGui::BeginTable("selectionMetrics",3,ImGuiTableFlags_SizingStretchSame)){
                 ImGui::TableNextRow();ImGui::TableNextColumn();ImGui::TextDisabled("Busy time / selected range");
-                if(measured)ImGui::TextColored(accent,"%.3f%%",100*ratio(busy,a.observed_seconds));else ImGui::TextUnformatted("Unavailable");
+                if(measured)ImGui::TextColored(accent,"%.3f%%",100*ratio(busy,observed));else ImGui::TextUnformatted("Unavailable");
                 ImGui::TableNextColumn();ImGui::TextDisabled("Above threshold / observed");
-                if(measured)ImGui::Text("%.3f / %.3f s",busy,a.observed_seconds);else ImGui::TextUnformatted("No unguarded bins");
+                if(measured)ImGui::Text("%.3f / %.3f s",busy,observed);else ImGui::TextUnformatted("No unguarded observations");
                 ImGui::TableNextColumn();ImGui::TextDisabled("Observed / selected elapsed");
                 const double elapsed=a.resolved_elapsed_end-a.resolved_elapsed_start;
-                ImGui::Text("%.2f%%",100*ratio(a.observed_seconds,elapsed));ImGui::EndTable();
+                if(measured)ImGui::Text("%.2f%%",100*ratio(observed,elapsed));else ImGui::TextUnformatted("Unavailable");ImGui::EndTable();
             }
         }else wrapped("No observed time in this selection; occupancy is unavailable.",amber);
-        if(a.center_guard_bin_count){ImGui::Checkbox("Exclude receiver-center artifact region",&ui.use_center_guard);ImGui::SameLine();ImGui::TextDisabled("Excluded frequencies remain unassessed");}
+        if(a.center_guard_bin_count){ImGui::Checkbox("Exclude receiver-center artifact region",&ui.use_center_guard);ImGui::SameLine();ImGui::TextDisabled(a.mixed_acquisitions?"Guard follows each acquisition center":"Excluded frequencies remain unassessed");}
     }else if(!saved)wrapped("Live frequency measurements / not recording. Saved history is required for time and location views.",amber);
     ImGui::Spacing();
     const char* views[]={"By frequency","Over time","By location"};
@@ -489,7 +501,8 @@ void compact_analysis_tab(Engine& engine, DesktopState& ui, const Snapshot& snap
             ImGuiListClipper clip;clip.Begin(static_cast<int>(ui.analysis.observations.size()));
             while(clip.Step())for(int i=clip.DisplayStart;i<clip.DisplayEnd;++i){const auto& o=ui.analysis.observations[static_cast<size_t>(i)];
                 const auto busy=displayed_busy_ratio(ui,o);ImGui::TableNextRow();ImGui::TableNextColumn();ImGui::Text("%.1f - %.1f",o.elapsed_start,o.elapsed_end);
-                ImGui::TableNextColumn();ImGui::Text("%.3f",o.observed_seconds);ImGui::TableNextColumn();if(busy)ImGui::Text("%.3f",*busy*o.observed_seconds);else ImGui::TextUnformatted("--");
+                const double observed=guarded_view(ui)?o.outside_center_observed_seconds:o.observed_seconds;
+                ImGui::TableNextColumn();ImGui::Text("%.3f",observed);ImGui::TableNextColumn();if(busy)ImGui::Text("%.3f",guarded_view(ui)?o.outside_center_busy_seconds:o.busy_seconds);else ImGui::TextUnformatted("--");
                 ImGui::TableNextColumn();if(busy)ImGui::Text("%.3f",*busy*100);else ImGui::TextUnformatted("--");
                 ImGui::TableNextColumn();ImGui::TextUnformatted(o.receiver_position?"Available":"Missing");
             }ImGui::EndTable();
@@ -505,6 +518,22 @@ void compact_analysis_tab(Engine& engine, DesktopState& ui, const Snapshot& snap
         if(ImGui::Button("Apply time and area"))queue_analysis(ui,snapshot,false);
         ImGui::EndDisabled();
     }
+    if(snapshot.acquisitions.size()>1 && ImGui::CollapsingHeader("Receiver adjustments / acquisition intervals")) {
+        for(const auto& segment:snapshot.acquisitions) {
+            ImGui::PushID(static_cast<int>(segment.id));
+            ImGui::Text("%.1f - %.1f s | %.3f MHz | %.2f MHz span | %.1f MS/s",
+                segment.elapsed_start_seconds, segment.elapsed_end_seconds, segment.config.center_hz/1e6,
+                segment.config.survey_span_hz/1e6, segment.config.sample_rate/1e6);
+            ImGui::SameLine();
+            if(ImGui::SmallButton("Analyze interval")) {
+                ui.survey_query.elapsed_start=segment.elapsed_start_seconds;
+                ui.survey_query.elapsed_end=segment.elapsed_end_seconds;
+                ui.query_lower_mhz=ui.query_upper_mhz=0;
+                queue_analysis(ui,snapshot,true);
+            }
+            ImGui::PopID();
+        }
+    }
     if(ImGui::Button("Measurement details..."))ui.show_analysis_details=true;
     ImGui::EndChild();
 }
@@ -512,9 +541,7 @@ void compact_analysis_tab(Engine& engine, DesktopState& ui, const Snapshot& snap
 void status_strip(Engine& engine,DesktopState& ui,const Snapshot& snapshot){
     ImGui::TextColored(snapshot.running?accent:muted,"%s",snapshot.historical?"Read only":snapshot.running?"Receiving":has_session_data(snapshot)?"Stopped":"Ready");
     ImGui::SameLine(0,18);{NumericFont font(ui);ImGui::TextUnformatted(duration_text(snapshot.elapsed_seconds).c_str());}
-    ImGui::SameLine(0,18);
     ImGui::TextColored(snapshot.running&&!snapshot.recording?amber:muted,"%s",snapshot.historical?"Saved recording":snapshot.recording?"Recording to disk":snapshot.running?"Not recording":ui.save_session?"Auto-save on":"Memory only");
-    ImGui::SameLine(0,18);
     const auto gps=engine.gps_connection_status();
     const char* gps_label=snapshot.historical?"Recorded GPS":gps.state==GpsConnectionState::ValidFix?"GPS fix":gps.state==GpsConnectionState::WaitingForFix?"GPS acquiring":gps.state==GpsConnectionState::StaleFix?"GPS stale":gps.state==GpsConnectionState::ReadError?"GPS error":ui.gps_enabled?"GPS unavailable":"GPS off";
     const bool gps_attention=!snapshot.historical&&!snapshot.config.synthetic&&ui.gps_enabled&&gps.state!=GpsConnectionState::ValidFix;
@@ -522,10 +549,10 @@ void status_strip(Engine& engine,DesktopState& ui,const Snapshot& snapshot){
     if(ImGui::SmallButton(gps_label)){ui.settings_page=1;ui.show_settings=true;}
     if(gps_attention)ImGui::PopStyleColor();
     help("GPS is optional. Without a valid fix or an explicitly configured fixed position, RF measurements remain unlocated. Click to review GPS settings.");
-    ImGui::SameLine(0,18);
+    ImGui::SameLine();
     if(ImGui::SmallButton("Details"))ui.show_diagnostics=true;
-    if(snapshot.discovery.failed)wrapped("LoRa discovery stopped. Spectrum measurements have separate coverage; see Details.",red);
-    else if(snapshot.discovery.rejected_input_samples||snapshot.discovery.abandoned_input_samples||snapshot.discovery.result_overflows)
+    if(desktop_lora_enabled && snapshot.discovery.failed)wrapped("LoRa discovery stopped. Spectrum measurements have separate coverage; see Details.",red);
+    else if(desktop_lora_enabled && (snapshot.discovery.rejected_input_samples||snapshot.discovery.abandoned_input_samples||snapshot.discovery.result_overflows))
         wrapped("LoRa discovery has coverage loss. See Details; detected signals may be incomplete.",amber);
     if(snapshot.dropped_samples)wrapped("RF sample loss recorded. Check receiver details before comparing occupancy.",amber);
     if(snapshot.clipped_samples)wrapped("Receiver clipping detected. Stop and reduce gain.",amber);
@@ -545,10 +572,6 @@ void session_disk_footer(DesktopState& ui,const Snapshot& snapshot) {
         while(bytes>=1024&&unit<4){bytes/=1024;++unit;}
         char amount[64]{};std::snprintf(amount,sizeof(amount),"%.1f %s",bytes,units[unit]);text+=amount;
     }
-    const float width=ImGui::CalcTextSize(text.c_str()).x;
-    const float right=ImGui::GetWindowContentRegionMax().x-width;
-    const float used=ImGui::GetItemRectMax().x-ImGui::GetWindowPos().x;
-    if(right>used+20)ImGui::SameLine(right);
     ImGui::TextDisabled("%s",text.c_str());
     if(ImGui::IsItemHovered()) {
         ImGui::BeginTooltip();
@@ -568,16 +591,33 @@ void render(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
     const auto* viewport=ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->WorkPos);ImGui::SetNextWindowSize(viewport->WorkSize);
     ImGui::Begin("OVMeshDR++",nullptr,ImGuiWindowFlags_NoDecoration|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings|ImGuiWindowFlags_NoBringToFrontOnFocus);
-    session_toolbar(engine,ui,snapshot);ImGui::Separator();
-    if(ui.timed_run){const double remaining=std::chrono::duration<double>(ui.deadline-std::chrono::steady_clock::now()).count();ImGui::TextColored(amber,"Test auto-close in %s",duration_text(std::ceil(std::max(0.,remaining))).c_str());}
-    if(!ui.preferences_error.empty())wrapped(ui.preferences_error.c_str(),red);
-    const float footer=ui.notice.empty()&&snapshot.error.empty()&&!ui.operation_busy()?35.f:62.f;
-    const float content=std::max(250.f,ImGui::GetContentRegionAvail().y-footer*ui.ui_scale);
-    ImGui::BeginChild("receiverSidebar",{225*ui.ui_scale,content},false);
-    receiver_controls(engine,ui,snapshot);ImGui::EndChild();ImGui::SameLine();
-    ImGui::BeginChild("workspace",{0,content},false);
-    status_strip(engine,ui,snapshot);ImGui::Spacing();
+    const float content=std::max(250.f,ImGui::GetContentRegionAvail().y);
     const bool rak_view = is_concentrator(snapshot.session_id.empty() ? ui.config : snapshot.config);
+    ImGui::BeginChild("receiverSidebar",{260*ui.ui_scale,content},false);
+    session_toolbar(engine,ui,snapshot); ImGui::Separator();
+    status_strip(engine,ui,snapshot); ImGui::Separator();
+    reception_control(engine,ui,snapshot); ImGui::Separator();
+    receiver_controls(engine,ui,snapshot); ImGui::Separator();
+    const auto& active = snapshot.session_id.empty() ? ui.config : snapshot.config;
+    const bool discovery = active.discover_lora && (!snapshot.session_id.empty() || !ui.spectrum_only);
+    const bool profiles = std::any_of(active.lanes.begin(), active.lanes.end(), [](const auto& lane) { return lane.enabled; }) &&
+        (!snapshot.session_id.empty() || (!ui.spectrum_only && ui.decode_enabled));
+    const bool automatic = discovery && (!snapshot.session_id.empty() ? active.automatic_decode : ui.automatic_decode_requested());
+    wrapped(!desktop_lora_enabled ? (rak_view ? "RAK / sampled RF survey" : "Spectrum only") : rak_view ? "RAK / sampled RF + LoRa" : automatic ? "Spectrum + automatic LoRa decoding" : discovery ? "Spectrum + LoRa discovery" : profiles ? "Spectrum + profile decoding" : "Spectrum only", muted);
+    if(desktop_lora_enabled && (discovery || profiles || rak_view)) {
+        if(ImGui::SmallButton("Classification settings")){ui.settings_page=0;ui.show_settings=true;}
+    }
+    session_disk_footer(ui,snapshot);
+    if(ui.timed_run){const double remaining=std::chrono::duration<double>(ui.deadline-std::chrono::steady_clock::now()).count();ImGui::TextColored(amber,"Test ends in %s",duration_text(std::ceil(std::max(0.,remaining))).c_str());}
+    if(!ui.preferences_error.empty())wrapped(ui.preferences_error.c_str(),red);
+    if(ui.operation_busy())wrapped(ui.operation_label.c_str(),secondary);
+    else if(!snapshot.error.empty())wrapped(snapshot.error.c_str(),red);
+    else if(!ui.notice.empty()){
+        wrapped(ui.notice.c_str(),ui.notice_error?red:ui.notice_warning?amber:muted);
+        if(ImGui::IsItemClicked()&&!ui.notice_error)ui.notice.clear();
+    }
+    ImGui::EndChild();ImGui::SameLine();
+    ImGui::BeginChild("workspace",{0,content},false);
     if(ImGui::BeginTabBar("workspaces")){
         if(ImGui::BeginTabItem("Live survey",nullptr,ui.focus_live?ImGuiTabItemFlags_SetSelected:ImGuiTabItemFlags_None)){
             ui.focus_live=false;
@@ -586,13 +626,13 @@ void render(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
                 concentrator_health_view(snapshot);
                 concentrator_scan_view(ui,snapshot,std::max(215.f,available*.58f),false);
                 wrapped("Swept RSSI view / this concentrator does not provide IQ samples or an SDR waterfall.");
-            } else {NumericFont numeric(ui);spectrum_view(ui,snapshot,std::max(215.f,available*.64f));}
+            } else {NumericFont numeric(ui);spectrum_view(ui,snapshot,std::max(220.f,available-220.f*ui.ui_scale));}
             ImGui::Spacing();
             ImGui::BeginChild("liveResults",{0,0},false);
             if(ImGui::BeginTabBar("eventKinds")){
-                if (!rak_view && ImGui::BeginTabItem("Detected signals")){compact_signal_table(ui,snapshot,std::max(90.f,ImGui::GetContentRegionAvail().y-8));ImGui::EndTabItem();}
-                if (rak_view && ImGui::BeginTabItem("LoRa receptions")){packet_table(ui,snapshot,std::max(90.f,ImGui::GetContentRegionAvail().y-44));ImGui::EndTabItem();}
-                if(!rak_view && ImGui::BeginTabItem("Decoded messages")){packet_table(ui,snapshot,std::max(90.f,ImGui::GetContentRegionAvail().y-44));ImGui::EndTabItem();}
+                if (desktop_lora_enabled && !rak_view && ImGui::BeginTabItem("Detected signals")){compact_signal_table(ui,snapshot,std::max(90.f,ImGui::GetContentRegionAvail().y-8));ImGui::EndTabItem();}
+                if (desktop_lora_enabled && rak_view && ImGui::BeginTabItem("LoRa receptions")){packet_table(ui,snapshot,std::max(90.f,ImGui::GetContentRegionAvail().y-44));ImGui::EndTabItem();}
+                if(desktop_lora_enabled && !rak_view && ImGui::BeginTabItem("Packet classifications")){packet_table(ui,snapshot,std::max(90.f,ImGui::GetContentRegionAvail().y-44));ImGui::EndTabItem();}
                 if(ImGui::BeginTabItem("Energy details")){
                     if (rak_view) concentrator_scan_view(ui,snapshot,ImGui::GetContentRegionAvail().y);
                     else live_burst_table(ui,snapshot,ImGui::GetContentRegionAvail().y-50);
@@ -607,20 +647,7 @@ void render(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
         }
         ImGui::EndTabBar();
     }
-    ImGui::EndChild();ImGui::Separator();
-    if(ui.operation_busy())ImGui::TextColored(secondary,"%s",ui.operation_label.c_str());
-    else if(!snapshot.error.empty())wrapped(snapshot.error.c_str(),red);
-    else if(!ui.notice.empty()){
-        wrapped(ui.notice.c_str(),ui.notice_error?red:ui.notice_warning?amber:muted);
-        if(ImGui::IsItemClicked()&&!ui.notice_error)ui.notice.clear();
-    }
-    const auto& active = snapshot.session_id.empty() ? ui.config : snapshot.config;
-    const bool discovery = active.discover_lora && (!snapshot.session_id.empty() || !ui.spectrum_only);
-    const bool profiles = std::any_of(active.lanes.begin(), active.lanes.end(), [](const auto& lane) { return lane.enabled; }) &&
-        (!snapshot.session_id.empty() || (!ui.spectrum_only && ui.decode_enabled));
-    ImGui::TextDisabled("%s", rak_view ? "RAK / sampled RF energy + configured LoRa profiles" : discovery ? "Spectrum + LoRa / waveform discovery" : profiles ? "Spectrum + configured-profile decoding" : "Spectrum only / energy measurements");
-    if(discovery || profiles || rak_view){ImGui::SameLine(0,18);if(ImGui::SmallButton(ui.key_count(engine)?"Decoding settings":"Decoding needs setup")){ui.settings_page=0;ui.show_settings=true;}}
-    session_disk_footer(ui,snapshot);
+    ImGui::EndChild();
     if(ui.new_requested||ui.close_requested||!ui.pending_open_path.empty())ImGui::OpenPopup("Unrecorded session");
     if(ImGui::BeginPopupModal("Unrecorded session",nullptr,ImGuiWindowFlags_AlwaysAutoResize)){
         ImGui::TextUnformatted("This session was not recorded. Its measurements will be lost.");
@@ -631,7 +658,7 @@ void render(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
             else request_new_session(engine,ui,true);
             ui.new_requested=false;ImGui::CloseCurrentPopup();
         }
-        ImGui::SameLine();if(ImGui::Button("Keep session")){ui.new_requested=false;ui.close_requested=false;ui.restart_after_new=false;ui.pending_open_path.clear();ImGui::CloseCurrentPopup();}
+        ImGui::SameLine();if(ImGui::Button("Keep session")){ui.new_requested=false;ui.close_requested=false;ui.pending_open_path.clear();ImGui::CloseCurrentPopup();}
         ImGui::EndPopup();
     }
     ImGui::End();
@@ -641,10 +668,14 @@ void render(Engine& engine, DesktopState& ui, const Snapshot& snapshot) {
             if (rak_view) {
                 concentrator_health_view(snapshot);
                 wrapped("Scans record sampled RSSI histograms. Host transaction durations bound operations and do not establish exact RF dwell or continuous measurement duty.");
-                wrapped("Packet frequency/BW/SF are configured receive settings. Missing receptions can reflect profile mismatch, interference, sensitivity or receiver loss.");
+                if (desktop_lora_enabled) wrapped("Packet frequency/BW/SF are configured receive settings. Missing receptions can reflect profile mismatch, interference, sensitivity or receiver loss.");
             } else {
-                health_strip(snapshot);lane_health_table(snapshot);receiver_diagnostics(snapshot,true);
-                waveform_panel(snapshot,160,ui.config.discover_lora);
+                health_strip(snapshot);
+                receiver_diagnostics(snapshot,true);
+                if (desktop_lora_enabled) {
+                    lane_health_table(snapshot);
+                    waveform_panel(snapshot,160,ui.config.discover_lora);
+                }
             }
             ImGui::TextWrapped("Recording file: %s",snapshot.config.session_path.empty()?"Not recording":snapshot.config.session_path.c_str());
             ImGui::TextWrapped("GPS: %s",snapshot.gps_status.c_str());
