@@ -3,7 +3,7 @@
 # Disposable, non-privileged container only. No devices or network required.
 set -eu
 arch=$(dpkg --print-architecture)
-dpkg -i "/packages/ovmeshdrpp_0.4.1-1_${arch}.deb"
+dpkg -i "/packages/ovmeshdrpp_0.4.2-1_${arch}.deb"
 command -v xdg-open
 dpkg-query -W ovmeshdrpp
 dpkg --verify ovmeshdrpp

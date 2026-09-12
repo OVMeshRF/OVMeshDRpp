@@ -1,6 +1,6 @@
 # Local build and packaging
 
-Experimental 0.4.1 packages are distributed through [GitHub Releases](https://github.com/OVMeshRF/OVMeshDRpp/releases), alongside checksums and matching source materials. The application runs locally without a cloud deployment or system service. Build artifacts remain under ignored `build/`; operator recordings use the private application-data locations below.
+Experimental 0.4.2 packages are distributed through [GitHub Releases](https://github.com/OVMeshRF/OVMeshDRpp/releases), alongside checksums and matching source materials. The application runs locally without a cloud deployment or system service. Build artifacts remain under ignored `build/`; operator recordings use the private application-data locations below.
 
 ## Build
 
@@ -58,7 +58,7 @@ The desktop disables and hides LoRa waveform discovery, automatic/manual packet 
 
 Existing decoder source and explicit CLI/backend diagnostic flags remain solely for internal development and regression work. They are not an alternate supported user feature, and desktop launch flags cannot enable the hidden paths. Their earlier synthetic results do not establish reliable live decoding.
 
-New SDR surveys default to Compact schema 6; Detailed schema 5 preserves finer power history. Both retain fine joint activity, receiver settings, acquisition gaps and optional GPS associations. RAK schema 7 retains sampled RSSI histograms with its separate observation semantics. Existing survey files remain unchanged, including earlier diagnostic metadata. Spectrum event counts are not packet counts; energy envelopes do not identify LoRa bandwidth/SF. See [validation scope](../engineering/quality-and-validation.md) for current limits. Desktop scope/defaults and visibility are covered by the 0.4.1 UI regression checks; field reliability remains a separate validation task.
+New SDR surveys default to Compact schema 6; Detailed schema 5 preserves finer power history. Both retain fine joint activity, receiver settings, acquisition gaps and optional GPS associations. RAK schema 7 retains sampled RSSI histograms with its separate observation semantics. Existing survey files remain unchanged, including earlier diagnostic metadata. Spectrum event counts are not packet counts; energy envelopes do not identify LoRa bandwidth/SF. See [validation scope](../engineering/quality-and-validation.md) for current limits. Desktop scope/defaults and visibility are covered by the 0.4.2 UI regression checks; field reliability remains a separate validation task.
 
 ### Desktop preferences and default survey storage
 
@@ -118,7 +118,7 @@ The macOS full run passed 54/55 tests; the remaining UI test contained expectati
 ### Install a download
 
 - **Mac:** Open the `.dmg`, drag the app to Applications, and launch it. Keep only one application connected to an SDR at a time. If access is denied, quit any other app using that receiver and retry; do not run the app as administrator.
-- **Ubuntu 24.04:** Download the `.deb` for your architecture (`amd64` for Intel/AMD x64; `arm64` for ARM64), then run `sudo apt install ./ovmeshdrpp_0.4.1-1_amd64.deb`, substituting the ARM64 filename when appropriate. Launch OVMeshDRpp from the applications menu or run `OVMeshDRpp`. Follow the [Linux guide](linux-build.md) for USB permissions; do not run the desktop as root.
+- **Ubuntu 24.04:** Download the `.deb` for your architecture (`amd64` for Intel/AMD x64; `arm64` for ARM64), then run `sudo apt install ./ovmeshdrpp_0.4.2-1_amd64.deb`, substituting the ARM64 filename when appropriate. Launch OVMeshDRpp from the applications menu or run `OVMeshDRpp`. Follow the [Linux guide](linux-build.md) for USB permissions; do not run the desktop as root.
 - Verify downloads against the release's `SHA256SUMS`. Preserve the matching source companion when redistributing binaries. A default browser is needed for HTML report Preview; Linux uses `xdg-utils`.
 
 Keep existing recordings. Ordinary startup opens a fresh workspace; use Open to load saved history. Older versions may not understand recordings or preferences written by newer versions.

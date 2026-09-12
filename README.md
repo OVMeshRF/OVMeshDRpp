@@ -6,7 +6,7 @@
 
 OVMeshDR++ is a local, receive-only spectrum survey application with an SDR++-inspired desktop interface. Observe a configurable frequency range, save measurements with optional receiver GPS, and explore activity by frequency, time and location. The application runs locally; it has no cloud service, automatic uploader or online map.
 
-**Version 0.4.1 is an early experimental release with a spectrum-only desktop scope.** LoRa discovery, modem/preset identification, packet decoding and classification controls are disabled and hidden, including when older preferences requested them. The experimental code remains for future development; it is not a current desktop capability. Platform checks and remaining acceptance limits are documented with the packages. See [capabilities and limitations](docs/engineering/implementation-status.md).
+**Version 0.4.2 is an early experimental release with a spectrum-only desktop scope.** LoRa discovery, modem/preset identification, packet decoding and classification controls are disabled and hidden, including when older preferences requested them. The experimental code remains for future development; it is not a current desktop capability. Platform checks and remaining acceptance limits are documented with the packages. See [capabilities and limitations](docs/engineering/implementation-status.md).
 
 ## What you can do
 
@@ -40,7 +40,7 @@ Start with the [build instructions](docs/operations/deployment.md) and [user gui
 
 The core uses C++20/CMake, with a Dear ImGui/GLFW/OpenGL desktop, SQLite, bounded Nanopb decoding, OpenSSL libcrypto, and direct HackRF or RTL-SDR/libusb reception. RAK5146 uses a minimal pinned Semtech HAL subset in a separate local receive-only process. Dependencies are pinned and reviewed; normal builds do not download them. The RAK worker requires macOS or Linux with safe child-process descriptor closure (glibc 2.34+); it is disabled on Windows.
 
-**Downloads:** Get the experimental **0.4.1** packages from [GitHub Releases](https://github.com/OVMeshRF/OVMeshDRpp/releases): Apple Silicon macOS and Ubuntu 24.04 x64/ARM64. The Mac app uses Developer ID signing and Apple notarization; check the release notes for the final asset verification and checksums. Windows downloads are still in development. See [installation and platform limits](docs/operations/deployment.md#platform-and-distribution-limits).
+**Downloads:** Get the experimental **0.4.2** packages from [GitHub Releases](https://github.com/OVMeshRF/OVMeshDRpp/releases): Apple Silicon macOS and Ubuntu 24.04 x64/ARM64. The Mac app uses Developer ID signing and Apple notarization; check the release notes for the final asset verification and checksums. Windows downloads are still in development. See [installation and platform limits](docs/operations/deployment.md#platform-and-distribution-limits).
 
 HackRF and RTL-SDR builds use repository-local **shared libusb 1.0.30**; HackRF also uses **static libhackrf 2024.02.1** from the same prefix. On native macOS/Linux, explicitly prepare them with `python3 tools/bootstrap_usb.py --download`, or provide both pinned archives for an offline build. CMake rejects missing or mixed USB dependencies instead of falling back to host libraries. See [build setup](docs/operations/deployment.md#build) and [USB intake and validation limits](docs/security/usb-intake.md). This dependency update does not qualify Windows packaging or new hardware configurations.
 

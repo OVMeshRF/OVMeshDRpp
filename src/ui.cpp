@@ -2880,7 +2880,7 @@ void report_export_panel(Engine& engine, DesktopState& ui, const Snapshot& snaps
             catch (const std::exception& e) { ui.feedback(false, e.what()); }
         }
         ImGui::EndDisabled();
-        wrapped("Preview opens a local HTML copy using these selection and privacy options. No save location is needed. Preview copies remain in the app's default Surveys folder; delete them there when no longer needed.");
+        wrapped("Preview opens a local HTML copy using these selection and privacy options. No save location is needed. Use Export to PDF at the top of the preview to choose your own save folder. The PDF expands every report section. The local HTML preview remains in the Surveys folder until deleted.");
         if (!preview_blocked.empty()) wrapped(preview_blocked.c_str(), amber);
     }
     const auto blocked = report_export_block_reason(ui, snapshot);
