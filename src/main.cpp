@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <cmath>
 #include <charconv>
@@ -65,6 +66,18 @@ template<size_t N> std::array<double, N> number_list(const std::string& text, co
     }
     return values;
 }
+std::string terminal_text(std::string_view text) {
+    // Byte escapes also make C1/Unicode formatting controls inert. Preserve the
+    // original saved data; diagnostics remain unambiguous printable ASCII.
+    constexpr char hex[] = "0123456789abcdef";
+    std::string output;
+    for (const unsigned char c : text) {
+        if (c == '\\') output += "\\\\";
+        else if (c >= 32 && c < 127) output += static_cast<char>(c);
+        else { output += "\\x"; output += hex[c >> 4]; output += hex[c & 15]; }
+    }
+    return output;
+}
 void print_analysis(const ovmesh::SurveyQuery& query, const ovmesh::SurveyAnalysis& result) {
     std::cout << std::fixed << std::setprecision(6);
     std::cout << "Spectrum survey analysis (saved measurements; no radio access)\n"
@@ -108,7 +121,7 @@ void print_analysis(const ovmesh::SurveyQuery& query, const ovmesh::SurveyAnalys
         std::cout << "gap_start_s=" << gap.elapsed_start_seconds << " gap_end_s=" << gap.elapsed_end_seconds << " missing_samples=";
         if (gap.reason == "source_stall" && gap.missing_samples == 0) std::cout << "unknown";
         else std::cout << gap.missing_samples;
-        std::cout << " reason=" << gap.reason << '\n';
+        std::cout << " reason=" << terminal_text(gap.reason) << '\n';
     }
     std::cout << "candidate_burst_method=1 seed_ffts=2 tile_ms=approximately20 quiet_gap_ms=40 frequency_gap_bins=2 segment_s=10\n";
     for (const auto& burst : result.bursts) std::cout << "candidate_burst=" << burst.id
@@ -232,13 +245,15 @@ void usage(){std::cout<<"OVMeshDRpp "<<ovmesh::Engine::version()<<" — local re
     "      (visible desktop reception; stops and closes after the requested duration)\n"
     "      Use --until-stopped instead of --seconds to keep the window open.\n"
     "      Stop reception (or SIGINT on macOS/Linux) stops acquisition; results remain visible.\n"
-    "      [--session NEW.sqlite] retains authorized content and survey metadata.\n"
+    "      [--session NEW.sqlite] retains RF measurements and classification evidence.\n"
     "  --prepare-desktop-hackrf --seconds 180\n"
     "      (passive setup/key entry; receiver and timer start only after UI consent)\n"
     "      [--center-hz N] [--sample-rate N] [--span-hz N]\n"
     "      [--tuning-offset-hz N] (signed Hz, -100000..100000; added to hardware tune)\n"
     "      [--spectrum-only] (RF measurements only; protocol decoding paused)\n"
-    "      [--discover-lora] (experimental blind preamble BW/SF observations; no payload decode)\n"
+    "      [--discover-lora] (experimental blind preamble BW/SF observations)\n"
+    "      [--automatic-decode] (enables discovery and native PHY/key-scoped classification across the usable range)\n"
+    "      Automatic mode has no fixed lanes unless --lane or --lane-hz is supplied; incompatible with --spectrum-only or RAK.\n"
     "      [--detailed-recording] (20 ms power history; default compact ~1 s power, full activity/GPS)\n"
     "      [--antenna-description TEXT] [--receiver-description TEXT] [--survey-notes TEXT]\n"
     "      [--gps-device PATH --confirm-gps-access] [--gps-baud 9600]\n"
@@ -253,7 +268,7 @@ void usage(){std::cout<<"OVMeshDRpp "<<ovmesh::Engine::version()<<" — local re
     "      [--channel-key-stdin LANE,CHANNEL] (one explicit hardware-mode key; lane 1..4)\n"
     "      [--survey-key-stdin SLOT,LABEL] (explicit key-only record; slot 1..16)\n"
     "      Choose one stdin key option. Keys apply across receiver profiles.\n"
-    "      Automatic payload decoder dispatch is not implemented yet.\n"
+    "      Use --survey-key-stdin for automatic mode without fixed lanes; keys remain explicit.\n"
     "      Key input requires redirected stdin: one line, at most 64 characters.\n"
     "      Receiver options also apply to --headless-demo. Amplifier defaults off.\n"
     "  --view-survey ABS_PATH      open saved analysis in desktop; no device access\n"
@@ -261,8 +276,8 @@ void usage(){std::cout<<"OVMeshDRpp "<<ovmesh::Engine::version()<<" — local re
     "      [--time-range START_SECONDS,END_SECONDS] [--bounds SOUTH,NORTH,WEST,EAST]\n"
     "      Zero frequency bounds select the full range; end time zero selects all remaining time.\n"
     "      Prints saved spectrum coverage, occupancy, energy events and gaps. No IQ replay.\n"
-    "  --export EXISTING.sqlite --output NEW.csv [--content] [--positions] [--provenance]\n"
-    "      [--report frequency|time|geographic|waveforms|gps|content] (default frequency CSV)\n"
+    "  --export EXISTING.sqlite --output NEW.csv [--positions] [--provenance]\n"
+    "      [--report frequency|time|geographic|waveforms|gps] (default frequency CSV)\n"
     "      [--frequency-range LOW_HZ,HIGH_HZ] [--time-range START,END] [--bounds SOUTH,NORTH,WEST,EAST]\n"
     "      [--bucket-seconds 60] [--grid-metres 100] [--precision 0..7]\n"
     "      --detailed-archive instead exports the whole retained session as CSV/GeoJSON; no filters.\n"
@@ -291,7 +306,7 @@ int main(int argc,char** argv){
         for(int n=1;n<argc;++n){std::string arg=argv[n];auto value=[&](){if(++n>=argc)throw std::runtime_error("Missing value for "+arg);return std::string(argv[n]);};
             if(arg.starts_with("--rak-")){rak_options=true;receiver_options_given=true;}
             if(arg=="--output"||arg=="--content"||arg=="--positions"||arg=="--provenance"||arg=="--precision"||arg=="--report"||arg=="--detailed-archive"||arg=="--bucket-seconds"||arg=="--grid-metres")export_options_given=true;
-            if(arg=="--session"||arg=="--spectrum-only"||arg=="--discover-lora"||arg=="--antenna-description"||arg=="--receiver-description"||
+            if(arg=="--session"||arg=="--spectrum-only"||arg=="--discover-lora"||arg=="--automatic-decode"||arg=="--antenna-description"||arg=="--receiver-description"||
                arg=="--survey-notes"||arg=="--center-hz"||arg=="--tuning-offset-hz"||arg=="--sample-rate"||arg=="--span-hz"||
                arg=="--lane"||arg=="--lane-hz"||arg=="--activity-threshold-dbfs"||arg=="--lna-gain"||arg=="--vga-gain"||arg=="--rf-amplifier"||arg=="--detailed-recording"||arg=="--rtl-gain-tenths-db"||arg=="--rtl-auto-gain"||arg=="--device-serial")receiver_options_given=true;
             if(arg=="--help"||arg=="-h"){usage();return 0;}
@@ -300,7 +315,7 @@ int main(int argc,char** argv){
                 if(argc!=2)throw std::runtime_error("Use --list-concentrators alone; it reads OS metadata only");
                 const auto devices=ovmesh::discover_concentrator_devices();
                 if(!devices.error.empty())throw std::runtime_error(devices.error);
-                for(const auto& device:devices.devices)std::cout<<device.path<<" | "<<device.label<<'\n';
+                for(const auto& device:devices.devices)std::cout<<terminal_text(device.path)<<" | "<<terminal_text(device.label)<<'\n';
                 if(devices.devices.empty())std::cout<<"No matching concentrator USB metadata found\n";
                 return 0;
             }
@@ -347,6 +362,7 @@ int main(int argc,char** argv){
             }
             else if(arg=="--spectrum-only")spectrum_only=true;
             else if(arg=="--discover-lora")config.discover_lora=true;
+            else if(arg=="--automatic-decode"){config.discover_lora=true;config.automatic_decode=true;}
             else if(arg=="--detailed-recording")config.compact_recording=false;
             else if(arg=="--antenna-description")config.antenna_description=value();
             else if(arg=="--receiver-description")config.receiver_description=value();
@@ -406,13 +422,13 @@ int main(int argc,char** argv){
                 else if(kind=="geographic")report_options.kind=ovmesh::ReportKind::GeographicSummary;
                 else if(kind=="waveforms")report_options.kind=ovmesh::ReportKind::Waveforms;
                 else if(kind=="gps")report_options.kind=ovmesh::ReportKind::ReceiverTrack;
-                else if(kind=="content")report_options.kind=ovmesh::ReportKind::AuthorizedContent;
+                else if(kind=="content")throw std::runtime_error("Message-content reports have been removed; choose an RF measurement report");
                 else throw std::runtime_error("Unknown report type");
             }
             else if(arg=="--bucket-seconds"){report_settings=true;report_bucket_seconds=duration(value());}
             else if(arg=="--grid-metres"){report_settings=true;report_options.geographic_cell_m=duration(value());}
             else if(arg=="--output")output=value();
-            else if(arg=="--content")export_options.include_content=true;
+            else if(arg=="--content")throw std::runtime_error("--content has been removed; message contents are not interpreted or exported");
             else if(arg=="--provenance")export_options.include_provenance=true;
             else if(arg=="--positions")export_options.include_receiver_positions=true;
             else if(arg=="--precision")export_options.coordinate_decimals=integer<unsigned>(value());
@@ -427,14 +443,14 @@ int main(int argc,char** argv){
         if(!config.synthetic && config.hardware_receiver==ovmesh::HardwareReceiver::Rak5146) {
             if(!explicit_center)config.center_hz=915000000;
             if(!explicit_span)config.survey_span_hz=26000000;
-            if(explicit_rate||hackrf_options||explicit_lanes||legacy_lane||config.discover_lora)
-                throw std::runtime_error("RAK uses sampled RSSI scans and --rak-profile; SDR sample-rate, gain and waveform-discovery options do not apply");
+            if(explicit_rate||hackrf_options||explicit_lanes||legacy_lane||config.discover_lora||config.automatic_decode)
+                throw std::runtime_error("RAK uses sampled RSSI scans and --rak-profile; SDR sample-rate, gain, waveform-discovery and automatic-decode options do not apply");
             config.lanes.clear();config.discover_lora=false;
         } else if(rak_options)throw std::runtime_error("RAK options require a RAK5146 receiver mode");
         if(!settings_directory.empty() && (headless||hardware||demo||!view_input.empty()||!analysis_input.empty()||!input.empty()||explicit_smoke))
             throw std::runtime_error("--settings-directory is for ordinary desktop startup only; tests and explicit modes use isolated settings");
         if(!view_input.empty() && (explicit_seconds||until_stopped||receiver_options_given||stdin_key||gps_consent||
-           explicit_gps_baud||!gps_device.empty()||consent||analysis_filter||export_options_given||!output.empty()||export_options.include_content||
+           explicit_gps_baud||!gps_device.empty()||consent||analysis_filter||export_options_given||!output.empty()||
            export_options.include_receiver_positions||export_options.include_provenance))
             throw std::runtime_error("--view-survey is passive; do not combine receiver, key, GPS, duration, analysis-filter or export options");
         if(until_stopped && (explicit_seconds || explicit_smoke || headless || (!hardware&&!demo)))
@@ -454,12 +470,14 @@ int main(int argc,char** argv){
            analysis_query.south>analysis_query.north || analysis_query.west < -180 || analysis_query.east > 180 ||
            analysis_query.west>analysis_query.east))throw std::runtime_error("Invalid --bounds geographic rectangle");
         if(spectrum_only) {
+            if(config.automatic_decode)throw std::runtime_error("--spectrum-only cannot be combined with --automatic-decode");
             if(explicit_lanes||legacy_lane||stdin_key)throw std::runtime_error("--spectrum-only cannot be combined with decoder lanes or keys");
             if(!input.empty()||!analysis_input.empty())throw std::runtime_error("--spectrum-only applies to a new reception session");
             config.lanes.clear();
             config.concentrators.decode_enabled=false;
             for(auto& board:config.concentrators.boards)board.packets_enabled=false;
         }
+        if(config.automatic_decode&&!explicit_lanes&&!legacy_lane)config.lanes.clear();
         if(gps_device.empty()&&(gps_consent||explicit_gps_baud))throw std::runtime_error("GPS options require --gps-device");
         if(!gps_device.empty()&&(!gps_consent||!(headless||hardware||demo)))
             throw std::runtime_error("GPS access requires an explicit reception mode and --confirm-gps-access; no GPS device was opened");
@@ -529,7 +547,10 @@ int main(int argc,char** argv){
                       << " rtl_tuner_gain_tenths_db=" << applied.rtl_gain_tenths_db
                       << " rtl_auto_gain=" << config.rtl_auto_gain
                       << " activity_threshold_dbfs=" << config.activity_threshold_dbfs << '\n';
-            std::cout << "waveform_discovery=" << config.discover_lora << " automatic_decoder_dispatch=0 decoding_scope=" << (rak?"configured_hardware_profiles":config.lanes.empty()?"paused_spectrum_only":"selected_profiles")
+            const auto decoding_scope=rak?"configured_hardware_profiles":applied.automatic_decode?
+                (applied.lanes.empty()?"automatic_survey_range":"automatic_survey_range_and_selected_profiles"):
+                !applied.lanes.empty()?"selected_profiles":applied.discover_lora?"waveform_observations_only":"paused_spectrum_only";
+            std::cout << "waveform_discovery=" << applied.discover_lora << " automatic_decoder_dispatch=" << applied.automatic_decode << " decoding_scope=" << decoding_scope
                       << " configured_key_records=" << engine.configured_key_count() << '\n';
             for(size_t lane=0;lane<config.lanes.size();++lane){const auto& profile=config.lanes[lane];if(!profile.enabled)continue;
                 std::cout << "lane=" << lane << " frequency_hz=" << profile.frequency_hz
@@ -539,16 +560,16 @@ int main(int argc,char** argv){
             auto start=std::chrono::steady_clock::now();unsigned tick=0;
             while(!interrupted&&std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count()<seconds){std::this_thread::sleep_for(std::chrono::milliseconds(100));auto state=engine.snapshot();if(!state.error.empty()){engine.stop();throw std::runtime_error(state.error);}if(++tick%10==0) {
                 if(rak) {
-                    std::cout<<"elapsed="<<state.elapsed_seconds<<" scans="<<state.concentrator_scans<<" rssi_samples="<<state.concentrator_rssi_samples<<" receptions="<<state.total_receptions<<" authorized="<<state.authorized_messages<<'\n';
+                    std::cout<<"elapsed="<<state.elapsed_seconds<<" scans="<<state.concentrator_scans<<" rssi_samples="<<state.concentrator_rssi_samples<<" receptions="<<state.total_receptions<<" classified_receptions="<<state.classified_receptions<<'\n';
                     for(size_t i=0;i<state.concentrator_health.size();++i){const auto& h=state.concentrator_health[i];std::cout<<"board="<<i+1<<" ready="<<h.ready<<" scans="<<h.scans<<" receptions="<<h.receptions<<" bad_crc="<<h.crc_failures<<'\n';}
-                } else std::cout<<"elapsed="<<state.elapsed_seconds<<" input_s="<<state.input_seconds<<" measurement_s="<<state.measurement_seconds<<" energy_events="<<state.spectrum_events<<" receptions="<<state.total_receptions<<" clipped_samples="<<state.clipped_samples<<" authorized="<<state.authorized_messages<<" dropped_samples="<<state.dropped_samples
+                } else std::cout<<"elapsed="<<state.elapsed_seconds<<" input_s="<<state.input_seconds<<" measurement_s="<<state.measurement_seconds<<" energy_events="<<state.spectrum_events<<" receptions="<<state.total_receptions<<" clipped_samples="<<state.clipped_samples<<" classified_receptions="<<state.classified_receptions<<" dropped_samples="<<state.dropped_samples
                     <<" waveform_observations="<<state.discovery.observations<<" discovery_rejected_samples="<<state.discovery.rejected_input_samples<<'\n';
                 for(size_t lane=0;lane<state.lane_health.size();++lane){const auto& health=state.lane_health[lane];
                     std::cout<<"lane="<<lane<<" processed_s="<<health.processed_seconds;
                     print_phy_counts(health.phy);std::cout<<'\n';}
                 std::cout<<std::flush;
             }}
-            engine.stop();auto state=engine.snapshot();std::cout<<"Stopped. "<<state.total_receptions<<" receptions, "<<state.authorized_messages<<" authorized decodes";
+            engine.stop();auto state=engine.snapshot();std::cout<<"Stopped. "<<state.total_receptions<<" receptions, "<<state.classified_receptions<<" likely Meshtastic classifications";
             if(!rak)std::cout<<", "<<state.dropped_samples<<" application-dropped samples";
             std::cout<<".\n";
             if(rak)std::cout<<"Final scans="<<state.concentrator_scans<<" rssi_samples="<<state.concentrator_rssi_samples<<" saved="<<!state.config.session_path.empty()<<'\n';
@@ -587,5 +608,5 @@ int main(int argc,char** argv){
         if(hardware)throw std::runtime_error("Desktop reception requires the desktop executable; no device was opened");
         (void)demo;usage();return 0;
 #endif
-    }catch(const std::exception& e){std::cerr<<"OVMeshDRpp: "<<e.what()<<'\n';return 1;}
+    }catch(const std::exception& e){std::cerr<<"OVMeshDRpp: "<<terminal_text(e.what())<<'\n';return 1;}
 }

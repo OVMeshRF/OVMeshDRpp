@@ -18,7 +18,7 @@ namespace {
 using C = std::complex<float>;
 using D = std::complex<double>;
 using Screen = ovmesh::DiscoveryChirpScreen;
-constexpr std::array<std::uint32_t, 3> widths{125000, 250000, 500000};
+constexpr std::array<std::uint32_t, 5> widths{15625, 62500, 125000, 250000, 500000};
 constexpr double pi = std::numbers::pi;
 void require(bool okay, const char* text) { if (!okay) throw std::runtime_error(text); }
 
@@ -31,7 +31,7 @@ struct Hypothesis {
 const std::vector<Hypothesis>& hypotheses() {
     static const auto list = [] {
         std::vector<Hypothesis> result;
-        for (auto bw : widths) for (unsigned sf = 7; sf <= 12; ++sf) {
+        for (auto bw : widths) for (unsigned sf = 7; sf <= (bw == 15625u ? 10u : 12u); ++sf) {
             Hypothesis h{bw, sf, (2000000 / bw) * (std::size_t{1} << sf), {}};
             for (std::size_t lag = 0; lag < h.references.size(); ++lag) {
                 auto& row = h.references[lag]; row.resize((8u << lag) * 2000000 / bw);
@@ -96,8 +96,7 @@ struct Comparison {
     std::uint64_t statistics = 0, decisions = 0, differing_statistics = 0, differing_decisions = 0;
     std::uint64_t recomputations = 0;
 };
-void compare(std::span<const C> input, std::uint64_t origin, Comparison& comparison) {
-    Screen screen;
+void compare(std::span<const C> input, std::uint64_t origin, Comparison& comparison, Screen& screen) {
     for (std::size_t i = 0; i < input.size(); ++i) {
         screen.push(input[i], origin + i);
         const auto end = origin + i + 1;
@@ -128,6 +127,47 @@ void compare(std::span<const C> input, std::uint64_t origin, Comparison& compari
         }
     }
     comparison.recomputations += screen.recomputation_count();
+}
+
+void compact_history_boundaries(Comparison& comparison) {
+    Screen screen;
+    const auto input = fixture(16385, 0);
+    // A reused physical ring must match a new direct window after every reset,
+    // including intervals with zero stored samples and either partial endpoint.
+    for (std::uint64_t residue = 0; residue < 4; ++residue) {
+        for (std::uint64_t length = 0; length < 8; ++length) {
+            screen.reset();
+            for (std::uint64_t i = 0; i < length; ++i)
+                screen.push({.625f, -.375f}, residue + i);
+            screen.reset();
+            compare(input, 1024 + residue, comparison, screen);
+        }
+    }
+    screen.reset();
+    const auto origin = std::numeric_limits<std::uint64_t>::max() - input.size();
+    compare(input, origin, comparison, screen);
+    // end_ is UINT64_MAX here; ceil(end_/4) must not wrap while wiping.
+    screen.reset();
+    compare(input, 3, comparison, screen);
+
+    // A discontinuity and invalid values on discarded sample phases must still
+    // clear all previous IQ/statistics; storage compaction never skips validation.
+    for (std::uint64_t residue = 1; residue < 4; ++residue) {
+        bool rejected = false;
+        try { screen.push({}, 32 + residue); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        require(rejected, "Nonselected-phase gap was accepted");
+        compare(input, 2048 + residue, comparison, screen);
+        screen.reset();
+        screen.push({1, 0}, 0);
+        for (std::uint64_t i = 1; i < residue; ++i) screen.push({}, i);
+        rejected = false;
+        try { screen.push({0, std::numeric_limits<float>::infinity()}, residue); }
+        catch (const std::invalid_argument&) { rejected = true; }
+        require(rejected && !screen.statistic(500000, 7, 0).available,
+                "Nonselected non-finite input was accepted or retained state");
+        compare(input, 4096 + residue, comparison, screen);
+    }
 }
 
 void invalid_and_readiness() {
@@ -197,13 +237,18 @@ void benchmark(unsigned kind) {
 int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--benchmark") {
-            std::cout << "Rolling includes input handling; rescans use already retained samples. Both check all 18 hypotheses at N/4 cadence and short-circuit passing lags.\n";
+            std::cout << "Rolling includes input handling; rescans use already retained samples. Both check all 28 hypotheses at N/4 cadence and short-circuit passing lags.\n";
             for (unsigned kind = 0; kind < 4; ++kind) benchmark(kind);
             return 0;
         }
         require(argc == 1, "Usage: test_discovery_chirp_screen [--benchmark]");
         Comparison comparison;
-        for (unsigned kind = 0; kind < 4; ++kind) compare(fixture(600001, kind), kind == 0 ? 0 : 917, comparison);
+        Screen screen;
+        for (unsigned kind = 0; kind < 4; ++kind) {
+            screen.reset();
+            compare(fixture(600001, kind), kind == 0 ? 0 : 916 + kind, comparison, screen);
+        }
+        compact_history_boundaries(comparison);
         invalid_and_readiness();
         std::cout << "statistics=" << comparison.statistics << " eligible_decisions=" << comparison.decisions
                   << " per_lag_decision_differences=" << comparison.differing_statistics

@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <limits>
 #include <mutex>
+#include <map>
 #include <numbers>
 #include <stdexcept>
 #include <thread>
@@ -56,6 +57,17 @@ uint64_t tuned_center_hz(const ReceiverConfig& config) {
        (config.center_hz<24000000||config.center_hz>1766000000ULL||command<24000000||command>1766000000LL))
         throw std::runtime_error("RTL-SDR center and corrected tuner frequency must be between 24 and 1766 MHz; tuning also depends on the attached tuner");
     return static_cast<uint64_t>(command);
+}
+const ReceiverConfig& acquisition_config_at(const std::vector<AcquisitionSegment>& segments,
+    const ReceiverConfig& legacy,double elapsed) {
+    if(segments.empty())return legacy;
+    if(!std::isfinite(elapsed)||elapsed<0)throw std::runtime_error("Invalid acquisition time");
+    const auto next=std::upper_bound(segments.begin(),segments.end(),elapsed+1e-8,
+        [](double time,const AcquisitionSegment& segment){return time<segment.elapsed_start_seconds;});
+    if(next==segments.begin())throw std::runtime_error("Measurement precedes its acquisition");
+    const auto& selected=*std::prev(next);
+    if(elapsed>selected.elapsed_end_seconds+1e-8)throw std::runtime_error("Measurement falls outside its acquisition interval");
+    return selected.config;
 }
 namespace {
 constexpr size_t block_bytes=262144, pool_blocks=32;
@@ -96,9 +108,10 @@ void validate(const ReceiverConfig& c) {
     if(!std::isfinite(c.activity_threshold_dbfs)||c.activity_threshold_dbfs>0||c.activity_threshold_dbfs< -140)throw std::runtime_error("Activity threshold must be -140 through 0 dBFS/bin");
     if(c.antenna_description.size()>240||c.receiver_description.size()>240||c.survey_notes.size()>2000)
         throw std::runtime_error("Survey provenance text is too long");
+    if(c.automatic_decode&&!c.discover_lora)throw std::runtime_error("Automatic decoding requires waveform discovery");
     if(c.lanes.size()>4)throw std::runtime_error("This build permits at most four explicitly configured decoder lanes");
     for(const auto& l:c.lanes){if(l.label.size()>80||l.channel_name.size()>80)throw std::runtime_error("Profile labels are too long");if(!l.enabled)continue;
-        if(l.bandwidth_hz!=125000&&l.bandwidth_hz!=250000&&l.bandwidth_hz!=500000)throw std::runtime_error("Supported LoRa bandwidths are 125, 250 and 500 kHz");
+        if(!supported_lora_bandwidth(l.bandwidth_hz))throw std::runtime_error("Supported LoRa bandwidths are 15.625, 62.5, 125, 250 and 500 kHz");
         if(l.spreading_factor<7||l.spreading_factor>12||l.coding_rate<5||l.coding_rate>8)throw std::runtime_error("Supported LoRa profiles use SF7–12 and CR4/5–4/8");
         if(c.sample_rate%(l.bandwidth_hz*4)!=0)throw std::runtime_error("Sample rate must support integer decoder decimation; 500 kHz legacy profiles need RTL-SDR at 2 MS/s");
         if(l.frequency_hz>6000000000ULL)throw std::runtime_error("Decoder frequency exceeds receiver range");
@@ -114,6 +127,7 @@ struct Engine::Impl {
     std::mutex lifecycle;
     Snapshot view;
     std::array<protocol::Profile,protocol::max_keyring_profiles> profiles;
+    bool public_key_enabled=false;
     std::vector<RawBlock> pool;
     std::atomic<uint64_t> head{0},tail{0},next_sample{0},dropped{0};
     std::atomic<double> last_input_arrival{0};
@@ -135,7 +149,12 @@ struct Engine::Impl {
     SerialGps gps;
     std::optional<PositionFix> current_fix;
     std::vector<PositionFix> fix_history;
-    double started=0,started_utc=0;
+    double started=0,started_utc=0,run_elapsed_start=0,paused_at=0;
+    uint64_t sample_base=0,window_id=0,gap_id=0,discovery_gap_id=0,waveform_id_base=0;
+    uint64_t run_drop_base=0;
+    // Keep only aggregates between runs. Input buffers and DSP state are still
+    // cleared on every Stop; the store connection remains exclusive to workers.
+    double last_measurement_elapsed=0;
 #ifdef OVMESH_HAVE_HACKRF
     hackrf_device* device=nullptr;
     bool hackrf_initialized=false;
@@ -353,21 +372,30 @@ struct Engine::Impl {
             std::vector<Complex> samples(block_bytes/2);
             SpectrumProcessor spectrum(c.center_hz,c.sample_rate,c.survey_span_hz,c.activity_threshold_dbfs);
             std::vector<FrequencySummary> bins(spectrum.bin_count()),window_bins;
+            std::map<std::pair<uint64_t,uint32_t>,FrequencySummary> prior_bins;
+            {std::lock_guard lock(mutex);for(const auto& bin:view.frequencies)prior_bins[{bin.center_hz,bin.width_hz}]=bin;}
             std::vector<double> power_sum(bins.size()),window_power(bins.size());
             for(size_t i=0;i<bins.size();++i) {
                 bins[i].center_hz=static_cast<uint64_t>(std::llround(spectrum.first_center_hz()+i*spectrum.bin_width_hz()));
                 bins[i].width_hz=static_cast<uint32_t>(std::llround(spectrum.bin_width_hz()));
             }
             window_bins=bins;
-            uint64_t window_id=0,gap_id=0,measured_samples=0;
+            for(size_t i=0;i<bins.size();++i) {
+                const auto found=prior_bins.find({bins[i].center_hz,bins[i].width_hz});
+                if(found!=prior_bins.end()){bins[i]=found->second;power_sum[i]=std::pow(10.0,bins[i].mean_dbfs/10)*bins[i].observed_seconds;}
+            }
             double window_start=0,last_measurement_end=0;
             bool window_started=false;
-            uint64_t expected=0,event_id=0;double last_publish=0,last_save=0,last_fix_saved=-1;
+            uint64_t expected=0,event_id;uint64_t tile_id_base,spectrum_event_id_base,burst_id_base,delivered_base,measured_samples=0;
+            double input_seconds_base,measurement_seconds_base;
+            {std::lock_guard lock(mutex);event_id=view.total_receptions;tile_id_base=view.spectrum_tiles;spectrum_event_id_base=view.spectrum_events;burst_id_base=view.spectrum_bursts;
+                delivered_base=view.delivered_samples;input_seconds_base=view.input_seconds;measurement_seconds_base=view.measurement_seconds;}
+            double last_publish=0,last_save=0,last_fix_saved=-1;
             std::vector<float> display(1024,-180);
-            bool time_anchored=c.synthetic;double input_epoch=0;
+            bool time_anchored=c.synthetic;double input_epoch=run_elapsed_start;
             auto discovery=std::move(prepared_discovery);
             std::unique_ptr<DiscoveryObservations> discovered;
-            uint64_t discovery_gap_id=0, discovery_observation_count=0;
+            uint64_t discovery_observation_count=0,automatic_classified=0;
             bool discovery_metadata_failed=false;
             double last_discovery_poll=0;
             if(discovery) {
@@ -395,7 +423,7 @@ struct Engine::Impl {
                     const auto& recent=discovered->observations();
                     const auto found=std::find_if(recent.begin(),recent.end(),[&](const auto& v){return v.id==update.id;});
                     if(found==recent.end())continue;
-                    WaveformObservation observation;observation.id=found->id;
+                    WaveformObservation observation;observation.id=waveform_id_base+found->id;
                     observation.center_hz=found->received_center_hz;observation.bandwidth_hz=found->bandwidth_hz;
                     observation.spreading_factor=found->spreading_factor;
                     observation.first_observed_elapsed=input_epoch+found->first_observed_upchirp_input_sample/c.sample_rate;
@@ -415,8 +443,8 @@ struct Engine::Impl {
                     else {view.waveforms.insert(view.waveforms.begin(),observation);if(view.waveforms.size()>256)view.waveforms.pop_back();}
                 }
                 for(const auto& gap:discovery->take_gaps()) {
-                    DiscoveryGap record;record.id=++discovery_gap_id;record.first_input_sample=gap.first_input_sample;
-                    record.end_input_sample=gap.end_input_sample;
+                    DiscoveryGap record;record.id=++discovery_gap_id;record.first_input_sample=sample_base+gap.first_input_sample;
+                    record.end_input_sample=sample_base+gap.end_input_sample;
                     record.subband_index=gap.subband_index==DiscoveryWorker::all_subbands?-1:static_cast<int>(gap.subband_index);
                     switch(gap.reason) {
                         case DiscoveryWorker::GapReason::source_queue_full:record.reason="source_queue_full";break;
@@ -427,6 +455,22 @@ struct Engine::Impl {
                         case DiscoveryWorker::GapReason::processing_failure:record.reason="processing_failure";break;
                     }
                     if(store)store->append(record);
+                }
+                for(auto& decoded:discovery->take_frames()) {
+                    auto& f=decoded.frame;
+                    Reception r;r.id=++event_id;r.elapsed_seconds=input_epoch+decoded.first_input_sample/c.sample_rate;
+                    r.utc_seconds=started_utc+r.elapsed_seconds;r.frequency_hz=static_cast<uint64_t>(std::llround(decoded.center_hz));
+                    r.bandwidth_hz=decoded.bandwidth_hz;r.spreading_factor=decoded.spreading_factor;r.coding_rate=f.coding_rate;
+                    r.duration_seconds=(decoded.end_input_sample-decoded.first_input_sample)/c.sample_rate;
+                    r.snr_db=std::isfinite(f.snr_db)?f.snr_db:0;r.frequency_error_hz=std::isfinite(f.frequency_error_hz)?f.frequency_error_hz:0;
+                    r.header_valid=f.header_valid;r.crc_valid=f.payload_crc_valid;r.lane_label="Automatic / detected waveform";
+                    r.decoded=protocol::classify_meshtastic(f.bytes,f.header_valid&&f.payload_crc_valid,keyring);
+                    std::fill(f.bytes.begin(),f.bytes.end(),uint8_t{});f.bytes.clear();
+                    r.receiver_position=associated_position(started+r.elapsed_seconds);
+                    if(store)store->append(r);
+                    std::lock_guard lock(mutex);
+                    if(r.decoded.status==protocol::Status::classified&&r.decoded.evidence){++view.classified_receptions;++automatic_classified;}
+                    ++view.total_receptions;view.receptions.insert(view.receptions.begin(),std::move(r));if(view.receptions.size()>512)view.receptions.pop_back();
                 }
                 const auto progress=discovery->snapshot();DiscoveryStatus status;
                 status.enabled=true;status.finished=progress.finished;status.failed=progress.failed;status.fault=progress.fault;
@@ -442,19 +486,37 @@ struct Engine::Impl {
                     record.processed_samples=band.processed_output_samples;record.abandoned_samples=band.abandoned_output_samples;
                     record.source_gap_input_samples=band.source_gap_input_samples;
                     record.candidate_limit_hits=band.candidate_limit_hits;record.track_limit_hits=band.track_limit_hits;
+                    record.runtime_diagnostics_available=true;
+                    record.fft_searches=band.fft_searches;record.windows=band.windows;
+                    record.resets_after_gap=band.resets_after_gap;
                     status.bands.push_back(record);
                 }
-                std::lock_guard lock(mutex);view.discovery=std::move(status);
+                AutomaticDecoderStatus automatic;automatic.available=true;automatic.enabled=c.automatic_decode;automatic.finished=progress.finished;
+                const auto& a=progress.automatic_decoder;
+                automatic.candidates=a.candidates;automatic.started=a.started;automatic.completed=a.completed;automatic.crc_valid=a.crc_valid;
+                automatic.classified=automatic_classified;automatic.history_misses=a.history_misses;automatic.active_limit_hits=a.active_limit_hits;
+                automatic.duplicate_candidates=a.duplicate_candidates;automatic.excluded_candidates=a.excluded_candidates;
+                automatic.outside_range_candidates=a.outside_range_candidates;automatic.unsupported_candidates=a.unsupported_candidates;
+                automatic.timeouts=a.timeouts;automatic.resets=a.resets;automatic.abandoned_decoders=a.abandoned_decoders;automatic.frame_overflows=a.frame_overflows;
+                automatic.active_decoders=a.active_decoders;automatic.history_samples=a.history_samples;automatic.phy=a.phy;
+                std::lock_guard lock(mutex);view.discovery=std::move(status);view.automatic_decoder=automatic;
             };
             {std::lock_guard lock(mutex);view.spectrum_bin_width_hz=spectrum.bin_width_hz();
                 view.spectrum_enbw_hz=spectrum.enbw_hz();view.spectrum_fft_size=4096;}
-            auto publish_bins=[&]{view.frequencies=bins;};
+            auto publish_bins=[&]{
+                for(const auto& bin:bins)prior_bins[{bin.center_hz,bin.width_hz}]=bin;
+                view.frequencies.clear();view.frequencies.reserve(prior_bins.size());
+                for(const auto& [key,bin]:prior_bins){(void)key;view.frequencies.push_back(bin);}
+            };
             auto checkpoint=[&] {
                 if(!store)return;
                 auto fix=associated_position();
                 if(fix&&fix->monotonic_seconds!=last_fix_saved){store->append(*fix);last_fix_saved=fix->monotonic_seconds;}
                 Snapshot saved;uint64_t request;
-                {std::lock_guard lock(mutex);publish_bins();saved=view;request=save_requested;}
+                {std::lock_guard lock(mutex);publish_bins();
+                    view.elapsed_seconds=std::max({last_measurement_elapsed,run_elapsed_start,monotonic_now()-started});
+                    if(!view.acquisitions.empty())view.acquisitions.back().elapsed_end_seconds=view.elapsed_seconds;
+                    saved=view;request=save_requested;}
                 // FULL-synchronous COMMIT is the durability boundary. A WAL
                 // merge is not required for recovery or SQLite-aware copying.
                 store->update(saved);
@@ -479,18 +541,20 @@ struct Engine::Impl {
                 record.utc_end_seconds=started_utc+record.elapsed_end_seconds;
                 record.receiver_start=associated_position(started+record.elapsed_start_seconds);
                 record.receiver_end=associated_position(started+record.elapsed_end_seconds);
+                record.first_sample+=sample_base;record.end_sample+=sample_base;
                 record.quality|=SurveyUncalibrated;
                 if(!c.synthetic)record.quality|=SurveyUpstreamLossUnknown;
                 if(!record.receiver_start||!record.receiver_end)record.quality|=SurveyPositionMissing;
             };
             BurstGrouper bursts(double(c.center_hz));
             auto on_burst=[&](SpectrumBurst burst) {
+                burst.id+=burst_id_base;
                 std::lock_guard lock(mutex); ++view.spectrum_bursts;
                 view.recent_spectrum_bursts.insert(view.recent_spectrum_bursts.begin(), std::move(burst));
                 if(view.recent_spectrum_bursts.size()>200)view.recent_spectrum_bursts.pop_back();
             };
             auto on_tile=[&](SpectrumTile tile) {
-                stamp(tile);
+                stamp(tile);tile.id+=tile_id_base;
                 bursts.consume(tile,on_burst);
                 const double dt=double(tile.end_sample-tile.first_sample)/c.sample_rate;
                 const double frame_dt=4096.0/c.sample_rate;
@@ -522,11 +586,11 @@ struct Engine::Impl {
                 last_measurement_end=tile.elapsed_end_seconds;
                 if(last_measurement_end-window_start>=5.0)save_window(last_measurement_end);
                 std::lock_guard lock(mutex);++view.spectrum_tiles;view.clipped_samples+=tile.clipped_samples;
-                measured_samples+=tile.end_sample-tile.first_sample;
-                view.background_dbfs=tile.background_dbfs;view.measurement_seconds=double(measured_samples)/c.sample_rate;
+                view.background_dbfs=tile.background_dbfs;measured_samples+=tile.end_sample-tile.first_sample;view.measurement_seconds=measurement_seconds_base+double(measured_samples)/c.sample_rate;
+                last_measurement_elapsed=std::max(last_measurement_elapsed,tile.elapsed_end_seconds);
             };
             auto on_event=[&](SpectrumEvent event) {
-                stamp(event);
+                stamp(event);event.id+=spectrum_event_id_base;
                 if(event.lower_hz<=double(c.center_hz)+2*spectrum.bin_width_hz()&&
                    event.upper_hz>=double(c.center_hz)-2*spectrum.bin_width_hz())event.quality|=SurveyDcSuspect;
                 if(store)store->append(event);
@@ -558,7 +622,7 @@ struct Engine::Impl {
                         fail(std::string(receiver_source_name(c))+" delivered no sample blocks for two seconds; stream may have stopped or disconnected");break;}
                     continue;}
                 const auto begin=monotonic_now();auto& block=pool[t%pool_blocks];size_t count=block.size/2;bool gap=block.first!=expected;
-                if(!time_anchored){input_epoch=std::max(0.0,block.arrival-started-static_cast<double>(block.first+count)/c.sample_rate);time_anchored=true;}
+                if(!time_anchored){input_epoch=std::max(run_elapsed_start,block.arrival-started-static_cast<double>(block.first+count)/c.sample_rate);time_anchored=true;}
                 if(!window_started){window_start=input_epoch+static_cast<double>(block.first)/c.sample_rate;window_started=true;}
                 if(gap){const auto partial=spectrum.pending_samples();spectrum.gap(on_tile,on_event);
                     if(partial)record_gap(expected-partial,expected,"partial_fft");
@@ -571,14 +635,14 @@ struct Engine::Impl {
                 const uint64_t first=block.first;std::fill_n(block.data.begin(),block.size,int8_t{});tail.store(t+1,std::memory_order_release);
                 // Publish accepted input before a tile callback publishes its
                 // measured subset, so a live snapshot cannot exceed 100% duty.
-                {std::lock_guard lock(mutex);view.delivered_samples+=count;view.input_seconds=double(view.delivered_samples)/c.sample_rate;}
+                {std::lock_guard lock(mutex);view.delivered_samples+=count;view.input_seconds=input_seconds_base+double(view.delivered_samples-delivered_base)/c.sample_rate;}
                 spectrum.feed(std::span<const Complex>(samples.data(),count),first,on_tile,on_event);
                 if(discovery)discovery->submit(std::span<const Complex>(samples.data(),count),first);
                 for(auto& lane:lanes){const auto& config=c.lanes[lane.index];lane.convert->feed(std::span<const Complex>(samples.data(),count),lane.samples);lane.delivered+=lane.samples.size();
                     lane.receive->feed(lane.samples,[&](PhyFrame&& f){Reception r;r.id=++event_id;r.elapsed_seconds=input_epoch+lane.segment_start+lane.convert->first_output_seconds()+double(f.first_sample)/config.bandwidth_hz;r.utc_seconds=started_utc+r.elapsed_seconds;r.frequency_hz=config.frequency_hz;r.bandwidth_hz=config.bandwidth_hz;r.spreading_factor=config.spreading_factor;r.coding_rate=f.coding_rate;r.duration_seconds=double(f.last_sample-f.first_sample)/config.bandwidth_hz;r.snr_db=std::isfinite(f.snr_db)?f.snr_db:0;r.frequency_error_hz=std::isfinite(f.frequency_error_hz)?f.frequency_error_hz:0;r.header_valid=f.header_valid;r.crc_valid=f.payload_crc_valid;r.lane_label=config.label;
-                        r.decoded=protocol::decode_meshtastic(f.bytes,f.header_valid&&f.payload_crc_valid,keyring);std::fill(f.bytes.begin(),f.bytes.end(),uint8_t{});r.receiver_position=associated_position(started+r.elapsed_seconds);
+                        r.decoded=protocol::classify_meshtastic(f.bytes,f.header_valid&&f.payload_crc_valid,keyring);std::fill(f.bytes.begin(),f.bytes.end(),uint8_t{});r.receiver_position=associated_position(started+r.elapsed_seconds);
                         if(store)store->append(r);
-                        std::lock_guard lock(mutex);auto& h=view.lane_health[lane.index];++h.frames;if(!r.crc_valid)++h.crc_failures;if(r.decoded.authorized){++h.decoded;++view.authorized_messages;}++view.total_receptions;view.receptions.insert(view.receptions.begin(),std::move(r));if(view.receptions.size()>512)view.receptions.pop_back();
+                        std::lock_guard lock(mutex);auto& h=view.lane_health[lane.index];++h.frames;if(!r.crc_valid)++h.crc_failures;if(r.decoded.status==protocol::Status::classified && r.decoded.evidence){++h.classified;++view.classified_receptions;}++view.total_receptions;view.receptions.insert(view.receptions.begin(),std::move(r));if(view.receptions.size()>512)view.receptions.pop_back();
                     });
                     std::lock_guard lock(mutex);view.lane_health[lane.index].processed_seconds+=double(lane.samples.size())/config.bandwidth_hz;
                     view.lane_health[lane.index].phy=lane.receive->diagnostics();
@@ -586,7 +650,7 @@ struct Engine::Impl {
                 std::fill_n(samples.begin(),count,Complex{});
                 double now=monotonic_now();
                 if(now-last_discovery_poll>=.1){poll_discovery();last_discovery_poll=now;}
-                {std::lock_guard lock(mutex);if(view.error.empty()){view.running=run.load();view.state=run?("Receiving "+std::string(receiver_source_name(c))):"Stopping";}view.dropped_samples=dropped.load();view.elapsed_seconds=now-started;view.processing_load=.1*((now-begin)/(double(count)/c.sample_rate))+.9*view.processing_load;
+                {std::lock_guard lock(mutex);if(view.error.empty()){view.running=run.load();view.state=run?("Receiving "+std::string(receiver_source_name(c))):"Stopping";}view.dropped_samples=run_drop_base+dropped.load();view.elapsed_seconds=std::max({last_measurement_elapsed,run_elapsed_start,now-started});if(!view.acquisitions.empty())view.acquisitions.back().elapsed_end_seconds=view.elapsed_seconds;view.processing_load=.1*((now-begin)/(double(count)/c.sample_rate))+.9*view.processing_load;
                     if(now-last_publish>=.05){view.spectrum_dbfs=display;++view.spectrum_sequence;publish_bins();last_publish=now;}}
                 if(store&&now-last_save>=1)checkpoint();
 
@@ -599,8 +663,10 @@ struct Engine::Impl {
             if(produced>expected)record_gap(expected,produced,"application_drop");
             std::fill(samples.begin(),samples.end(),Complex{});
             if(discovery){discovery->finish();poll_discovery();}
+            if(discovered){uint64_t highest=0;for(const auto& observation:discovered->observations())highest=std::max(highest,observation.id);waveform_id_base+=highest;}
             save_window(last_measurement_end);
-            Snapshot final;{std::lock_guard lock(mutex);publish_bins();view.spectrum_dbfs=display;view.elapsed_seconds=monotonic_now()-started;view.dropped_samples=dropped.load();final=view;}
+            Snapshot final;{std::lock_guard lock(mutex);publish_bins();view.spectrum_dbfs=display;view.elapsed_seconds=std::max({last_measurement_elapsed,run_elapsed_start,monotonic_now()-started});view.dropped_samples=run_drop_base+dropped.load();
+                if(!view.acquisitions.empty()){view.acquisitions.back().elapsed_end_seconds=view.elapsed_seconds;view.acquisitions.back().finalized=true;}final=view;}
             if(store){store->update(final,true);std::lock_guard lock(mutex);final_save_confirmed=true;save_completed=save_requested;}
         }catch(const std::exception& e){fail(e.what());}
         std::lock_guard lock(mutex);view.running=false;view.recording=false;if(view.state!="Failed")view.state="Stopped";save_finished.notify_all();
@@ -608,6 +674,7 @@ struct Engine::Impl {
     // Caller owns lifecycle. Keeping stop/start in the same critical section
     // prevents a concurrent start from clearing the previous worker's buffers.
     void stop_locked() {
+        const bool had_worker=worker.joinable()||producer.joinable();
         run=false;wake.notify_all();
 #ifdef OVMESH_HAVE_HACKRF
         if(device)hackrf_stop_rx(device);
@@ -617,9 +684,9 @@ struct Engine::Impl {
 #endif
         if(producer.joinable())producer.join();input_finished=true;wake.notify_all();if(worker.joinable())worker.join();
         close_hardware();
-        for(auto& b:pool)std::fill(b.data.begin(),b.data.end(),int8_t{});pool.clear();store.reset();
+        for(auto& b:pool)std::fill(b.data.begin(),b.data.end(),int8_t{});pool.clear();
         prepared_discovery.reset();
-        std::lock_guard lock(mutex);view.running=false;view.recording=false;if(view.state!="Failed"&&view.state!="Idle"&&!view.historical)view.state="Stopped";
+        std::lock_guard lock(mutex);if(had_worker)paused_at=monotonic_now();view.running=false;view.recording=false;if(view.state!="Failed"&&view.state!="Idle"&&!view.historical)view.state="Stopped";
     }
     // Caller owns lifecycle. Never reads/writes the worker's SQLite connection.
     bool save_locked(std::string& error) {
@@ -656,11 +723,42 @@ Engine::~Engine(){stop();disconnect_gps();}
 std::string Engine::version(){return OVMESH_VERSION;}
 bool Engine::start(const ReceiverConfig& requested,bool hardware_permission,std::string& error) {
     std::lock_guard life(impl_->lifecycle);auto& p=*impl_;p.stop_locked();
-    auto config=requested;
+    auto config=requested;bool segment_begun=false,resume=false;
     try {
+        ReceiverConfig previous_config;
+        {std::lock_guard lock(p.mutex);
+            if(p.view.historical)throw std::runtime_error("Saved surveys are read-only. Choose New before starting reception");
+            resume=!p.view.session_id.empty();previous_config=p.view.config;
+            if(resume&&!p.saved_path.empty()&&!p.final_save_confirmed)
+                throw std::runtime_error("The previous recording could not be finalized. Preserve it with Save copy before starting a new survey");
+        }
         const bool rak=!config.synthetic && config.hardware_receiver==HardwareReceiver::Rak5146;
         if(rak){config.discover_lora=false;config.lanes.clear();config.sample_rate=0;}
         validate(config);
+        if(resume) {
+            if(config.synthetic!=previous_config.synthetic||config.hardware_receiver!=previous_config.hardware_receiver)
+                throw std::runtime_error("Choose New to change receiver type. The current survey and its measurements are preserved");
+            if(config.session_path!=p.saved_path||config.compact_recording!=previous_config.compact_recording)
+                throw std::runtime_error("Choose New to change the recording destination or storage format. The current survey is preserved");
+            if(rak) {
+                const auto& a=config.concentrators;const auto& b=previous_config.concentrators;
+                bool same=a.scan_enabled==b.scan_enabled&&a.decode_enabled==b.decode_enabled&&a.scan_step_hz==b.scan_step_hz&&a.scan_samples==b.scan_samples&&a.boards.size()==b.boards.size()&&
+                    config.center_hz==previous_config.center_hz&&config.survey_span_hz==previous_config.survey_span_hz&&config.tuning_offset_hz==previous_config.tuning_offset_hz;
+                if(same)for(size_t i=0;i<a.boards.size();++i){const auto& x=a.boards[i];const auto& y=b.boards[i];same=same&&x.packets_enabled==y.packets_enabled&&x.frequency_hz==y.frequency_hz&&x.bandwidth_hz==y.bandwidth_hz&&x.spreading_factor==y.spreading_factor&&x.sync_word==y.sync_word;}
+                if(!same)throw std::runtime_error("Choose New to change concentrator scan or modem settings. The current survey is preserved");
+            }
+            if(p.view.acquisitions.size()>=2048)throw std::runtime_error("This survey reached 2048 acquisition segments. Save it and choose New");
+            if(!rak) {
+                SpectrumProcessor planned(config.center_hz,config.sample_rate,config.survey_span_hz,config.activity_threshold_dbfs);
+                if(p.view.frequencies.size()+planned.bin_count()>65536) {
+                    std::map<std::pair<uint64_t,uint32_t>,bool> grids;
+                    for(const auto& bin:p.view.frequencies)grids[{bin.center_hz,bin.width_hz}]=true;
+                    for(size_t i=0;i<planned.bin_count();++i)grids[{static_cast<uint64_t>(std::llround(planned.first_center_hz()+i*planned.bin_width_hz())),static_cast<uint32_t>(std::llround(planned.bin_width_hz()))}]=true;
+                    if(grids.size()>65536)throw std::runtime_error("This survey reached its retained frequency-grid limit. Save it and choose New before surveying another range");
+                }
+            }
+            if(!p.saved_path.empty()&&!p.save_locked(error))throw std::runtime_error(error);
+        }
         if(!config.synthetic&&!hardware_permission)throw std::runtime_error("Explicit permission is required before opening "+std::string(receiver_source_name(config)));
 #ifndef OVMESH_HAVE_HACKRF
         if(!config.synthetic&&config.hardware_receiver==HardwareReceiver::HackRf)throw std::runtime_error("This build does not include libhackrf");
@@ -680,26 +778,6 @@ bool Engine::start(const ReceiverConfig& requested,bool hardware_permission,std:
             }
             validate_concentrator_config(config.concentrators,config.center_hz,config.survey_span_hz,config.tuning_offset_hz);
         }
-        const bool capability=p.view.hardware_available,rtl_capability=p.view.rtl_sdr_available,rak_capability=p.view.rak5146_available;{
-            std::lock_guard lock(p.mutex);p.view=Snapshot{};p.view.hardware_available=capability;p.view.rtl_sdr_available=rtl_capability;p.view.rak5146_available=rak_capability;p.view.config=config;p.view.state="Starting";p.view.session_id=std::to_string(static_cast<uint64_t>(utc_now()*1000000));p.view.upstream_loss_unknown=!config.synthetic;p.save_requested=0;p.save_completed=0;p.final_save_confirmed=false;p.saved_path.clear();
-            if(rak){p.view.concentrator_health.resize(config.concentrators.boards.size());for(auto& h:p.view.concentrator_health)h.state="Starting";}
-            for(const auto& l:config.lanes){LaneHealth h;h.label=l.label;h.frequency_hz=l.frequency_hz;h.state=!l.enabled?"disabled":l.protocol!="Meshtastic"?"unsupported protocol":"searching; one frame at a time";p.view.lane_health.push_back(h);}
-            p.fix_history.clear();if(p.current_fix)p.fix_history.push_back(*p.current_fix);
-            if(p.current_fix&&p.current_fix->valid)p.view.track.push_back(*p.current_fix);
-            p.view.gps_status=p.live_position_status_locked();}
-        if(config.discover_lora) {
-            {std::lock_guard lock(p.mutex);p.view.discovery.enabled=true;}
-            try {
-                // Allocate queues/filter histories before opening the receiver;
-                // discovery startup must not consume the acquisition queue.
-                p.prepared_discovery=std::make_unique<DiscoveryWorker>(config.sample_rate,double(config.center_hz),
-                    double(config.center_hz)-config.survey_span_hz/2.,double(config.center_hz)+config.survey_span_hz/2.);
-            } catch(const std::exception&) {
-                std::lock_guard lock(p.mutex);p.view.discovery.failed=true;
-                p.view.discovery.fault="LoRa discovery could not initialize; spectrum recording continues";
-            }
-        }
-        p.pool.clear();if(!rak)p.pool.resize(pool_blocks);p.head=0;p.tail=0;p.next_sample=0;p.dropped=0;p.input_finished=false;p.started=monotonic_now();p.last_input_arrival=p.started;p.started_utc=utc_now();
 #ifdef OVMESH_HAVE_HACKRF
         if(!config.synthetic&&config.hardware_receiver==HardwareReceiver::HackRf){
             auto require=[](int result){if(result!=HACKRF_SUCCESS)throw std::runtime_error(std::string("HackRF operation failed: ")+hackrf_error_name(static_cast<hackrf_error>(result)));};
@@ -715,11 +793,64 @@ bool Engine::start(const ReceiverConfig& requested,bool hardware_permission,std:
             std::lock_guard lock(p.mutex);p.view.config=config;
         }
 #endif
-        if(!config.session_path.empty()){p.store=std::make_unique<SessionStore>();p.store->create(config.session_path,config,p.view.session_id);p.saved_path=config.session_path;std::lock_guard lock(p.mutex);p.view.recording=true;}
-        // Hardware setup is not RF exposure. Anchor elapsed/UTC immediately
-        // before input startup, including the no-callback watchdog baseline.
-        p.started=monotonic_now();p.started_utc=utc_now();p.last_input_arrival=p.started;
-        p.run=true;{std::lock_guard lock(p.mutex);p.view.running=true;}
+
+        if(!resume) {
+            std::lock_guard lock(p.mutex);
+            const bool hackrf=p.view.hardware_available,rtl=p.view.rtl_sdr_available,rak_available=p.view.rak5146_available;
+            p.view=Snapshot{};p.view.hardware_available=hackrf;p.view.rtl_sdr_available=rtl;p.view.rak5146_available=rak_available;
+            p.view.session_id=std::to_string(static_cast<uint64_t>(utc_now()*1000000));
+            p.started=monotonic_now();p.started_utc=utc_now();
+            p.sample_base=0;p.window_id=0;p.gap_id=0;p.discovery_gap_id=0;p.waveform_id_base=0;p.last_measurement_elapsed=0;
+            p.fix_history.clear();if(p.current_fix)p.fix_history.push_back(*p.current_fix);
+            if(p.current_fix&&p.current_fix->valid)p.view.track.push_back(*p.current_fix);
+        } else p.sample_base+=p.next_sample.exchange(0);
+        {
+            std::lock_guard lock(p.mutex);p.view.config=config;p.view.state="Starting";p.view.error.clear();
+            p.view.upstream_loss_unknown=!config.synthetic;p.save_requested=0;p.save_completed=0;
+            p.run_drop_base=p.view.dropped_samples;p.view.discovery=DiscoveryStatus{};p.view.automatic_decoder=AutomaticDecoderStatus{};p.view.automatic_decoder.available=true;p.view.automatic_decoder.enabled=config.automatic_decode;
+            if(rak){p.view.concentrator_health.resize(config.concentrators.boards.size());for(auto& h:p.view.concentrator_health){h.ready=false;h.state="Starting";}}
+            auto old_health=std::move(p.view.lane_health);p.view.lane_health.clear();
+            for(const auto& l:config.lanes){LaneHealth h;h.label=l.label;h.frequency_hz=l.frequency_hz;
+                const auto previous=std::find_if(old_health.begin(),old_health.end(),[&](const auto& v){return v.label==l.label&&v.frequency_hz==l.frequency_hz;});
+                if(previous!=old_health.end())h=*previous;
+                h.state=!l.enabled?"disabled":l.protocol!="Meshtastic"?"unsupported protocol":"searching; one frame at a time";p.view.lane_health.push_back(h);}
+            p.view.gps_status=p.live_position_status_locked();
+        }
+        if(config.discover_lora) {
+            {std::lock_guard lock(p.mutex);p.view.discovery.enabled=true;}
+            try {
+                DiscoveryDecoderOptions options;options.enabled=config.automatic_decode;
+                for(const auto& lane:config.lanes)if(lane.enabled&&lane.protocol=="Meshtastic")
+                    options.exclusions.push_back({double(lane.frequency_hz),lane.bandwidth_hz,lane.spreading_factor});
+                p.prepared_discovery=std::make_unique<DiscoveryWorker>(config.sample_rate,double(config.center_hz),
+                    double(config.center_hz)-config.survey_span_hz/2.,double(config.center_hz)+config.survey_span_hz/2.,options);
+            }
+            catch(const std::exception&) {std::lock_guard lock(p.mutex);p.view.discovery.failed=true;p.view.discovery.fault="LoRa discovery could not initialize; spectrum recording continues";}
+        }
+        p.pool.clear();if(!rak)p.pool.resize(pool_blocks);p.head=0;p.tail=0;p.next_sample=0;p.dropped=0;p.input_finished=false;
+        if(!resume&&!config.session_path.empty()) {
+            p.store=std::make_unique<SessionStore>();p.store->create(config.session_path,config,p.view.session_id);
+            p.store->enable_acquisitions();p.saved_path=config.session_path;
+        }
+        // A common survey clock spans pauses. The time with reception stopped
+        // has no FFT tiles and is explicitly marked unobserved, never quiet RF.
+        if(!resume){p.started=monotonic_now();p.started_utc=utc_now();}
+        p.run_elapsed_start=resume?std::max(p.view.elapsed_seconds+std::max(0.0,monotonic_now()-p.paused_at),monotonic_now()-p.started):0.0;
+        AcquisitionSegment segment;segment.id=p.view.acquisitions.size()+1;
+        segment.elapsed_start_seconds=segment.elapsed_end_seconds=p.run_elapsed_start;segment.config=config;
+        segment.config.device_serial.clear();segment.config.session_path.clear();
+        for(auto& board:segment.config.concentrators.boards){board.device_path.clear();board.device_id.clear();}
+        if(p.store) {
+            if(resume&&!rak&&!p.view.acquisitions.empty()&&p.run_elapsed_start>p.view.acquisitions.back().elapsed_end_seconds) {
+                CoverageGap gap;gap.id=++p.gap_id;gap.reason="reception_paused";
+                gap.elapsed_start_seconds=p.view.acquisitions.back().elapsed_end_seconds;gap.elapsed_end_seconds=p.run_elapsed_start;
+                gap.utc_start_seconds=p.started_utc+gap.elapsed_start_seconds;gap.utc_end_seconds=p.started_utc+gap.elapsed_end_seconds;p.store->append(gap);
+            }
+            p.store->begin_acquisition(segment);
+        }
+        {std::lock_guard lock(p.mutex);p.view.acquisitions.push_back(std::move(segment));p.view.recording=bool(p.store);p.view.elapsed_seconds=p.run_elapsed_start;p.final_save_confirmed=false;}
+        segment_begun=true;p.last_input_arrival=monotonic_now();p.run=true;
+        {std::lock_guard lock(p.mutex);p.view.running=true;}
 #ifdef OVMESH_HAVE_HACKRF
         if(p.device) {
             const auto result=hackrf_start_rx(p.device,&Impl::receive,&p);
@@ -739,8 +870,18 @@ bool Engine::start(const ReceiverConfig& requested,bool hardware_permission,std:
         p.rtl_pump.stop();
 #endif
         if(p.producer.joinable())p.producer.join();p.input_finished=true;p.wake.notify_all();if(p.worker.joinable())p.worker.join();
-        p.close_hardware();
-        p.prepared_discovery.reset();p.store.reset();p.fail(error);return false;}
+        p.close_hardware();p.prepared_discovery.reset();
+        if(segment_begun) {
+            Snapshot saved;{std::lock_guard lock(p.mutex);p.paused_at=monotonic_now();p.view.incomplete=true;p.view.elapsed_seconds=std::max({p.last_measurement_elapsed,p.run_elapsed_start,p.paused_at-p.started});
+                p.view.acquisitions.back().elapsed_end_seconds=p.view.elapsed_seconds;p.view.acquisitions.back().finalized=true;saved=p.view;}
+            if(p.store)try{p.store->update(saved,true);p.final_save_confirmed=true;}catch(...){p.final_save_confirmed=false;}
+        }
+        if(!resume&&!segment_begun){p.store.reset();p.saved_path.clear();std::lock_guard lock(p.mutex);p.view.session_id.clear();}
+        // Validation/setup failures preserve all prior history and may be
+        // corrected before Resume. They are not missing RF measurements.
+        {std::lock_guard lock(p.mutex);p.view.error=error;p.view.state="Stopped";p.view.running=false;p.view.recording=false;}
+        return false;
+    }
 }
 void Engine::stop(){auto& p=*impl_;std::lock_guard life(p.lifecycle);p.stop_locked();}
 Snapshot Engine::snapshot() const {
@@ -751,7 +892,7 @@ Snapshot Engine::snapshot() const {
 bool Engine::set_channel_key(size_t slot,const std::string& name,const std::string& input,std::string& error) {
     auto& p=*impl_;std::lock_guard life(p.lifecycle);
     if(p.run||p.worker.joinable()){error="Stop reception before changing keys";return false;}
-    if(slot>=p.profiles.size()||name.empty()||name.size()>32){error="Choose a key record from 1 through 16 and a channel name of 1 through 32 bytes";return false;}
+    if(slot>=protocol::max_user_keyring_profiles||name.empty()||name.size()>32){error="Choose a key record from 1 through 16 and a channel name of 1 through 32 bytes";return false;}
     auto key=protocol::ChannelKey::from_user_input(input);
     if(!key){error="Enter a 16- or 32-byte key as hex or padded Base64, or the explicitly authorized AQ== public shorthand";return false;}
     protocol::Profile replacement;replacement.id="key-"+std::to_string(slot);replacement.label=name;
@@ -761,20 +902,28 @@ bool Engine::set_channel_key(size_t slot,const std::string& name,const std::stri
 bool Engine::set_survey_key(size_t slot,const std::string& label,const std::string& input,std::string& error) {
     auto& p=*impl_;std::lock_guard life(p.lifecycle);
     if(p.run||p.worker.joinable()){error="Stop reception before changing keys";return false;}
-    if(slot>=p.profiles.size()||label.empty()||label.size()>80){error="Choose a key record from 1 through 16 and a label of 1 through 80 bytes";return false;}
+    if(slot>=protocol::max_user_keyring_profiles||label.empty()||label.size()>80){error="Choose a key record from 1 through 16 and a label of 1 through 80 bytes";return false;}
     auto key=protocol::ChannelKey::from_user_input(input);
     if(!key){error="Enter a 16- or 32-byte key as hex or padded Base64, or the explicitly authorized AQ== public shorthand";return false;}
     protocol::Profile replacement;replacement.id="key-"+std::to_string(slot);replacement.label=label;
     replacement.restrict_channel_name=false;replacement.keys.push_back(std::move(*key));
     p.profiles[slot]=std::move(replacement);error.clear();return true;
 }
-void Engine::clear_keys(){std::lock_guard life(impl_->lifecycle);impl_->stop_locked();for(auto& p:impl_->profiles)p.keys.clear();}
-bool Engine::has_channel_key(size_t slot,const std::string& name)const{auto& p=*impl_;std::lock_guard life(p.lifecycle);return slot<p.profiles.size()&&!p.profiles[slot].keys.empty()&&p.profiles[slot].restrict_channel_name&&p.profiles[slot].channel_name==name;}
-bool Engine::has_survey_key(size_t slot)const{auto& p=*impl_;std::lock_guard life(p.lifecycle);return slot<p.profiles.size()&&!p.profiles[slot].keys.empty()&&!p.profiles[slot].restrict_channel_name;}
+void Engine::clear_keys(){std::lock_guard life(impl_->lifecycle);impl_->stop_locked();for(auto& p:impl_->profiles)p.keys.clear();impl_->public_key_enabled=false;}
+bool Engine::set_public_meshtastic_key_enabled(bool enabled,std::string& error) {
+    auto& p=*impl_;std::lock_guard life(p.lifecycle);
+    if(p.run||p.worker.joinable()){error="Stop reception before changing keys";return false;}
+    if(enabled)p.profiles[protocol::max_user_keyring_profiles]=protocol::public_meshtastic_profile();
+    else p.profiles[protocol::max_user_keyring_profiles].keys.clear();
+    p.public_key_enabled=enabled;error.clear();return true;
+}
+bool Engine::public_meshtastic_key_enabled()const {std::lock_guard life(impl_->lifecycle);return impl_->public_key_enabled;}
+bool Engine::has_channel_key(size_t slot,const std::string& name)const{auto& p=*impl_;std::lock_guard life(p.lifecycle);return slot<protocol::max_user_keyring_profiles&&!p.profiles[slot].keys.empty()&&p.profiles[slot].restrict_channel_name&&p.profiles[slot].channel_name==name;}
+bool Engine::has_survey_key(size_t slot)const{auto& p=*impl_;std::lock_guard life(p.lifecycle);return slot<protocol::max_user_keyring_profiles&&!p.profiles[slot].keys.empty()&&!p.profiles[slot].restrict_channel_name;}
 size_t Engine::configured_key_count()const{auto& p=*impl_;std::lock_guard life(p.lifecycle);return static_cast<size_t>(std::count_if(p.profiles.begin(),p.profiles.end(),[](const auto& profile){return !profile.keys.empty();}));}
 std::vector<KeyRecordInfo> Engine::key_records()const {
-    auto& p=*impl_;std::lock_guard life(p.lifecycle);std::vector<KeyRecordInfo> result;result.reserve(p.profiles.size());
-    for(size_t i=0;i<p.profiles.size();++i){const auto& profile=p.profiles[i];result.push_back({i,profile.label,profile.channel_name,profile.restrict_channel_name,!profile.keys.empty()});}
+    auto& p=*impl_;std::lock_guard life(p.lifecycle);std::vector<KeyRecordInfo> result;result.reserve(protocol::max_user_keyring_profiles);
+    for(size_t i=0;i<protocol::max_user_keyring_profiles;++i){const auto& profile=p.profiles[i];result.push_back({i,profile.label,profile.channel_name,profile.restrict_channel_name,!profile.keys.empty()});}
     return result;
 }
 void Engine::set_fixed_position(double lat,double lon,std::optional<double> alt){if(!std::isfinite(lat)||!std::isfinite(lon)||std::abs(lat)>90||std::abs(lon)>180||(alt&&!std::isfinite(*alt)))return;std::lock_guard life(impl_->lifecycle);impl_->gps.stop();PositionFix f;f.latitude=lat;f.longitude=lon;f.altitude_m=alt;f.valid=true;f.manual=true;f.source="manual fixed";f.monotonic_seconds=monotonic_now();f.utc_seconds=utc_now();impl_->position(f);}
@@ -796,7 +945,7 @@ void Engine::disconnect_gps(){
     if(!impl_->current_fix||!impl_->current_fix->manual)impl_->clear_live_position_locked("Serial GPS disconnected");
 }
 GpsConnectionStatus Engine::gps_connection_status() const {return impl_->gps.status();}
-bool Engine::open_session(const std::string& path,std::string& error){std::lock_guard life(impl_->lifecycle);impl_->stop_locked();try{SessionStore store;store.open_readonly(path);auto snapshot=store.read();snapshot.config.session_path=path;snapshot.hardware_available=impl_->view.hardware_available;snapshot.rtl_sdr_available=impl_->view.rtl_sdr_available;snapshot.rak5146_available=impl_->view.rak5146_available;std::lock_guard lock(impl_->mutex);impl_->view=std::move(snapshot);impl_->saved_path=path;error.clear();return true;}catch(const std::exception& e){error=e.what();return false;}}
+bool Engine::open_session(const std::string& path,std::string& error){std::lock_guard life(impl_->lifecycle);impl_->stop_locked();try{SessionStore store;store.open_readonly(path);auto snapshot=store.read();snapshot.config.session_path=path;snapshot.hardware_available=impl_->view.hardware_available;snapshot.rtl_sdr_available=impl_->view.rtl_sdr_available;snapshot.rak5146_available=impl_->view.rak5146_available;impl_->store.reset();std::lock_guard lock(impl_->mutex);impl_->view=std::move(snapshot);impl_->saved_path=path;error.clear();return true;}catch(const std::exception& e){error=e.what();return false;}}
 bool Engine::save_session(std::string& error) {
     auto& p=*impl_;std::lock_guard life(p.lifecycle);return p.save_locked(error);
 }
@@ -827,6 +976,7 @@ bool Engine::new_session(std::string& error,bool discard_unrecorded) {
     p.stop_locked();
     {std::lock_guard lock(p.mutex);has_data=p.view.delivered_samples||p.view.total_receptions||p.view.spectrum_tiles||p.view.concentrator_scans;}
     if(!historical&&!p.saved_path.empty()&&has_data&&!p.save_locked(error))return false;
+    p.store.reset();
     std::lock_guard lock(p.mutex);
     const bool capability=p.view.hardware_available,rtl_capability=p.view.rtl_sdr_available,rak_capability=p.view.rak5146_available;auto config=p.view.config;config.session_path.clear();
     p.view=Snapshot{};p.view.hardware_available=capability;p.view.rtl_sdr_available=rtl_capability;p.view.rak5146_available=rak_capability;p.view.config=std::move(config);

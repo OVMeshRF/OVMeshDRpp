@@ -4,7 +4,7 @@ The priority is reliable range-wide measurement, local recording and meaningful 
 
 ## Current experimental capability
 
-Version 0.4.0 provides HackRF and RTL-SDR receivers, native spectrum/waterfall, fine activity records, compact storage, GPS association, saved analysis, filtered exports and HTML findings reports. Experimental one/two-board RAK5146 USB/LBT support adds sampled RSSI sweeps and configured packet reception with separate measurement records and reports. Experimental LoRa waveform discovery and explicit-profile Meshtastic decoding remain separate paths. See [implementation status](../engineering/implementation-status.md) and [validation scope](../engineering/quality-and-validation.md).
+Version 0.4.0 provides HackRF and RTL-SDR receivers, native spectrum/waterfall, fine activity records, compact storage, GPS association, saved analysis, filtered exports and HTML findings reports. Experimental one/two-board RAK5146 USB/LBT support adds sampled RSSI sweeps and configured packet reception with separate measurement records and reports. Experimental LoRa waveform discovery now feeds bounded automatic PHY decoding and key-scoped Meshtastic envelope classification; manual profiles remain optional. See [implementation status](../engineering/implementation-status.md) and [validation scope](../engineering/quality-and-validation.md).
 
 ## Near-term work
 
@@ -21,15 +21,15 @@ The [RTL-SDR adapter](../operations/rtl-sdr.md) and [RAK5146 adapter](../operati
 
 ## Full-range protocol discovery
 
-Discover compatible traffic anywhere within the supplied usable span without known frequency, BW or SF. The current waveform detector supplies inferred settings but does not automatically dispatch payload decoding. Complete that connection using the explicit survey-wide keyring and independently reported acquisition, discovery and decoder coverage.
+Discover compatible traffic anywhere within the supplied usable span without known frequency, BW or SF. The current waveform detector supplies inferred settings to a bounded automatic PHY dispatcher and the survey-wide keyring. All 17 reviewed Meshtastic preset bundles are represented, including legacy profiles. The next work is independent live qualification across frequencies, signal conditions and receiver spans, with acquisition, discovery and decoder coverage reported separately.
 
 Acceptance requires labeled independent fixtures and controlled measurements covering sensitivity, timing, overlaps, false classification and overload. An empty decode list must never be presented as empty spectrum. Approximately 16 MHz recording throughput and 16 MHz exhaustive decoding are separate claims.
 
 ## MeshCore and other classification
 
-Add native MeshCore framing, authorized key handling, bounded content mapping and protocol-specific fixtures. Its PHY, packet and encryption semantics require separate review. Reliable LoRaWAN/other-device attribution needs its own evidence; a LoRa waveform, frequency or sync word alone is insufficient.
+Add native MeshCore framing, authorized key handling, bounded metadata-only classification and protocol-specific fixtures. Its PHY, packet and encryption semantics require separate review. Reliable LoRaWAN/other-device attribution needs its own evidence; a LoRa waveform, frequency or sync word alone is insufficient.
 
-Recipient-private-key messages and stronger protocol identity verification remain separate security and compatibility work. No classification feature may silently broaden content retention.
+Semantic message interpretation and recipient-private-key content processing are outside current scope.
 
 ## Later analysis and access
 

@@ -71,6 +71,9 @@ for threshold in ("nan", "inf", "-inf", "-140.001", "0.001", "-55garbage", "1e99
 help_result = run(["--help", "--gps-device", "/not-a-device", "--confirm-gps-access"])
 assert help_result.returncode == 0 and "--analyze-saved" in help_result.stdout
 assert "--activity-threshold-dbfs" in help_result.stdout
+assert "[--content]" not in help_result.stdout and "gps|content" not in help_result.stdout
+reject(["--content"], "--content has been removed")
+reject(["--report", "content"], "Message-content reports have been removed")
 
 
 def value(output, key):
@@ -113,7 +116,7 @@ with tempfile.TemporaryDirectory(prefix="survey-cli-", dir=Path(binary).parent) 
     assert region.returncode == 0 and "occupancy_percent=unavailable" in region.stdout, region.stderr
     assert "Coverage gaps have no receiver position" in region.stdout
 
-    # Free-form provenance is independent of decoded-content export consent.
+    # Free-form provenance is an independent export privacy choice.
     ordinary_export = Path(directory) / "summary.csv"
     exported = run(["--export", session, "--output", str(ordinary_export)])
     assert exported.returncode == 0, exported.stderr
@@ -157,6 +160,22 @@ with tempfile.TemporaryDirectory(prefix="survey-cli-", dir=Path(binary).parent) 
     assert result.returncode == 0, result.stderr
     with sqlite3.connect(detailed) as database:
         assert database.execute('PRAGMA user_version').fetchone()[0] == 5
+
+    # A saved text field must not control terminal presentation. Keep the source
+    # bytes intact and encode controls only at the CLI output boundary.
+    reason = "source_stall\x1b[2J\r\nFORGED\x7f\u009b\u202e\\literal\u00e9"
+    with sqlite3.connect(detailed) as database:
+        database.execute('INSERT INTO coverage_gaps VALUES(?,?,?,?,?,?,?)',
+                         (900001, 0, 1700000000.0, 1700000000.1, 0.0, 0.1, reason))
+    before = hashlib.sha256(detailed.read_bytes()).digest()
+    analyzed = run(['--analyze-saved', str(detailed)])
+    assert analyzed.returncode == 0, analyzed.stderr
+    gap_line = next(line for line in analyzed.stdout.splitlines() if line.startswith('gap_start_s='))
+    expected = ''.join(chr(b) if 32 <= b < 127 and b != 92 else
+                       '\\\\' if b == 92 else f'\\x{b:02x}' for b in reason.encode())
+    assert gap_line.endswith(' reason=' + expected), repr(gap_line)
+    assert '\x1b' not in analyzed.stdout and '\r' not in analyzed.stdout
+    assert hashlib.sha256(detailed.read_bytes()).digest() == before
 
 for threshold in (-140, 0):
     result = run(["--headless-demo", "--spectrum-only", "--seconds", "0.1",

@@ -10,6 +10,15 @@
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#include <shellapi.h>
+#include <objbase.h>
+#else
+#include <spawn.h>
+#include <sys/wait.h>
+#include <cerrno>
+#include <chrono>
+#include <thread>
+extern char **environ;
 #endif
 
 namespace ovmesh {
@@ -216,6 +225,50 @@ std::string choose_local_file(const std::string& directory, const std::string& f
         throw std::runtime_error("That filename already exists; choose a new filename");
     }
     return path;
+}
+
+void open_local_report(const std::string& path) {
+    const auto file = from_utf8(path);
+    if (ascii_lower(to_utf8(file.extension())) != ".html")
+        throw std::runtime_error("Only local HTML analysis reports can be opened");
+    const auto checked = choose_local_file(to_utf8(file.parent_path()), to_utf8(file.filename()), FileChoiceKind::Html, true);
+#ifdef _WIN32
+    const auto initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    if (FAILED(initialized) && initialized != RPC_E_CHANGED_MODE)
+        throw std::runtime_error("Windows could not initialize the report opener");
+    const auto result = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", file.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+    if (SUCCEEDED(initialized)) CoUninitialize();
+    if (result <= 32) throw std::runtime_error("Windows could not open the report in the default browser");
+#else
+#ifdef __APPLE__
+    const char* launcher = "/usr/bin/open";
+#else
+    const char* launcher = "/usr/bin/xdg-open";
+#endif
+    // An absolute checked filename cannot be interpreted as an option or URL.
+    char* args[] = {const_cast<char*>(launcher), const_cast<char*>(checked.c_str()), nullptr};
+    pid_t child = 0;
+    if (posix_spawn(&child, launcher, nullptr, nullptr, args, environ) != 0)
+        throw std::runtime_error("Cannot launch the default browser; open the saved HTML file manually");
+    int status = 0;
+    pid_t result = 0;
+    for (unsigned attempt = 0; attempt < 50; ++attempt) {
+        do { result = waitpid(child, &status, WNOHANG); } while (result < 0 && errno == EINTR);
+        if (result != 0) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    if (result == 0) {
+        // Some Linux handlers stay attached to the browser. Reap them without
+        // keeping the desktop's report operation busy until the browser closes.
+        std::thread([child] {
+            int exit_status = 0;
+            while (waitpid(child, &exit_status, 0) < 0 && errno == EINTR) {}
+        }).detach();
+        return;
+    }
+    if (result < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        throw std::runtime_error("The default browser could not open the report; open the saved HTML file manually");
+#endif
 }
 
 } // namespace ovmesh

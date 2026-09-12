@@ -1,5 +1,7 @@
 # Application screenshots
 
+Existing images predate semantic-content removal. They are historical illustrations; current labels and controls may differ. No screenshots were regenerated for this change.
+
 All five screenshots show the actual macOS application or its generated HTML report using synthetic RF input. They contain no operational GPS fixes, decoded messages, keys, device serials or personal file paths. Synthetic examples demonstrate the interface and report format; they do not establish RF accuracy or decoder performance.
 
 ## Live spectrum and detected waveforms

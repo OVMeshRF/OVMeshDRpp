@@ -55,7 +55,7 @@ std::vector<std::uint8_t> payload(unsigned length=43) {
     return bytes;
 }
 void symbol_roundtrips() {
-    for(unsigned sf=7;sf<=12;++sf) for(unsigned cr=5;cr<=8;++cr) for(unsigned bw:{125000U,250000U,500000U}) {
+    for(unsigned sf=7;sf<=12;++sf) for(unsigned cr=5;cr<=8;++cr) for(unsigned bw:{15625U,62500U,125000U,250000U,500000U}) {
         ovmesh::PhyConfig c{bw,static_cast<std::uint8_t>(sf),static_cast<std::uint8_t>(cr),0x2b};
         for(unsigned length:{2U,43U,255U}) {
             const auto data=payload(length);

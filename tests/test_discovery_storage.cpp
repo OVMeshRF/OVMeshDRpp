@@ -96,7 +96,7 @@ void roundtrip_and_exports(const std::filesystem::path& directory,const std::fil
     require(w.receiver_position&&w.receiver_position->source==fix().source&&w.receiver_position->latitude==fix().latitude&&w.receiver_position->hdop==fix().hdop,"full receiver position roundtrip");
     require(!out.waveforms[0].receiver_position,"missing position remains missing");
     const auto& d=out.discovery;
-    require(d.method=="lora-preamble-v1"&&d.accepted_input_samples==8000000&&d.rejected_input_samples==32&&d.channelized_input_samples==7000000&&d.abandoned_input_samples==1000000,"distinct input work counters");
+    require(d.method=="lora-preamble-v2"&&d.accepted_input_samples==8000000&&d.rejected_input_samples==32&&d.channelized_input_samples==7000000&&d.abandoned_input_samples==1000000,"distinct input work counters");
     require(d.source_queue_drops==2&&d.stream_resets==3&&d.result_overflows==4&&d.gap_overflows==5&&d.observations==2,"loss and observation counters");
     require(d.bands.size()==2&&d.bands[1].subband_index==1&&d.bands[1].center_hz==907500000.&&d.bands[1].processed_samples==1600000&&d.bands[1].abandoned_samples==400000&&d.bands[1].source_gap_input_samples==32&&d.bands[1].candidate_limit_hits==9&&d.bands[1].track_limit_hits==10,"per-band counters and units");
     rejects([&]{reader.append(waveform(3));},"readonly waveform write rejected");
@@ -109,7 +109,8 @@ void roundtrip_and_exports(const std::filesystem::path& directory,const std::fil
         if(r.at("record_type")=="session")require(r.at("session_schema_version")=="5","schema marker");
         if(r.at("record_type")=="waveform_observation") {
             ++waves;require(!r.at("inferred_bandwidth_hz").empty()&&!r.at("inferred_spreading_factor").empty(),"explicit inferred settings");
-            for(const auto* field:{"duration_seconds","active_seconds","occupancy_fraction","text","origin","packet_id","authentication","receiver_latitude","receiver_source","bandwidth_hz"})require(r.at(field).empty(),std::string("waveform must not invent packet/payload/GPS field: ")+field);
+            for(const auto* field:{"duration_seconds","active_seconds","occupancy_fraction","authentication","receiver_latitude","receiver_source","bandwidth_hz"})require(r.at(field).empty(),std::string("waveform must not invent packet/GPS field: ")+field);
+            for(const auto* field:{"text","origin","packet_id"})require(!r.contains(field),std::string("semantic/identity field must be absent from export: ")+field);
             require(r.at("classification").find("no packet decode")!=std::string::npos&&r.at("time_association").find("not packet airtime")!=std::string::npos,"waveform interpretation");
         }
         if(r.at("record_type")=="discovery_band_coverage"){++bands;require(r.at("discovery_output_sample_rate")=="2000000"&&r.at("sample_rate")=="8000000","explicit output/input units");}
@@ -224,7 +225,7 @@ void hostile_inputs(const std::filesystem::path& directory,const std::filesystem
 void legacy(const std::filesystem::path& directory,const std::filesystem::path& base) {
     for(int version=1;version<=4;++version) {
         const auto path=directory/("legacy-"+std::to_string(version)+".sqlite");std::filesystem::copy_file(base,path);
-        sql(path,"PRAGMA journal_mode=DELETE; DROP TABLE waveform_observations; DROP TABLE discovery_status; DROP TABLE discovery_bands; DROP TABLE discovery_gaps; ALTER TABLE session DROP COLUMN discover_lora;");
+        sql(path,"PRAGMA journal_mode=DELETE; DROP TABLE metadata_policy; DROP TABLE automatic_decoder; DROP TABLE waveform_observations; DROP TABLE discovery_status; DROP TABLE discovery_bands; DROP TABLE discovery_gaps; ALTER TABLE session DROP COLUMN discover_lora;");
         if(version<4)sql(path,"DROP TABLE spectrum_tiles;DROP TABLE spectrum_events;DROP TABLE coverage_gaps;DROP TABLE survey_metrology;");
         if(version<3)sql(path,"DROP TABLE route_details;ALTER TABLE receptions DROP COLUMN evidence_port;ALTER TABLE receptions DROP COLUMN evidence_signature_present;ALTER TABLE receptions DROP COLUMN request_id;ALTER TABLE receptions DROP COLUMN reply_id;ALTER TABLE receptions DROP COLUMN signature_present;ALTER TABLE receptions DROP COLUMN routing_variant;");
         if(version<2)sql(path,"ALTER TABLE session DROP COLUMN tuning_offset_hz;");

@@ -34,6 +34,75 @@ double scalar(sqlite3* db,const char* query) {
     require(sqlite3_step(statement.get())==SQLITE_ROW,"Read synthetic survey validation");
     return sqlite3_column_double(statement.get(),0);
 }
+void check_resume(const std::filesystem::path& directory,bool detailed) {
+    ovmesh::Engine engine(ovmesh::Engine::SyntheticPacing::ConsumerPaced);
+    ovmesh::ReceiverConfig config;config.lanes.clear();config.compact_recording=!detailed;
+    engine.set_fixed_position(0,0);
+    config.session_path=(directory/"resumed.sqlite").string();std::string error;
+    require(engine.set_public_meshtastic_key_enabled(true,error)&&engine.public_meshtastic_key_enabled()&&
+        engine.configured_key_count()==1&&engine.key_records().size()==16,"Explicit public default uses a separate slot");
+    require(!engine.has_survey_key(16)&&!engine.set_survey_key(16,"Not a custom slot","AQ==",error),
+        "Public default does not expand writable custom key slots");
+    require(engine.start(config,false,error),error);
+    require(wait_for(engine,[](const auto& s){return s.measurement_seconds>=.15;},30),"First acquisition has spectrum");
+    engine.stop();const auto first=engine.snapshot();
+    require(first.acquisitions.size()==1&&first.acquisitions[0].finalized,"Stop finalizes first acquisition");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    require(engine.start(config,false,error),error);
+    require(wait_for(engine,[&](const auto& s){return s.measurement_seconds>=first.measurement_seconds+.15;},30),"Resume gathers additional observations");
+    engine.stop();const auto same=engine.snapshot();
+    require(same.session_id==first.session_id&&same.config.session_path==config.session_path&&same.acquisitions.size()==2&&
+        same.spectrum_tiles>first.spectrum_tiles&&same.delivered_samples>first.delivered_samples,"Resume retains survey identity and cumulative measurements");
+    for(const auto& bin:first.frequencies) {
+        const auto found=std::find_if(same.frequencies.begin(),same.frequencies.end(),[&](const auto& v){return v.center_hz==bin.center_hz&&v.width_hz==bin.width_hz;});
+        require(found!=same.frequencies.end()&&found->observed_seconds>bin.observed_seconds,"Same-grid frequency history accumulates across pause");
+    }
+    // Change both grid position and spacing. Former measurements retain their
+    // original setup rather than being relabeled with the current receiver.
+    engine.clear_position();
+    config.center_hz=915000000;config.sample_rate=8000000;config.survey_span_hz=4000000;
+    config.tuning_offset_hz=1200;config.lna_gain=24;config.vga_gain=20;config.activity_threshold_dbfs=-50;
+    require(engine.start(config,false,error),error);
+    require(wait_for(engine,[&](const auto& s){return s.measurement_seconds>=same.measurement_seconds+.15;},30),"Reconfigured resume gathers a new grid");
+    engine.stop();const auto final=engine.snapshot();require(engine.save_session(error),error);
+    require(final.session_id==first.session_id&&final.acquisitions.size()==3&&
+        final.acquisitions[0].config.center_hz==907500000&&final.acquisitions[2].config.center_hz==915000000&&
+        final.acquisitions[0].config.sample_rate==16000000&&final.acquisitions[2].config.sample_rate==8000000,
+        "Each uninterrupted segment preserves its receiver settings");
+    require(final.frequencies.size()>same.frequencies.size(),"Current survey retains prior and new grids");
+    ovmesh::SessionStore saved;saved.open_readonly(config.session_path);const auto snapshot=saved.read();
+    require(snapshot.session_id==first.session_id&&snapshot.acquisitions.size()==3&&snapshot.spectrum_tiles==final.spectrum_tiles&&
+        std::abs(snapshot.measurement_seconds-final.measurement_seconds)<1e-8,"Same SQLite recording includes all acquisition segments");
+    double exposure=0;uint64_t tiles=0;double prior_end=0;
+    saved.visit_tiles([&](const auto& tile){++tiles;const auto& acquisition=ovmesh::acquisition_config_at(snapshot.acquisitions,snapshot.config,tile.elapsed_start_seconds);
+        require(tile.elapsed_start_seconds>=prior_end-1e-8,"Global measurement timeline does not overlap");prior_end=tile.elapsed_end_seconds;
+        require(std::abs(tile.bin_width_hz-double(acquisition.sample_rate)/4096)<1e-9,"Each tile is validated using its actual acquisition sample rate");
+        if(acquisition.center_hz==915000000)require(!tile.receiver_start&&!tile.receiver_end,"Resumed measurements never reuse cleared GPS fixes");
+        else require(tile.receiver_start&&tile.receiver_end,"Prior acquisitions retain their approved receiver positions");
+        exposure+=tile.elapsed_end_seconds-tile.elapsed_start_seconds;});
+    require(tiles==final.spectrum_tiles&&std::abs(exposure-final.measurement_seconds)<1e-7,"Paused time adds no measured exposure");
+    unsigned pauses=0;saved.visit_gaps([&](const auto& gap){if(gap.reason=="reception_paused"){
+        ++pauses;require(gap.missing_samples==0,"Pause is unobserved elapsed time, not lost source samples");
+        saved.visit_tiles([&](const auto& tile){require(tile.elapsed_start_seconds>=gap.elapsed_end_seconds-1e-8||tile.elapsed_end_seconds<=gap.elapsed_start_seconds+1e-8,"No pause becomes measured RF coverage");});}});
+    require(pauses==2,"Every stop/resume interval is explicitly unobserved");
+    ovmesh::SurveyQuery query;const auto analyzed=saved.analyze(query);
+    require(analyzed.tile_count==final.spectrum_tiles&&std::abs(analyzed.observed_seconds-final.measurement_seconds)<1e-7,
+        "Full-range analysis includes observations from all acquisition grids");
+    const auto copy=(directory/"resumed-copy.sqlite").string();require(engine.save_session_copy(copy,error),error);
+    ovmesh::SessionStore copied;copied.open_readonly(copy);require(copied.read().acquisitions.size()==3&&copied.analyze(query).tile_count==final.spectrum_tiles,
+        "Save copy retains segmented measurement provenance");
+    require(engine.start(config,false,error),error);engine.stop();const auto immediate=engine.snapshot();
+    require(immediate.acquisitions.size()==4&&immediate.acquisitions.back().finalized&&
+        immediate.acquisitions.back().elapsed_end_seconds>=immediate.acquisitions.back().elapsed_start_seconds&&
+        immediate.elapsed_seconds>=final.elapsed_seconds&&engine.save_session(error),
+        "Immediate Stop after Resume preserves valid monotonic acquisition bounds even before input arrives");
+    auto invalid=config;invalid.synthetic=false;
+    require(!engine.start(invalid,false,error)&&engine.snapshot().session_id==first.session_id&&engine.snapshot().spectrum_tiles==immediate.spectrum_tiles,
+        "Receiver type change is explicit and never discards the current survey");
+    require(engine.new_session(error)&&engine.public_meshtastic_key_enabled()&&engine.snapshot().acquisitions.empty(),
+        "Only New clears all acquisitions while preserving explicit public key setup");
+    engine.clear_keys();require(!engine.public_meshtastic_key_enabled()&&engine.configured_key_count()==0,"Clear keys disables the public default too");
+}
 }
 int main(int argc,char** argv) {
     try {
@@ -121,18 +190,18 @@ int main(int argc,char** argv) {
         require(engine.start(config,false,error),error);
         require(!engine.set_channel_key(0,"UserFixture","101112131415161718191a1b1c1d1e1f",error),"Changing keys while running rejected");
         require(!engine.set_survey_key(15,"Other fixture","AQ==",error) && engine.has_survey_key(15),"Key-only records remain immutable during reception");
-        const bool decoded=wait_for(engine,[](const auto& s){return s.authorized_messages>=1&&s.input_seconds>=5.2;},realtime?35:120);
+        const bool decoded=wait_for(engine,[](const auto& s){return s.classified_receptions>=1&&s.input_seconds>=5.2;},realtime?35:120);
         if(!decoded) {
             const auto s=engine.snapshot();
             std::cerr<<"Integration progress input="<<s.input_seconds<<"s frames="<<s.total_receptions<<" dropped="<<s.dropped_samples<<" load="<<s.processing_load<<'\n';
         }
-        require(decoded,"Wideband synthetic IQ must pass downconversion, LoRa and native protocol decoding");
+        require(decoded,"Wideband synthetic IQ must pass downconversion, LoRa and key-scoped envelope classification");
         const auto before_save=engine.snapshot();
         require(engine.save_session(error),error);
         {
             ovmesh::SessionStore checkpoint;checkpoint.open_readonly(config.session_path);const auto committed=checkpoint.read();
             require(committed.session_id==before_save.session_id&&committed.delivered_samples>=before_save.delivered_samples&&
-                committed.authorized_messages>=before_save.authorized_messages&&committed.incomplete,
+                committed.classified_receptions>=before_save.classified_receptions&&committed.incomplete,
                 "Save confirms a readable live checkpoint without claiming the ongoing session is complete");
             require(engine.snapshot().running,"Explicit Save leaves reception running");
         }
@@ -157,7 +226,7 @@ int main(int argc,char** argv) {
         require(stopped.measurement_seconds<=stopped.input_seconds,"RF observation cannot exceed delivered input");
         require(stopped.input_seconds-stopped.measurement_seconds<4096.0/config.sample_rate+1e-7,
             "Every complete accepted FFT contributes exposure; only partial tail is excluded");
-        std::cout<<"Fixture decoded "<<stopped.authorized_messages<<" authorized message(s); input="
+        std::cout<<"Fixture classified "<<stopped.classified_receptions<<" likely Meshtastic reception(s); input="
             <<stopped.input_seconds<<"s measured="<<stopped.measurement_seconds<<"s dropped="
             <<stopped.dropped_samples<<" processing_load="<<stopped.processing_load<<'\n'<<std::flush;
         require(stopped.spectrum_tiles>0 && stopped.spectrum_fft_size==4096 &&
@@ -168,12 +237,12 @@ int main(int argc,char** argv) {
         // sensitivity. Reception order is not an authorization guarantee: a
         // later failed frame may retain RF metadata, but never decoded content.
         const auto authorized=std::find_if(stopped.receptions.begin(),stopped.receptions.end(),
-            [](const auto& r){return r.crc_valid&&r.decoded.authorized.has_value();});
+            [](const auto& r){return r.crc_valid&&r.decoded.status==ovmesh::protocol::Status::classified && r.decoded.evidence.has_value();});
         require(authorized!=stopped.receptions.end(),"Retain a CRC-valid authorized synthetic reception");
-        require(authorized->decoded.authorized->content.text=="Synthetic RF survey — native LoRa decoding",
-            "Authorized reception retains the exact transmitted synthetic text");
+        require(authorized->decoded.evidence->port==1 && authorized->decoded.authentication=="not authenticated",
+            "Recognized reception retains only unauthenticated envelope evidence");
         for(const auto& reception:stopped.receptions)if(!reception.crc_valid)
-            require(!reception.decoded.authorized && !reception.decoded.evidence &&
+            require(!reception.decoded.evidence &&
                 reception.decoded.status==ovmesh::protocol::Status::bad_phy_crc,
                 "Failed CRC retains categorical RF metadata only");
         require(stopped.config.center_hz==907500000 && stopped.config.tuning_offset_hz==900 &&
@@ -188,10 +257,10 @@ int main(int argc,char** argv) {
         require(authorized->receiver_position&&authorized->receiver_position->manual,"Fixed receiver position associated");
         require(!stopped.frequencies.empty(),"Final frequency statistics published");
         ovmesh::SessionStore saved;saved.open_readonly(config.session_path);const auto recorded=saved.read();
-        require(recorded.authorized_messages>=1&&!recorded.incomplete,"Finalized session reopened");
+        require(recorded.classified_receptions>=1&&!recorded.incomplete,"Finalized session reopened");
         require(recorded.receptions.size()==stopped.receptions.size(),"All reception outcomes survive readback");
         for(const auto& reception:recorded.receptions)if(!reception.crc_valid)
-            require(!reception.decoded.authorized && !reception.decoded.evidence,
+            require(!reception.decoded.evidence,
                 "Saved CRC failures contain no decoded content or envelope evidence");
         require(recorded.config.tuning_offset_hz==900,"Applied tuning correction survives saved-session readback");
         require(recorded.frequencies.size()==stopped.frequencies.size(),"Final frequencies persisted");
@@ -319,6 +388,9 @@ int main(int argc,char** argv) {
         require(!engine.analyze_survey(ovmesh::SurveyQuery{},measured,error),"New cannot silently query the previous saved session");
         require(engine.open_session(config.session_path,error)&&engine.snapshot().delivered_samples==stopped.delivered_samples,
             "Original recording remains intact after Copy, Open and New");
+        require(!engine.start(config,false,error)&&error.find("read-only")!=std::string::npos,
+            "Historical survey cannot be silently resumed or replaced by Start");
+        require(engine.new_session(error),error);
         auto hardware=config;hardware.synthetic=false;hardware.session_path.clear();hardware.lanes[0].channel_name="UserFixture";
         require(!engine.start(hardware,false,error)&&error.find("permission")!=std::string::npos,"Demo preserves user channel-key binding");
         hardware.lanes[0].channel_name="DifferentFixture";hardware.lanes[0].label="Other RF profile";
@@ -382,6 +454,7 @@ int main(int argc,char** argv) {
         const auto misleading_copy=(directory/"must-not-copy-another-session.sqlite").string();
         require(!engine.save_session_copy(misleading_copy,error)&&!std::filesystem::exists(misleading_copy),
             "Failed new-file creation cannot make Save copy copy an unrelated older recording");
+        check_resume(directory,detailed);
         std::cout<<"Engine integration passed: native wideband decode, storage, key isolation, lifecycle; no hardware opened\n";
         return EXIT_SUCCESS;
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return EXIT_FAILURE;}

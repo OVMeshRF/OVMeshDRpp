@@ -11,11 +11,11 @@ Status: experimental native application dependency inventory. The combined build
 | Crypto | OpenSSL libcrypto | Maintained primitives, isolated local static build; no libssl application or external provider/config loading |
 | Sessions | SQLite amalgamation | Embedded storage, no server/extensions, typed schema; plaintext files |
 | Desktop | Dear ImGui + GLFW + OpenGL | Existing vendored sources/backends and OS graphics; local system-font lookup plus built-in fallback, no font download |
-| USB | libhackrf + reviewed static librtlsdr 2.0.3 + libusb | RTL source pinned in tree; existing host USB transport, no upstream utilities or implicit installation; [RTL intake](../security/rtlsdr-intake.md). Packaging must inventory actual closure |
+| USB | Repository-local static libhackrf 2024.02.1 + reviewed static librtlsdr 2.0.3 + shared libusb 1.0.30 | One reviewed USB prefix for both SDR adapters; no host fallback, upstream utilities or implicit installation; [USB intake](../security/usb-intake.md), [RTL intake](../security/rtlsdr-intake.md). Packaging must inventory actual closure |
 | RAK5146 USB/LBT | Selected Semtech sx1302_hal 2.1.0 + bundled TinyMT32 | BSD-licensed sources with pinned original/adopted hashes; isolated local C worker, native POSIX serial API, no libusb dependency, packet forwarder, network listener, MCU flasher or new runtime framework; [provenance](../../third_party/sx1302_hal/PROVENANCE.md) |
 | GPS | Owned NMEA, device discovery and OS serial APIs | Metadata enumeration via macOS IOKit/CoreFoundation, Windows SetupAPI or Linux serial/sysfs; no serial-port traffic probing, gpsd or external GPS package |
-| Desktop preferences | Owned bounded format 6 + OS file APIs | Existing OpenSSL random generation; private atomic receiver/source/display/settings persistence, no settings framework, keys, coordinates or content |
-| Session copy / image capture | Existing SQLite backup API + owned PNG writer | Private new local files; full retained SQLite snapshot or bounded spectrum/waterfall image; no backup framework, image codec package or OS-dialog dependency |
+| Desktop preferences | Owned bounded format 8 + OS file APIs | Existing OpenSSL random generation; private atomic receiver/source/display/settings persistence, including a public-key enable switch; no settings framework, private keys, coordinates or content |
+| Session copy / image capture | Existing SQLite APIs + owned metadata reconstruction and PNG writer | Private new local files; allowlisted metadata from a consistent saved-session snapshot or bounded spectrum/waterfall image; no backup framework, image codec package or OS-dialog dependency |
 | Cloud/remote | None | No listener, telemetry, online map, updater or source synchronization |
 
 Using maintained cryptographic and USB implementations avoids disproportionate maintenance risk. Owned DSP/parsing reduces packages but increases testing and update responsibility. GPS setup uses native OS metadata; recognized or remembered enabled GPS may connect on ordinary hardware-oriented startup, while RF stays stopped. Each platform needs its own runtime and dependency-closure validation.
@@ -26,7 +26,7 @@ The RAK worker builds on macOS and eligible Linux/glibc 2.34+ systems with safe 
 
 The desktop uses locally installed system sans-serif and monospace fonts through the existing Dear ImGui font path, with the existing licensed built-in fallback. OS font files are not vendored, downloaded or copied into the application bundle; their respective font/OS licenses remain applicable. Do not add them to a future package without reviewing redistribution rights.
 
-The bounded PNG writer is project-owned and emits uncompressed PNG data. SQLite's existing backup interface provides consistent saved-session copies; it adds no dependency or server. Both reuse the existing in-app local file chooser, not a new native-dialog framework. The UI adds no cloud service, plugin host, auto-updater or network asset source. Third-party component versions and grants are unchanged. **Settings > About & licenses** remains the current in-app notice entry point.
+The bounded PNG writer is project-owned and emits uncompressed PNG data. Saved-session copies reconstruct permitted metadata from a consistent SQLite snapshot into a fresh database; database pages and historical semantic content are not copied. Only recordings marked with the current metadata-only policy can be copied. This adds no dependency or server. Both features reuse the existing in-app local file chooser, not a new native-dialog framework. These desktop features add no further third-party package, cloud service, plugin host, auto-updater or network asset source. **Settings > About & licenses** remains the current in-app notice entry point.
 
 ## Intake and maintenance
 
@@ -37,6 +37,10 @@ Routine CMake configure/build/startup must not fetch packages. Compile only need
 ## Distribution gate
 
 Local build authorization does not authorize distribution. Before shipping, inventory static/dynamic libraries on each platform, include full notices and corresponding source/build materials, satisfy applicable GPL/LGPL and other terms, and validate installer/signing/update behavior. Assign maintainers for releases, dependency advisories and private security reports. Acknowledgments alone are insufficient, and Mac tests do not establish Windows/Linux support.
+
+The current build requires reviewed **libusb 1.0.30**, prepared locally with static libhackrf 2024.02.1; host libusb 1.0.29 is no longer a build fallback. Earlier libusb versions have descriptor-parser memory-safety defects fixed upstream in [PR 1814](https://github.com/libusb/libusb/pull/1814) and included in [1.0.30](https://github.com/libusb/libusb/releases/tag/v1.0.30). A different version or security-backported build requires a separate source review and deliberate pin update; a version string alone does not establish backport status. CMake requires both SDR adapters to use the same reviewed shared libusb, without USB access or automatic downloads. See [source pins, helper behavior and validation limits](../security/usb-intake.md).
+
+Recheck advisories and inspect the actual direct/transitive loader closure before release. Shared libusb preserves a replaceable library boundary for LGPL distribution, but it does not by itself satisfy all source, notice or replacement obligations. The update leaves installed host libraries unchanged and does not qualify every supported platform.
 
 ## Source attribution and distribution limits
 

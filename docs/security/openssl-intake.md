@@ -19,11 +19,22 @@ recorded SHA-256 matches the published checksum:
 a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2
 ```
 
-The detached PGP signature has **not been verified**. The recorded upstream
-primary signing fingerprint is
-`B146647E45A7B33947AB226B2A2C87D161692D40`; retaining a fingerprint or checksum is
-not publisher authentication. Verify the applicable release signature and trust
-chain before relying on it for a distribution. [Signing information](https://openssl-library.org/source/)
+The pinned archive's detached PGP signature was **verified on 2026-09-11**
+with GnuPG 2.4.4. The signature was created on 2026-08-25 at 11:57:35 UTC by
+subkey `C46ED3F2CBEFDA1FDAADA44264ED7B1DCCE71CB2`, certified by primary key
+`B146647E45A7B33947AB226B2A2C87D161692D40`. That primary fingerprint matches
+the canonical trust anchor on the [official OpenSSL source page](https://openssl-library.org/source/).
+The archive, detached signature and public-key bundle matched the pinned hashes
+before verification. GnuPG reported a valid signature and valid subkey binding;
+the selected keys were not expired or revoked in that bundle. No independent
+Web-of-Trust certification or guarantee of uncompromised upstream source is implied.
+
+To repeat the check, verify the manifest's input hashes, import only the pinned
+public-key bundle into a temporary GnuPG keyring, then verify the detached signature
+against the exact archive. Inspect the `VALIDSIG` primary and subkey fingerprints,
+not only the display name or a short key ID. Recheck the official trust anchor and
+current revocation information before a later release. This release qualification
+used an isolated local Ubuntu container; GnuPG is not an application dependency.
 
 Before extraction, require the expected archive prefix and reject absolute or
 traversal paths, links and special/device entries. Review `Configure`,
@@ -40,9 +51,28 @@ of compiled libraries, whose hashes depend on the build environment. Preserve th
 
 The explicit [bootstrap helper](../../tools/bootstrap_openssl.py) automates the recorded configuration for native Linux x86_64/aarch64 and macOS arm64/x86_64. Use `python3 tools/bootstrap_openssl.py --download`, or `--archive PATH` without network access. It uses only Python's standard library; no virtual environment or pip package is needed. See [complete Linux instructions](../operations/linux-build.md).
 
-The helper verifies the pinned archive size/SHA-256 before extraction or build, rejects links, special entries and paths outside the expected source prefix, then checks the recorded build-source hashes. Downloads require an explicit flag, HTTPS and the official release/CDN hosts. Builds and logs stay under ignored `build/`, and only generated public headers, static libcrypto and its license are staged. It validates the existing hardening/NIST smoke test through CMake before making a new prefix available; existing prefixes are left unchanged. These checks do not verify the unverified detached publisher signature or replace target qualification.
+The helper verifies the pinned archive size/SHA-256 before extraction or build, rejects links, special entries and paths outside the expected source prefix, then checks the recorded build-source hashes. Downloads require an explicit flag, HTTPS and the official release/CDN hosts. Builds and logs stay under ignored `build/`, and only generated public headers, static libcrypto and its license are staged. It validates the existing hardening/NIST smoke test through CMake before making a new prefix available; existing prefixes are left unchanged. The helper itself does not perform PGP verification; the separate release-signature check above does not replace target qualification.
+
+For `--archive`, the helper first copies a regular file into its private build directory with a strict size bound and owner-only permissions. It verifies that copy and extracts only those verified bytes. Replacing or modifying the original supplied archive afterward cannot change the build input. Synthetic tests exercise replacement between verification and the build boundary, plus incorrect hashes, sizes and nonregular inputs; they execute no supplied build code.
 
 Normal CMake configuration selects the prepared local prefix by default, or an explicit `OPENSSL_ROOT_DIR`. It rejects missing or mixed-prefix headers/libraries, nonstatic crypto and an incorrect version. It compiles and links the hardened intake source even when application tests are disabled. Configure does not execute that test or download/build a dependency. Run CTest for the known-answer runtime check. A header/library path and version check is not proof of source provenance; use the recorded source preparation and inspect the final linkage.
+
+### Package builds
+
+Use `--relocatable` and a fresh `--prefix` under this checkout's `build/` directory
+when preparing libcrypto for distribution. OpenSSL retains compiled-in default
+directory strings even with automatic configuration and module loading disabled.
+This option sets the logical Configure prefix to `/ovmesh/disabled` and
+`OPENSSLDIR` to `/ovmesh/disabled/ssl`, avoiding the builder's private directory in
+those strings. All existing hardening options are preserved. The helper still
+stages and validates headers and `libcrypto.a` under the supplied local `--prefix`;
+it never installs anything in the logical path or runs an upstream install target.
+
+This is not a complete binary-path scrub. Package builds must also handle compiler
+debug/source paths and inspect every shipped binary and metadata file. Rebuild and
+relink against the new prefix; changing packaging files alone does not change an
+existing library. Ordinary local builds keep their previous defaults unless this
+option is selected.
 
 ## Build configuration
 

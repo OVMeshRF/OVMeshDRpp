@@ -2,7 +2,8 @@
 
 Implementation: [protocol.cpp](../../src/protocol.cpp) and
 [protocol.hpp](../../include/ovmesh/protocol.hpp). This is a receiver-side,
-bounded projection of the pinned RF protocol, not the Meshtastic device API.
+bounded classification of the pinned RF protocol, not the Meshtastic device API.
+Semantic message interpretation was removed under [ADR-0010](../decisions/0010-metadata-only-surveys.md).
 It currently supports channel AES-128/256-CTR; recipient PKI and MeshCore are
 not implemented in this module. Synthetic tests do not establish on-air
 interoperability or physical receiver performance.
@@ -25,8 +26,8 @@ firmware, device API, or SDRangel installation is linked. See the
 | [Channels.cpp](https://github.com/meshtastic/firmware/blob/6d41e279f1f51bd59f687b9d441c1bf47b1594fc/src/mesh/Channels.cpp) | `368f907e5a4155dbbfb389642c15f1c959a26cc03a1a6c8fa69d9c730e765e67` | Channel-name/full-key XOR hash and explicit key-index-1 expansion |
 | [Channels.h](https://github.com/meshtastic/firmware/blob/6d41e279f1f51bd59f687b9d441c1bf47b1594fc/src/mesh/Channels.h) | `685cad13114eac523e0d42b7e02b29debb012f7f99e74e31b108869f02448cb3` | Published default key bytes used only when explicitly selected by `AQ==` |
 | [Router.cpp](https://github.com/meshtastic/firmware/blob/6d41e279f1f51bd59f687b9d441c1bf47b1594fc/src/mesh/Router.cpp) | `2d014f76e767a92741f7e219b6047aaf2fb70f79045b1704d5d2198dfe800ba9` | Channel-zero unicast PKI convention; decrypted Data handling |
-| [mesh.proto](https://github.com/meshtastic/protobufs/blob/cf0a84ede1e7a0b7479e90a5e496d30c5dfba707/meshtastic/mesh.proto) | `2e6df94b777e1e483fe60bbbbbf63a2e8ef6ffd51878cd34bccb1068682f3298` | Data, Position, User, Routing, RouteDiscovery |
-| [telemetry.proto](https://github.com/meshtastic/protobufs/blob/cf0a84ede1e7a0b7479e90a5e496d30c5dfba707/meshtastic/telemetry.proto) | `cc7f30598cd3ce2687b38b5437000515d6b0bf60ffb9bc4e1a2a515d8b8224c8` | Telemetry envelope, DeviceMetrics, EnvironmentMetrics |
+| [mesh.proto](https://github.com/meshtastic/protobufs/blob/cf0a84ede1e7a0b7479e90a5e496d30c5dfba707/meshtastic/mesh.proto) | `2e6df94b777e1e483fe60bbbbbf63a2e8ef6ffd51878cd34bccb1068682f3298` | Data envelope; other descriptors are historical fixture/provenance inputs |
+| [telemetry.proto](https://github.com/meshtastic/protobufs/blob/cf0a84ede1e7a0b7479e90a5e496d30c5dfba707/meshtastic/telemetry.proto) | `cc7f30598cd3ce2687b38b5437000515d6b0bf60ffb9bc4e1a2a515d8b8224c8` | Historical semantic decoder and fixture provenance; no current payload interpretation |
 
 The selected SDRangel `modemmeshtastic/meshtasticpacket.cpp` at
 `866ef1656af7e0923554581afc5c6dd97cbafbaf` informed review of possible
@@ -36,7 +37,7 @@ This module is newly written against the original wire definitions, with no
 copied SDRangel implementation text. Firmware/source provenance remains relevant
 to the project GPL-3.0-or-later license and acknowledgement inventory.
 
-Nanopb decodes the selected official messages; the project owns semantic projection and descriptor-driven wire policy. No Python, protoc, generator or package download runs during normal application builds.
+Nanopb decodes only the outer Data envelope in the application classification path; the project owns descriptor-driven wire policy. Inner payload bytes remain opaque. No Python, protoc, generator or package download runs during normal application builds.
 
 ## Wire and authorization rules
 
@@ -62,19 +63,22 @@ or canonical padded standard Base64. Exactly `AQ==` explicitly expands index 1
 to the published public key. Other one-byte indices, whitespace, URL-safe
 Base64, omitted padding and nonzero unused padding bits are rejected.
 
-The keyring has up to 16 configuration records, each bounded to 16 keys at the
-protocol API (the current engine/UI installs one key per record). It is independent
+The keyring has up to 16 user configuration records plus one separate public-default
+record, each bounded to 16 keys at the protocol API (the current engine/UI installs
+one key per record). It is independent
 of RF frequency/BW/SF lanes. Named records narrow attempts by exact channel-name
 hash; explicit key-only records set `restrict_channel_name=false` and do not need
-a known name/hash. No keys are discovered, inferred or installed implicitly.
+a known name/hash. No private keys are discovered, inferred or installed implicitly.
+Ordinary desktop startup supplies the published public key through its visible,
+remembered enable switch; CLI and managed/test callers keep explicit key setup.
 Every record is validated before processing; malformed later records cannot leak
 an earlier partial result. An empty keyring never supplies a public fallback.
 
 Eligible identical key bytes are deduplicated with a constant-time comparison in
-RAM after scope filtering. Multiple aliases use generic `configured-keyring`
-provenance rather than inventing a unique channel. Distinct keys yielding competing
-plausible results suppress both content and evidence. No key fingerprint is saved.
-The hash and successful schema projection are not authentication.
+RAM after scope filtering. No profile identity, channel identity or key fingerprint
+is returned or saved with the classification. Distinct keys yielding competing
+plausible envelopes suppress all evidence. The hash and successful envelope parse
+are not authentication.
 
 Channel-zero unicast is conservatively classified `unsupported PKI` before
 trying channel keys. A legitimate channel key can also produce hash zero;
@@ -83,77 +87,57 @@ the PKI convention as a reliable discriminator. Broadcast hash-zero channel
 frames can still be processed with an explicitly matching key.
 
 **AES-CTR channel traffic has no authentication tag.** Successful decryption
-cannot be proven cryptographically. A PHY CRC plus the matching configured key
-and strict supported schema projection permits retained authorized content,
-labeled `likely Meshtastic` and `not authenticated`. It does not authenticate
-the sender, detect every ciphertext modification, or eliminate rare false
-positive parses. The test suite explicitly demonstrates a text-preserving
-alteration that remains unauthenticated.
+cannot be proven cryptographically. PHY CRC, explicit-key processing and a
+plausible bounded Data envelope support only tentative classification. They do
+not authenticate a sender, detect every ciphertext modification, or eliminate
+false positives. Inner payload validity is deliberately not evaluated.
 
-## Supported projections
+## Classification evidence
 
-| Port | Content | Retained fields |
-| --- | --- | --- |
-| 1 | Text | Nonempty valid UTF-8, up to 233 bytes |
-| 3 | Position | Latitude/longitude, optional altitude and Position.time |
-| 4 | Node/User | ID, long/short names, hardware model, role |
-| 5 | Routing | Explicit error reason, or supported route request/reply |
-| 67 | Device telemetry | Battery percent, voltage, channel utilization, TX air utilization, reported time |
-| 67 | Environment telemetry | Temperature, humidity, voltage, reported time |
-| 70 | Traceroute | Independent forward/return node lists and both signed SNR lists |
+The classifier returns a categorical status, classification label, the fixed
+`not authenticated` description and, when eligible, only two envelope facts:
+numeric application port and signature presence. It does not return sender,
+destination, packet/request/reply IDs, profile identity, message contents, node
+names, positions, telemetry or routes.
 
-Empty RouteDiscovery requests, including omitted empty Data.payload, are supported.
-The pinned [TraceRouteModule.cpp](https://github.com/meshtastic/firmware/blob/6d41e279f1f51bd59f687b9d441c1bf47b1594fc/src/modules/TraceRouteModule.cpp)
+A valid envelope using ports 1, 3, 4, 5, 67 or 70 is labeled `likely Meshtastic`.
+Other valid ports from 1 through 65535 are labeled `possible Meshtastic`. These
+port labels do not claim that a message of that type was successfully interpreted.
+Empty, binary, invalid-UTF-8 or otherwise malformed inner payloads can still
+produce classification evidence when their outer envelope is valid. This is a
+weaker plausibility check than semantic decoding, and field false-positive rates
+have not been established.
+
+The Data payload field must be present except for port 70. The pinned
+[TraceRouteModule.cpp](https://github.com/meshtastic/firmware/blob/6d41e279f1f51bd59f687b9d441c1bf47b1594fc/src/modules/TraceRouteModule.cpp)
 (SHA-256 `533bc9281488d086980ab6f6d0a0b3606809616f4da23ae70b36d3f4fe98f424`)
-initializes an empty request and serializes it at lines 587–603. This confirms
-the previous rejection was a compatibility defect. It does not prove the cause
-of any previously discarded live packet. The same source uses `UINT32_MAX` for
-an unknown route hop and `INT8_MIN` (-128) for unknown SNR. SNR wire fields are
-int32 values in quarter dB; preserve the complete signed value and render -128
-as unknown. Forward/return route and SNR lists have independent lengths; no
-unobserved node-to-SNR pairing is invented. Each list has its own 32-entry cap.
-An empty Routing oneof is unsupported, while explicit error_reason NONE=0 is
-retained. Empty route_request/route_reply oneof messages remain distinguishable.
+constructs an empty traceroute request. This exception checks only outer framing;
+no route list or node identifier is extracted. Present empty payload fields on
+other ports are accepted without assigning them semantic meaning.
 
-Positions and telemetry times are sender-reported, not receiver observations.
-Position latitude/longitude are `sfixed32`, not zigzag; altitude is `int32`;
-Position.time is `fixed32`. The separate GPS-solution timestamp is currently
-discarded. User.role is field 7. DeviceMetrics battery is `uint32`; value 101
-means external power and is not saved as 101 percent. Telemetry.time is
-`fixed32`. These pinned definitions take precedence over permissive historical
-interpretations in the reviewed SDRangel parser.
-
-The Data envelope retains port, want-response, request/reply IDs and signature
-presence with authorized projected content. A v2.8 signature must be absent,
-empty, or exactly 64 bytes; presence is **not verification** and does not change
-`not authenticated`. Signature bytes, node MAC/public-key bytes, unprojected
-fields and unknown payload bytes are discarded.
-
-A valid envelope with unsupported application content is labeled `possible
-Meshtastic`, with only its bounded port and signature-presence evidence retained.
-It is not promoted to `likely Meshtastic` or stored as authorized content. Bad
-CRC, unavailable keys, malformed known fields, and ambiguous key results do not
-produce this evidence. Recognizing an envelope still cannot authenticate AES-CTR.
+A v2.8 signature must be absent, empty, or exactly 64 bytes. Presence is **not
+verification** and never changes `not authenticated`. Signature bytes and all
+other unreturned envelope fields are cleared with the transient decoded object.
+Bad PHY CRC, unavailable keys, malformed outer fields, cryptographic errors and
+ambiguous key results produce no envelope evidence.
 
 ## Parser boundary and deliberate compatibility limits
 
-Nanopb 0.4.9.2 owns decoding, proto3 defaults, optional/oneof presence, packed
-arrays and unknown-field skipping. All selected objects have static bounds;
-no callbacks, heap allocation, encoder or generator are linked into the app.
-The runtime validates UTF-8, disables error strings, uses memory-buffer input
-only and limits nesting to eight. Generated descriptor checks apply the project's
-stricter unauthenticated-input policy: canonical varints, correct known wire
-types and scalar ranges, no duplicate singular fields or ambiguous oneofs,
-and no embedded NUL in strings. Unknown fields are structurally checked and
-skipped. This stricter policy can reject protobuf encodings other libraries accept.
+Nanopb 0.4.9.2 owns outer protobuf decoding, proto3 defaults and unknown-field
+skipping. Objects have static bounds; no callbacks, heap allocation, encoder or
+generator are used by this decode path. Runtime settings enable UTF-8 checks,
+disable error strings, use memory-buffer input and limit nesting to eight.
+Descriptor checks enforce canonical varints, correct known wire types and scalar
+ranges, and reject duplicate singular fields or ambiguous oneofs. These checks
+apply to the Data envelope; they do not recursively inspect its bytes payload.
+Unknown outer fields are structurally checked and skipped. The stricter outer
+policy can reject protobuf encodings other libraries accept.
 
-Frames are capped at 255 bytes, transient plaintext at 256, Data.payload at 233.
-Unknown ports and unsupported telemetry variants yield evidence only when the
-envelope and any known schema fields pass. Positions lacking coordinates and
-telemetry lacking supported measurements are unsupported content. Known malformed
-content yields no evidence. Text remains nonempty valid UTF-8 with display control
-restrictions; there is no raw-byte fallback. This is selected application coverage,
-not support for every Meshtastic application or recipient PKI.
+Frames are capped at 255 bytes, transient plaintext at 256, and Data.payload at
+233. The frame header must have a nonzero destination and a sender other than
+zero or the broadcast value. Sender and packet ID are used transiently to build
+the AES nonce and are not returned. Recipient PKI and MeshCore interpretation
+remain unsupported. No raw-byte fallback or semantic payload parser remains.
 
 ## Cryptographic and persistence boundary
 
@@ -168,25 +152,34 @@ Keys are move-only, cleared after moves and on destruction using
 `OPENSSL_cleanse`. Transient decryption arrays and decoded Nanopb objects are cleared on every return path.
 The caller still owns input frame bytes and the original text-entry buffer and
 must enforce their lifetime/clearing policy. This is not an OS-level guarantee
-against swap, crash dumps, or process inspection. Authorized projected strings
-remain in memory for their intended UI/storage lifetime.
+against swap, crash dumps, or process inspection. No semantic strings or message
+objects are projected into application results. New recordings retain only
+RF/GPS/classification metadata; historical semantic columns and route tables
+are excluded from reads, UI and exports without rewriting original recordings.
 
-## Validation performed
+## Validation
 
-[test_protocol.cpp](../../tests/test_protocol.cpp) passed with the local static
-OpenSSL 3.5.8 library and with AddressSanitizer/UndefinedBehaviorSanitizer.
-The checks include independent AES-ECB counter-block construction for both
-AES-128 and AES-256; a hand-specified nonce vector; a multi-block message;
-typed official schema fixtures; bad PHY CRC; colliding-hash wrong keys; duplicate
-keys; unsupported PKI/ports; malformed protobuf/UTF-8; truncation/oversize; and
-20,000 deterministic random frames. The OpenSSL intake test separately checks
-published NIST CTR known-answer vectors. No operational keys, captured RF bytes,
-or actual private content are in these fixtures.
+[test_protocol.cpp](../../tests/test_protocol.cpp) exercises independent AES-ECB
+counter-block construction for AES-128 and AES-256, a hand-specified nonce vector,
+multi-block input, explicit key syntax and authorization bounds, hash collisions,
+duplicate keys, competing-key ambiguity, unsupported PKI, malformed outer fields,
+signature and port limits, truncation/oversize, and 20,000 deterministic random
+frames. Compile-time checks reject a return type exposing semantic content.
+Opaque-payload tests cover empty, binary, invalid-UTF-8 and artificial private-text
+canaries without projecting their contents. These are bounded regression checks,
+not a measured field false-positive rate or a general proof against information
+leakage. The OpenSSL intake test separately checks NIST CTR known-answer vectors.
 
 Independent fixtures are serialized by Google's Python protobuf 7.36.1 from
-protoc 36.1 output for official schemas 2.7.19 and 2.8.0, then checked through the
-native decoder. The 21 artificial fixtures contain no captured RF traffic or
-operational data. The generator and inputs are recorded under tests/fixtures and
-tools/generate_protocol_fixtures.py; they are not application dependencies.
-Continued mutation/fuzz coverage, additional platforms, weak-signal reception,
-recipient PKI and MeshCore remain open. See the [upgrade validation](../engineering/quality-and-validation.md).
+protoc 36.1 output for official schemas 2.7.19 and 2.8.0. The classifier now checks
+only envelope port/signature evidence from these 21 artificial fixtures. They
+contain no captured RF traffic or operational data. The generator and inputs
+under tests/fixtures and tools/generate_protocol_fixtures.py are development
+assets, not application dependencies. Historical semantic assertions and older
+sanitizer results do not validate the revised boundary; record current test
+results with the implementation change.
+
+Storage/report tests additionally check exclusion of synthetic legacy semantic
+fields, original-file preservation and metadata-only Save-copy reconstruction.
+Continued mutation/fuzz coverage, additional platforms and field reception remain
+open. See [quality and validation](../engineering/quality-and-validation.md).

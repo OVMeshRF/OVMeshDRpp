@@ -1,3 +1,4 @@
+#include "ovmesh/meshtastic_presets.hpp"
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "ovmesh/protocol.hpp"
 #include <openssl/evp.h>
@@ -12,16 +13,14 @@
 namespace {
 using namespace ovmesh::protocol;
 using Bytes = std::vector<std::uint8_t>;
+template<class T> concept CarriesSemanticContent = requires(T r) { r.authorized; } || requires(T r) { r.content; };
+static_assert(!CarriesSemanticContent<DecodeResult> && !CarriesSemanticContent<EnvelopeEvidence>);
 void require(bool value, const char* text) { if (!value) throw std::runtime_error(text); }
 void varint(Bytes& b, std::uint64_t value) {
     do { auto v = static_cast<std::uint8_t>(value & 127); value >>= 7;
          b.push_back(static_cast<std::uint8_t>(v | (value ? 128 : 0))); } while (value);
 }
 void scalar(Bytes& b, unsigned number, std::uint64_t value) { varint(b, number << 3); varint(b, value); }
-void fixed(Bytes& b, unsigned number, std::uint32_t value) {
-    varint(b, (number << 3) | 5); for (unsigned i = 0; i < 4; ++i) b.push_back(static_cast<std::uint8_t>(value >> (8 * i)));
-}
-void floating(Bytes& b, unsigned number, float value) { fixed(b, number, std::bit_cast<std::uint32_t>(value)); }
 void blob(Bytes& b, unsigned number, const Bytes& value) {
     varint(b, (number << 3) | 2); varint(b, value.size()); b.insert(b.end(), value.begin(), value.end());
 }
@@ -107,13 +106,13 @@ void explicit_key_input() {
     auto profile = synthetic_profile();
     const auto synthetic = frame_for(profile, envelope(1, string_bytes("Explicit Base64 fixture")));
     profile.keys.clear(); profile.keys.push_back(std::move(*ChannelKey::from_user_input(base128)));
-    require(decode_meshtastic(synthetic, true, profile).authorized.has_value(), "explicit base64 key decrypts independently generated fixture");
+    require(classify_meshtastic(synthetic, true, profile).evidence.has_value(), "explicit base64 key decrypts independently generated fixture");
     profile.keys.clear(); profile.keys.push_back(std::move(*ChannelKey::from_hex(public_hex)));
     const auto public_frame = frame_for(profile, envelope(1, string_bytes("Explicit public shorthand fixture")));
     profile.keys.clear();
-    require(decode_meshtastic(public_frame, true, profile).status == Status::no_matching_key, "known public key is never an implicit fallback");
+    require(classify_meshtastic(public_frame, true, profile).status == Status::no_matching_key, "known public key is never an implicit fallback");
     profile.keys.push_back(std::move(*ChannelKey::from_user_input("AQ==")));
-    require(decode_meshtastic(public_frame, true, profile).authorized.has_value(), "explicit public shorthand decrypts expected fixture");
+    require(classify_meshtastic(public_frame, true, profile).evidence.has_value(), "explicit public shorthand decrypts expected fixture");
 }
 
 void protocol_vectors() {
@@ -122,102 +121,85 @@ void protocol_vectors() {
     require(meshtastic_nonce(0x12345678, 0x78563412) == expected, "firmware nonce byte order");
     auto text = string_bytes("Independent multi-block protocol fixture with nonzero sender and packet ID");
     auto frame = frame_for(profile, envelope(1, text));
-    auto decoded = decode_meshtastic(frame, true, profile);
-    require(decoded.status == Status::decoded && decoded.authorized, "independent AES-ECB counter fixture");
-    require(decoded.authorized->content.text == std::string(text.begin(), text.end()), "text projection");
-    require(decoded.authorized->from == 0x12345678 && decoded.authorized->packet_id == 0x78563412, "RF header projection");
-    require(decoded.classification == "likely Meshtastic" && decoded.authentication == "not authenticated", "CTR does not authenticate identity");
-    require(decoded.authorized->hop_limit == 3 && decoded.authorized->hop_start == 3, "hop bitfields");
-    require(!decode_meshtastic(frame, false, profile).authorized, "bad PHY CRC prevents plaintext");
+    auto result = classify_meshtastic(frame, true, profile);
+    require(result.status == Status::classified && result.evidence && result.evidence->port == 1,
+            "independent AES-ECB counter fixture yields envelope evidence only");
+    require(result.classification == "likely Meshtastic" && result.authentication == "not authenticated",
+            "CTR and envelope structure do not authenticate identity or payload");
+    require(!classify_meshtastic(frame, false, profile).evidence, "bad PHY CRC prevents classification");
     auto copy = frame; copy[16] ^= 0xff;
-    require(!decode_meshtastic(copy, true, profile).authorized, "corrupted port rejected");
-    // AES-CTR is malleable: some alterations still form valid text. This test
-    // makes the limitation explicit rather than pretending CRC/schema is a MAC.
+    require(!classify_meshtastic(copy, true, profile).evidence, "corrupted envelope rejected");
     copy = frame; copy[20] ^= 1;
-    auto modified = decode_meshtastic(copy, true, profile);
-    require(modified.authorized && modified.authentication == "not authenticated", "malleability truthfulness");
-    auto key256 = ChannelKey::from_hex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
-    profile.keys.clear(); profile.keys.push_back(std::move(*key256));
-    decoded = decode_meshtastic(frame_for(profile, envelope(1, text)), true, profile);
-    require(decoded.authorized && decoded.authorized->content.text == std::string(text.begin(), text.end()), "AES-256 independent fixture");
+    auto modified = classify_meshtastic(copy, true, profile);
+    require(modified.evidence && modified.authentication == "not authenticated", "malleability is not hidden");
+    profile.keys.clear(); profile.keys.push_back(std::move(*ChannelKey::from_hex(
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")));
+    result = classify_meshtastic(frame_for(profile, envelope(1, text)), true, profile);
+    require(result.evidence && result.evidence->port == 1, "AES-256 independent fixture");
 }
 
-void typed_schemas() {
+void opaque_payloads() {
     auto profile = synthetic_profile();
-    Bytes position; fixed(position,1,static_cast<std::uint32_t>(-450000000)); fixed(position,2,900000000);
-    scalar(position,3,static_cast<std::uint64_t>(std::int64_t{-10})); fixed(position,4,1700000000);
-    auto r = decode_meshtastic(frame_for(profile,envelope(3,position)),true,profile);
-    require(r.authorized && r.authorized->content.latitude == -45.0 && r.authorized->content.longitude == 90.0, "Position sfixed32 is not zigzag");
-    require(r.authorized->content.altitude == -10.0 && r.authorized->content.reported_time == 1700000000, "Position signed altitude and fixed32 time");
-    Bytes old_position; scalar(old_position,1,900000000); scalar(old_position,2,1800000000);
-    require(!decode_meshtastic(frame_for(profile,envelope(3,old_position)),true,profile).authorized, "unsupported old positional wire interpretations rejected");
-    Bytes user; blob(user,1,string_bytes("!12345678")); blob(user,2,string_bytes("Synthetic node")); blob(user,3,string_bytes("TEST")); scalar(user,5,43); scalar(user,7,2);
-    r=decode_meshtastic(frame_for(profile,envelope(4,user)),true,profile);
-    require(r.authorized && r.authorized->content.kind == "node" && r.authorized->content.role == 2, "User role is field 7");
-    Bytes metrics; scalar(metrics,1,80); floating(metrics,2,3.7F); floating(metrics,3,2.5F); floating(metrics,4,1.25F);
-    Bytes telemetry; fixed(telemetry,1,1700000001); blob(telemetry,2,metrics);
-    r=decode_meshtastic(frame_for(profile,envelope(67,telemetry)),true,profile);
-    require(r.authorized && r.authorized->content.battery_percent == 80.0 && std::abs(*r.authorized->content.voltage-3.7)<0.001, "DeviceMetrics uint32 battery and float voltage");
-    Bytes environment; floating(environment,1,21.5F); floating(environment,2,44.0F); floating(environment,5,3.2F);
-    telemetry.clear(); blob(telemetry,3,environment);
-    r=decode_meshtastic(frame_for(profile,envelope(67,telemetry)),true,profile);
-    require(r.authorized && r.authorized->content.kind == "environment telemetry" && r.authorized->content.temperature == 21.5, "Environment telemetry");
-    blob(telemetry,2,metrics);
-    require(!decode_meshtastic(frame_for(profile,envelope(67,telemetry)),true,profile).authorized, "Telemetry oneof ambiguity rejected");
-    Bytes route; fixed(route,1,0x11223344); fixed(route,1,0x55667788);
-    r=decode_meshtastic(frame_for(profile,envelope(70,route)),true,profile);
-    require(r.authorized && r.authorized->content.route.size()==2,"repeated fixed32 route");
-    Bytes routing; scalar(routing,3,0);
-    r=decode_meshtastic(frame_for(profile,envelope(5,routing)),true,profile);
-    require(r.authorized && r.authorized->content.routing_error == 0,"Routing explicit NONE variant");
-}
+    // Even text controls, malformed nested protobuf, node/route-like bytes and
+    // arbitrary telemetry are never interpreted. Only the outer envelope is checked.
+    for (unsigned port : {1u,3u,4u,5u,67u,70u}) {
+        for (const auto& payload : std::vector<Bytes>{{}, {0,0xff,0xc0,0x80,0x1b},
+                 string_bytes("SYNTHETIC PRIVATE CONTENT MUST NOT LEAVE CLASSIFIER"), Bytes(233,0xaa)}) {
+            auto result = classify_meshtastic(frame_for(profile,envelope(port,payload)),true,profile);
+            require(result.status == Status::classified && result.evidence && result.evidence->port == port &&
+                    result.classification == "likely Meshtastic" && result.authentication == "not authenticated",
+                    "opaque application bytes do not become semantic contents or authenticated identity");
+        }
+    }
+    // The returned API cannot carry payload or sender/correlation identities.
 
+}
 void rejection_and_bounds() {
     auto profile = synthetic_profile(); const auto frame=synthetic_text_frame(profile);
     require(!ChannelKey::from_hex("") && !ChannelKey::from_hex("AQ==") && !ChannelKey::from_hex(std::string(32,'z')), "only complete hex keys");
     auto moved = ChannelKey::from_hex("000102030405060708090a0b0c0d0e0f"); ChannelKey key=std::move(*moved);
     require(moved->bytes().empty() && key.bytes().size()==16,"move-only source cleared");
     auto no_keys=synthetic_profile(); no_keys.keys.clear();
-    require(decode_meshtastic(frame,true,no_keys).status==Status::no_matching_key,"no implicit keys");
+    require(classify_meshtastic(frame,true,no_keys).status==Status::no_matching_key,"no implicit keys");
     auto wrong=synthetic_profile(); wrong.keys.clear();
     auto wrong_key=ChannelKey::from_hex("101112131415161718191a1b1c1d1e1f"); wrong.keys.push_back(std::move(*wrong_key));
     require(channel_hash(wrong.channel_name,wrong.keys.front())==frame[13],"fixture deliberately collides in 8-bit channel hash");
-    require(!decode_meshtastic(frame,true,wrong).authorized,"wrong matching-hash key rejected");
+    require(!classify_meshtastic(frame,true,wrong).evidence,"wrong matching-hash key rejected");
     auto duplicate=ChannelKey::from_hex("000102030405060708090a0b0c0d0e0f"); profile.keys.push_back(std::move(*duplicate));
-    require(decode_meshtastic(frame,true,profile).status==Status::decoded,"duplicate identical configured keys are one candidate");
+    require(classify_meshtastic(frame,true,profile).status==Status::classified,"duplicate identical configured keys are one candidate");
     profile=synthetic_profile();
     auto abandoned=ChannelKey::from_hex("000102030405060708090a0b0c0d0e0f");
     auto retained=std::move(*abandoned);
     profile.keys.push_back(std::move(*abandoned));
-    const auto invalid_profile=decode_meshtastic(frame,true,profile);
-    require(invalid_profile.status==Status::invalid_profile && !invalid_profile.authorized,"invalid key after valid key cannot leak partial success");
+    const auto invalid_profile=classify_meshtastic(frame,true,profile);
+    require(invalid_profile.status==Status::invalid_profile && !invalid_profile.evidence,"invalid key after valid key cannot leak partial success");
     profile=synthetic_profile();
-    for(std::size_t size=0;size<=16;++size) require(!decode_meshtastic(std::span(frame).first(size),true,profile).authorized,"truncated frame");
-    require(!decode_meshtastic(Bytes(256,0),true,profile).authorized,"oversized frame");
+    for(std::size_t size=0;size<=16;++size) require(!classify_meshtastic(std::span(frame).first(size),true,profile).evidence,"truncated frame");
+    require(!classify_meshtastic(Bytes(256,0),true,profile).evidence,"oversized frame");
     for(const Bytes& plain:std::vector<Bytes>{
-        {8,1,8,1,18,1,'a'}, {8,0x81,0,18,1,'a'}, {8,1,18,127,'a'}, {8,1,18,2,0xc0,0x80},
-        {8,1,18,1,0}, {8,1,18,1,'a',0}, {8,1,18,1,'a',0x1b}, {8,1,18,1,'a',0x28,0xff},
+        {8,1,8,1,18,1,'a'}, {8,0x81,0,18,1,'a'}, {8,1,18,127,'a'},
+        {8,1,18,1,'a',0}, {8,1,18,1,'a',0x1b}, {8,1,18,1,'a',0x28,0xff},
         {8,1,18,1,'a',0x18,2}, {8,1,18,1,'a',0x80,0x80,0x80,0x80,0x10,0}})
-        require(!decode_meshtastic(frame_for(profile,plain),true,profile).authorized,"malformed protobuf/Unicode has no retained content");
-    auto unknown=decode_meshtastic(frame_for(profile,envelope(256,{1,2,3,4})),true,profile);
-    require(!unknown.authorized && unknown.status==Status::unsupported_payload,"unknown port no raw fallback");
+        require(!classify_meshtastic(frame_for(profile,plain),true,profile).evidence,"malformed outer protobuf yields no evidence");
+    auto unknown=classify_meshtastic(frame_for(profile,envelope(256,{1,2,3,4})),true,profile);
+    require(unknown.evidence && unknown.status==Status::unsupported_payload,"unknown port no raw fallback");
     auto pki=frame; pki[0]=1;pki[1]=pki[2]=pki[3]=0;pki[13]=0;
-    require(decode_meshtastic(pki,true,profile).status==Status::unsupported_pki,"PKI convention cleanly excluded");
+    require(classify_meshtastic(pki,true,profile).status==Status::unsupported_pki,"PKI convention cleanly excluded");
     std::mt19937 random(625);
     for(unsigned i=0;i<20000;++i) {
         Bytes b(random()%280);for(auto& byte:b)byte=static_cast<std::uint8_t>(random());
-        auto result=decode_meshtastic(b,true,profile);
-        require(!result.authorized,"random input not retained");
+        auto result=classify_meshtastic(b,true,profile);
+        require(!result.evidence,"random input not retained");
     }
 }
 void frequency_independent_keyring() {
     auto source = synthetic_profile();
     const auto frame = frame_for(source, envelope(1, string_bytes("Explicit keyring fixture")));
     auto require_empty = [](const DecodeResult& result, Status status, const char* description) {
-        require(result.status == status && !result.authorized && !result.evidence &&
+        require(result.status == status && !result.evidence &&
                 result.classification == "unknown LoRa" && result.authentication == "not authenticated", description);
     };
-    require_empty(decode_meshtastic(frame, true, std::span<const Profile>{}),
+    require_empty(classify_meshtastic(frame, true, std::span<const Profile>{}),
                   Status::no_matching_key, "empty keyring never installs a fallback");
 
     std::vector<Profile> profiles;
@@ -229,23 +211,21 @@ void frequency_independent_keyring() {
     wrong.keys.push_back(std::move(*ChannelKey::from_hex("101112131415161718191a1b1c1d1e1f")));
     require(channel_hash(wrong.channel_name, wrong.keys.front()) == frame[13], "keyring fixture intentionally collides in channel hash");
     profiles.push_back(std::move(wrong));
-    require_empty(decode_meshtastic(frame, true, profiles), Status::decryption_unvalidated,
+    require_empty(classify_meshtastic(frame, true, profiles), Status::decryption_unvalidated,
                   "matching hash without valid decryption does not identify mesh traffic");
     auto selected = synthetic_profile(); selected.id = "authorized-channel";
     profiles.push_back(std::move(selected));
-    auto result = decode_meshtastic(frame, true, profiles);
-    require(result.status == Status::decoded && result.authorized && result.evidence &&
-            result.authorized->profile_id == "authorized-channel" &&
-            result.authorized->content.text == "Explicit keyring fixture" &&
+    auto result = classify_meshtastic(frame, true, profiles);
+    require(result.status == Status::classified && result.evidence && result.evidence->port == 1 &&
             result.classification == "likely Meshtastic" && result.authentication == "not authenticated",
             "keyring selects explicit channel independently of any receiver lane");
     std::reverse(profiles.begin(), profiles.end());
-    result = decode_meshtastic(frame, true, profiles);
-    require(result.authorized && result.authorized->profile_id == "authorized-channel", "unique successful profile independent of ordering");
+    result = classify_meshtastic(frame, true, profiles);
+    require(result.evidence && result.evidence->port == 1, "classification independent of profile ordering");
 
     const auto unsupported_frame = frame_for(source, envelope(256, {1,2,3,4}));
-    result = decode_meshtastic(unsupported_frame, true, profiles);
-    require(result.status == Status::unsupported_payload && !result.authorized && result.evidence &&
+    result = classify_meshtastic(unsupported_frame, true, profiles);
+    require(result.status == Status::unsupported_payload && result.evidence &&
             result.evidence->port == 256 && result.classification == "possible Meshtastic",
             "unique keyring unsupported envelope retains only bounded evidence");
 
@@ -253,51 +233,49 @@ void frequency_independent_keyring() {
     require(alias.channel_name != source.channel_name && channel_hash(alias.channel_name, alias.keys.front()) == frame[13],
             "distinct channel names can share the same key and weak hash");
     profiles.push_back(std::move(alias));
-    result = decode_meshtastic(frame, true, profiles);
-    require(result.authorized && result.authorized->profile_id == "configured-keyring" && result.evidence &&
-            result.authorized->content.text == "Explicit keyring fixture",
+    result = classify_meshtastic(frame, true, profiles);
+    require(result.evidence && result.evidence->port == 1,
             "same-key aliases decode without inventing unique channel provenance");
-    result = decode_meshtastic(unsupported_frame, true, profiles);
-    require(result.status == Status::unsupported_payload && !result.authorized && result.evidence && result.evidence->port == 256,
+    result = classify_meshtastic(unsupported_frame, true, profiles);
+    require(result.status == Status::unsupported_payload && result.evidence && result.evidence->port == 256,
             "duplicate unsupported envelopes preserve bounded evidence");
     std::reverse(profiles.begin(), profiles.end());
-    result = decode_meshtastic(frame, true, profiles);
-    require(result.authorized && result.authorized->profile_id == "configured-keyring",
-            "duplicate alias provenance is order independent");
-    require_empty(decode_meshtastic(frame, false, profiles), Status::bad_phy_crc,
+    result = classify_meshtastic(frame, true, profiles);
+    require(result.evidence && result.evidence->port == 1,
+            "duplicate alias classification is order independent");
+    require_empty(classify_meshtastic(frame, false, profiles), Status::bad_phy_crc,
                   "bad PHY CRC suppresses every keyring attempt");
 
     profiles.clear(); profiles.push_back(synthetic_profile());
     auto invalid = synthetic_profile(); invalid.id = "invalid-later-profile";
     auto moved = std::move(invalid.keys.front());
     profiles.push_back(std::move(invalid));
-    require_empty(decode_meshtastic(frame, true, profiles), Status::invalid_profile,
+    require_empty(classify_meshtastic(frame, true, profiles), Status::invalid_profile,
                   "invalid later key record prevents partial keyring success");
     profiles.back() = synthetic_profile(); profiles.back().channel_name.clear();
-    require_empty(decode_meshtastic(frame, true, profiles), Status::invalid_profile,
+    require_empty(classify_meshtastic(frame, true, profiles), Status::invalid_profile,
                   "invalid channel name prevents every attempt");
     profiles.clear();
     for (std::size_t index = 0; index < max_keyring_profiles; ++index) {
         auto profile = synthetic_profile(); profile.id = "configured-" + std::to_string(index);
         profile.keys.clear(); profiles.push_back(std::move(profile));
     }
-    require_empty(decode_meshtastic(frame, true, profiles), Status::no_matching_key,
+    require_empty(classify_meshtastic(frame, true, profiles), Status::no_matching_key,
                   "maximum valid keyless profiles remain bounded");
     profiles.push_back(synthetic_profile());
-    require_empty(decode_meshtastic(frame, true, profiles), Status::invalid_profile,
+    require_empty(classify_meshtastic(frame, true, profiles), Status::invalid_profile,
                   "excessive profile count rejected before successful key");
     profiles.clear(); profiles.push_back(synthetic_profile());
     for (std::size_t index = 0; index < max_profile_keys; ++index)
         profiles.front().keys.push_back(std::move(*ChannelKey::from_hex("000102030405060708090a0b0c0d0e0f")));
-    require_empty(decode_meshtastic(frame, true, profiles), Status::invalid_profile,
+    require_empty(classify_meshtastic(frame, true, profiles), Status::invalid_profile,
                   "excessive keys in a profile rejected before successful key");
 
-    const auto single = decode_meshtastic(frame, true, source);
-    const auto span = decode_meshtastic(frame, true, std::span<const Profile>(&source, 1));
+    const auto single = classify_meshtastic(frame, true, source);
+    const auto span = classify_meshtastic(frame, true, std::span<const Profile>(&source, 1));
     require(single.status == span.status && single.classification == span.classification &&
-            single.authorized && span.authorized && single.authorized->profile_id == span.authorized->profile_id &&
-            single.authorized->content.text == span.authorized->content.text,
-            "single-profile wrapper preserves supported behavior");
+            single.evidence && span.evidence && single.evidence->port == span.evidence->port,
+            "single-profile wrapper preserves classification evidence");
 
     // Knowing an authorized key does not imply knowing a channel name, preset,
     // hash or frequency. This scope must be selected explicitly by the caller.
@@ -309,36 +287,35 @@ void frequency_independent_keyring() {
     const auto other_frame = frame_for(other_channel, envelope(1, string_bytes("Other channel, same explicit key")));
     require(frame[13] != other_frame[13], "key-only fixture uses different on-air channel hashes");
     for (const auto& candidate_frame : {frame, other_frame}) {
-        result = decode_meshtastic(candidate_frame, true, profiles);
-        require(result.authorized && result.authorized->profile_id == "explicit-survey-key" &&
-                result.authorized->channel_hash == candidate_frame[13] && result.authentication == "not authenticated",
-                "explicit key-only profile decodes independently of channel name and hash");
+        result = classify_meshtastic(candidate_frame, true, profiles);
+        require(result.evidence && result.evidence->port == 1 && result.authentication == "not authenticated",
+                "explicit key-only classification is independent of channel name and hash");
     }
     const auto unrelated_key_frame = [&] {
         auto profile = synthetic_profile(); profile.keys.clear();
         profile.keys.push_back(std::move(*ChannelKey::from_hex("101112131415161718191a1b1c1d1e1f")));
         return frame_for(profile, envelope(1, string_bytes("Other key fixture")));
     }();
-    require_empty(decode_meshtastic(unrelated_key_frame, true, profiles), Status::decryption_unvalidated,
+    require_empty(classify_meshtastic(unrelated_key_frame, true, profiles), Status::decryption_unvalidated,
                   "key-only discovery never adds an unrelated key or retains wrong-key bytes");
-    require_empty(decode_meshtastic(frame, false, profiles), Status::bad_phy_crc,
+    require_empty(classify_meshtastic(frame, false, profiles), Status::bad_phy_crc,
                   "key-only profile still requires valid PHY CRC");
-    result = decode_meshtastic(unsupported_frame, true, profiles);
-    require(result.status == Status::unsupported_payload && !result.authorized && result.evidence && result.evidence->port == 256,
+    result = classify_meshtastic(unsupported_frame, true, profiles);
+    require(result.status == Status::unsupported_payload && result.evidence && result.evidence->port == 256,
             "key-only unsupported envelopes expose bounded evidence only");
     auto restricted_alias = synthetic_profile(); restricted_alias.id = "named-alias";
     profiles.push_back(std::move(restricted_alias));
-    result = decode_meshtastic(frame, true, profiles);
-    require(result.authorized && result.authorized->profile_id == "configured-keyring" && result.evidence,
-            "key-only and named aliases decode with nonunique profile provenance");
-    result = decode_meshtastic(other_frame, true, profiles);
-    require(result.authorized && result.authorized->profile_id == "explicit-survey-key",
-            "ineligible named alias does not affect unique key-only provenance");
+    result = classify_meshtastic(frame, true, profiles);
+    require(result.evidence && result.evidence->port == 1,
+            "key-only and named aliases preserve classification evidence");
+    result = classify_meshtastic(other_frame, true, profiles);
+    require(result.evidence && result.evidence->port == 1,
+            "ineligible named alias does not affect key-only classification");
     profiles.pop_back(); profiles.front().restrict_channel_name = true;
-    require_empty(decode_meshtastic(frame, true, profiles), Status::invalid_profile,
+    require_empty(classify_meshtastic(frame, true, profiles), Status::invalid_profile,
                   "empty name needs an explicit key-only choice");
     profiles.front().restrict_channel_name = false; profiles.front().keys.clear();
-    require_empty(decode_meshtastic(frame, true, profiles), Status::no_matching_key,
+    require_empty(classify_meshtastic(frame, true, profiles), Status::no_matching_key,
                   "key-only mode never installs default or public keys");
 
     // Independently derived AES-ECB counter-block fixture: these distinct keys
@@ -355,84 +332,39 @@ void frequency_independent_keyring() {
     const auto second_frame = frame_for(second, short_data);
     require(std::equal(short_frame.begin()+16, short_frame.end(), second_frame.begin()+16),
             "independent distinct-key fixture shares two-byte CTR ciphertext");
-    require(decode_meshtastic(short_frame, true, first).authorized.has_value() &&
-            decode_meshtastic(short_frame, true, second).authorized.has_value(),
+    require(classify_meshtastic(short_frame, true, first).evidence.has_value() &&
+            classify_meshtastic(short_frame, true, second).evidence.has_value(),
             "distinct fixture keys each produce plausible structure alone");
     profiles.push_back(std::move(first)); profiles.push_back(std::move(second));
-    require_empty(decode_meshtastic(short_frame, true, profiles), Status::ambiguous_keys,
+    require_empty(classify_meshtastic(short_frame, true, profiles), Status::ambiguous_keys,
                   "different plausible key material still suppresses content and evidence");
     std::reverse(profiles.begin(), profiles.end());
-    require_empty(decode_meshtastic(short_frame, true, profiles), Status::ambiguous_keys,
+    require_empty(classify_meshtastic(short_frame, true, profiles), Status::ambiguous_keys,
                   "distinct-key ambiguity remains order independent");
 }
-void traceroute_and_evidence() {
+void envelope_evidence() {
     auto profile = synthetic_profile();
-    auto decode = [&](const Bytes& data) { return decode_meshtastic(frame_for(profile, data), true, profile); };
-    Bytes request; scalar(request, 1, 70); scalar(request, 3, 1);
-    auto r = decode(request);
-    require(r.authorized && r.authorized->content.kind == "traceroute" && r.authorized->content.route.empty() && r.authorized->want_response,
-            "official empty traceroute request may omit payload");
-    require(r.evidence && r.evidence->port == 70 && !r.evidence->signature_present, "traceroute evidence separate from content");
-    r = decode(envelope(70, {}));
-    require(r.authorized && r.authorized->content.route.empty(), "explicit empty traceroute payload");
-
-    Bytes route, packed;
-    fixed(route, 1, 0x12345678); fixed(route, 1, 0xffffffffU);
-    varint(packed, static_cast<std::uint64_t>(std::int64_t{-31})); varint(packed, 24); blob(route, 2, packed);
-    Bytes back{0x44,0x33,0x22,0x11}; blob(route, 3, back);
-    scalar(route, 4, static_cast<std::uint64_t>(std::int64_t{-128}));
-    auto data = envelope(70, route); fixed(data, 6, 0x78563412); fixed(data, 7, 0x10203040);
-    r = decode(data);
-    require(r.authorized && r.authorized->request_id == 0x78563412 && r.authorized->reply_id == 0x10203040,
-            "request and reply IDs preserved");
-    const auto& content = r.authorized->content;
-    require(content.route == std::vector<std::uint32_t>({0x12345678,0xffffffffU}) && content.route_back == std::vector<std::uint32_t>({0x11223344}), "both independently sized routes preserved");
-    require(content.snr_towards == std::vector<std::int32_t>({-31,24}) && content.snr_back == std::vector<std::int32_t>({-128}), "signed SNR quarter dB and unknown sentinel preserved");
-    Bytes extremes; scalar(extremes, 2, static_cast<std::uint64_t>(std::int64_t{-2147483648LL})); scalar(extremes, 4, 2147483647);
-    r = decode(envelope(70, extremes));
-    require(r.authorized && r.authorized->content.snr_towards[0] == INT32_MIN && r.authorized->content.snr_back[0] == INT32_MAX, "wire SNR is full int32, not firmware int8 storage");
-    Bytes many;
-    for (unsigned n = 0; n < 20; ++n) { fixed(many, 1, n + 1); fixed(many, 3, n + 101); }
-    r = decode(envelope(70, many));
-    require(r.authorized && r.authorized->content.route.size() == 20 && r.authorized->content.route_back.size() == 20, "route bounds independent, no combined 32 limit");
-    many.clear(); for (unsigned n = 0; n < 33; ++n) fixed(many, 1, n + 1);
-    require(!decode(envelope(70, many)).authorized, "oversized route rejected");
-    Bytes overflow; scalar(overflow, 2, 0x80000000ULL);
-    require(!decode(envelope(70, overflow)).authorized, "non sign extended out of range int32 rejected");
-
-    r = decode(envelope(5, {}));
-    require(!r.authorized && r.evidence && r.status == Status::unsupported_payload, "absent Routing variant is not ACK");
-    for (unsigned variant = 1; variant <= 2; ++variant) {
-        Bytes routing; blob(routing, variant, {}); r = decode(envelope(5, routing));
-        require(r.authorized && r.authorized->content.routing_variant == (variant == 1 ? "request" : "reply") && r.authorized->content.route.empty(), "empty Routing oneof preserved");
+    auto classify = [&](const Bytes& data) { return classify_meshtastic(frame_for(profile, data), true, profile); };
+    Bytes request; scalar(request,1,70); scalar(request,3,1);
+    auto result = classify(request);
+    require(result.evidence && result.evidence->port==70 && !result.evidence->signature_present,
+            "empty traceroute envelope may omit payload without reading route contents");
+    Bytes no_payload; scalar(no_payload,1,1);
+    require(!classify(no_payload).evidence,"other application envelopes require a payload field");
+    for (unsigned size : {0u,63u,64u,65u}) {
+        auto data=envelope(1,string_bytes("Synthetic signature shape"));blob(data,10,Bytes(size,0x5a));
+        result=classify(data);
+        require(size==0 || size==64 ? result.evidence && result.evidence->signature_present==(size==64) : !result.evidence,
+                "signature length bounded; presence never implies verification");
     }
-    Bytes ack; scalar(ack, 3, 0); r = decode(envelope(5, ack));
-    require(r.authorized && r.authorized->content.routing_error == 0 && r.authorized->content.routing_variant == "error", "explicit NONE remains distinct from absent");
-
-    data = envelope(1, string_bytes("Synthetic signed-shape text")); blob(data, 10, Bytes(64, 0x5a));
-    r = decode(data);
-    require(r.authorized && r.authorized->signature_present && r.evidence->signature_present && r.authentication == "not authenticated", "2.8 signature presence never claims verification");
-    for (unsigned size : {0u, 63u, 65u}) {
-        data = envelope(1, string_bytes("Synthetic signature bound")); blob(data, 10, Bytes(size, 0x5a)); r = decode(data);
-        require(size == 0 ? (r.authorized && !r.authorized->signature_present) : (!r.authorized && !r.evidence), "signature size policy");
-    }
-    data = envelope(1, string_bytes("Known text with future envelope field")); scalar(data, 123, 42);
-    require(decode(data).authorized.has_value(), "unknown envelope field safely skipped");
-    route.clear(); fixed(route, 1, 123); scalar(route, 123, 42);
-    require(decode(envelope(70, route)).authorized.has_value(), "unknown route field safely skipped");
-    data = envelope(256, {1,2,3,4}); r = decode(data);
-    require(!r.authorized && r.evidence && r.evidence->port == 256 && r.classification == "possible Meshtastic" && r.authentication == "not authenticated", "unsupported valid envelope yields bounded evidence only");
-    auto duplicate = ChannelKey::from_hex("000102030405060708090a0b0c0d0e0f"); profile.keys.push_back(std::move(*duplicate));
-    r = decode(data);
-    require(r.status == Status::unsupported_payload && !r.authorized && r.evidence && r.evidence->port == 256,
-            "identical unsupported key entries share one bounded envelope candidate");
-    profile = synthetic_profile();
-    Bytes malformed{0x08,0x01}; r = decode(envelope(70, malformed));
-    require(!r.authorized && !r.evidence && r.status == Status::decryption_unvalidated, "malformed known payload does not become protocol evidence");
-    auto frame = frame_for(profile, envelope(70, {}));
-    require(!decode_meshtastic(frame, false, profile).evidence, "CRC failure yields no protocol evidence");
-    profile.keys.clear();
-    require(!decode_meshtastic(frame, true, profile).evidence, "no configured key yields no protocol evidence");
+    auto data=envelope(1,string_bytes("Future envelope"));scalar(data,123,42);
+    require(classify(data).evidence.has_value(),"bounded unknown envelope field safely skipped");
+    result=classify(envelope(256,{1,2,3,4}));
+    require(result.evidence && result.evidence->port==256 && result.status==Status::unsupported_payload &&
+            result.classification=="possible Meshtastic" && result.authentication=="not authenticated",
+            "unrecognized port retains only bounded evidence");
+    for (unsigned port : {0u,65536u}) require(!classify(envelope(port,{1})).evidence,"port bounds");
+    require(!classify(envelope(1,Bytes(234,0xaa))).evidence,"opaque payload size still bounded");
 }
 void independent_official_fixtures() {
     struct Fixture { std::string_view name, hex, kind; std::uint32_t port, request_id; bool signature; };
@@ -446,27 +378,44 @@ void independent_official_fixtures() {
         Bytes plain;
         for (std::size_t i = 0; i < fixture.hex.size(); i += 2)
             plain.push_back(static_cast<std::uint8_t>((digit(fixture.hex[i]) << 4) | digit(fixture.hex[i+1])));
-        auto r = decode_meshtastic(frame_for(profile, plain), true, profile);
+        auto r = classify_meshtastic(frame_for(profile, plain), true, profile);
         if (!r.evidence || r.evidence->port != fixture.port || r.evidence->signature_present != fixture.signature)
             throw std::runtime_error("Official fixture evidence failed: " + std::string(fixture.name));
-        if (fixture.kind.empty()) {
-            require(!r.authorized && r.status == Status::unsupported_payload && r.classification == "possible Meshtastic", "official unsupported app has evidence only");
-            continue;
-        }
-        if (!r.authorized || r.authorized->content.kind != fixture.kind || r.authorized->request_id != fixture.request_id || r.authorized->signature_present != fixture.signature)
-            throw std::runtime_error("Official fixture projection failed: " + std::string(fixture.name));
-        const auto& c = r.authorized->content;
         require(r.authentication == "not authenticated", "official serializer cannot authenticate sender");
-        if (fixture.name.ends_with(":traceroute-reply"))
-            require(c.route == std::vector<std::uint32_t>({0x11223344,0xffffffffU}) && c.route_back == std::vector<std::uint32_t>({0x55667788}) && c.snr_towards == std::vector<std::int32_t>({-31,24}) && c.snr_back == std::vector<std::int32_t>({-128}), "official packed arrays and signed SNR");
-        if (fixture.name.ends_with(":empty-traceroute")) require(c.route.empty() && r.authorized->want_response, "official empty initiating request");
-        if (fixture.name.ends_with(":routing-none")) require(c.routing_error == 0 && c.routing_variant == "error", "official explicit NONE oneof");
-        if (fixture.name.ends_with(":position")) require(c.latitude == -45.0 && c.longitude == 90.0 && c.altitude == -10.0, "official position values");
-        if (fixture.name.ends_with(":node")) require(c.node_id == "!11223344" && c.short_name == "TEST", "official User strings");
+        const bool known = fixture.port==1 || fixture.port==3 || fixture.port==4 || fixture.port==5 || fixture.port==67 || fixture.port==70;
+        require(r.status==(known?Status::classified:Status::unsupported_payload), "official envelope classification");
     }
+}
+void public_channel_scope() {
+    auto receiver = public_meshtastic_profile();
+    require(!receiver.restrict_channel_name && receiver.channel_name.empty() && receiver.keys.size() == 1,
+        "Public default is one survey key independent of preset or channel name");
+    const auto expected = ChannelKey::from_user_input("AQ==");
+    require(std::equal(receiver.keys.front().bytes().begin(), receiver.keys.front().bytes().end(), expected->bytes().begin()),
+        "Public default resolves the published index-one key");
+    std::vector<std::string_view> channel_names{"CustomName"};
+    for (const auto& preset : ovmesh::meshtastic::presets) channel_names.push_back(preset.name);
+    for (const auto name : channel_names) {
+        auto sender = public_meshtastic_profile();
+        sender.channel_name = std::string(name);
+        const auto frame = frame_for(sender, envelope(1, string_bytes("Public channel fixture")));
+        require(classify_meshtastic(frame, true, receiver).status == Status::classified,
+            "Public default classifies valid envelopes regardless of preset-derived channel names");
+        require(classify_meshtastic(frame, false, receiver).status == Status::bad_phy_crc,
+            "Public default cannot bypass failed radio integrity checks");
+        require(classify_meshtastic(frame, true, std::span<const Profile>{}).status == Status::no_matching_key,
+            "An empty caller keyring still opts out of public-key classification");
+    }
+    const auto unrelated = frame_for(synthetic_profile(), envelope(1, string_bytes("Private channel fixture")));
+    require(classify_meshtastic(unrelated, true, receiver).status == Status::decryption_unvalidated,
+        "Public default does not classify a frame encrypted with an unrelated private key");
+    require(status_explanation(Status::bad_phy_crc).find("before any channel key") != std::string_view::npos &&
+        status_explanation(Status::no_matching_key).find("eligible") != std::string_view::npos &&
+        status_explanation(Status::decryption_unvalidated).find("keys were tried") != std::string_view::npos,
+        "Diagnostics distinguish RF integrity, eligible-key absence and failed envelope validation");
 }
 }
 int main() {
-    try { explicit_key_input(); protocol_vectors(); typed_schemas(); traceroute_and_evidence(); independent_official_fixtures(); rejection_and_bounds(); frequency_independent_keyring(); std::cout<<"protocol: explicit key input, independent crypto, official 2.7.19/2.8.0 fixtures, traceroute, evidence, frequency-independent keyring, authorization and bounds checks passed\n"; return 0; }
+    try { explicit_key_input(); protocol_vectors(); opaque_payloads(); envelope_evidence(); independent_official_fixtures(); rejection_and_bounds(); frequency_independent_keyring(); public_channel_scope(); std::cout<<"protocol: explicit key input, independent crypto, official 2.7.19/2.8.0 fixtures, opaque payloads, envelope evidence, frequency-independent keyring, public-channel scope, authorization and bounds checks passed\n"; return 0; }
     catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
 }

@@ -84,7 +84,7 @@ void reset_checks() {
         try { detector.push(invalid); } catch (const std::invalid_argument&) { rejected = true; }
         require(rejected && detector.coherence(512) == 0, "Invalid input was accepted or retained history");
     }
-    for (size_t lag : {0u, 511u, 513u, 131072u}) {
+    for (size_t lag : {0u, 511u, 513u, 262144u}) {
         bool rejected = false;
         try { (void)detector.coherence(lag); } catch (const std::invalid_argument&) { rejected = true; }
         require(rejected, "Unsupported repetition lag was accepted");
@@ -98,12 +98,12 @@ void benchmark() {
     const auto begin = std::chrono::steady_clock::now();
     for (size_t i = 0; i < input.size(); ++i) {
         detector.push(input[i]);
-        for (size_t lag = 512; lag <= 65536; lag *= 2)
+        for (size_t lag = 512; lag <= 131072; lag *= 2)
             if (i + 1 >= 2 * lag && (i + 1) % (lag / 4) == 0) rolling_checksum += detector.coherence(lag);
     }
     const auto middle = std::chrono::steady_clock::now();
     for (size_t end = 128; end <= input.size(); end += 128)
-        for (size_t lag = 512; lag <= 65536; lag *= 2)
+        for (size_t lag = 512; lag <= 131072; lag *= 2)
             if (end >= 2 * lag && end % (lag / 4) == 0) reference_checksum += reference(input, end, lag);
     const auto finish = std::chrono::steady_clock::now();
     const double rolling_seconds = std::chrono::duration<double>(middle - begin).count();

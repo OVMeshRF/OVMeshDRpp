@@ -5,6 +5,8 @@
 #include <imgui_internal.h>
 #include <iostream>
 #include <limits>
+#include "../src/storage.hpp"
+#include <fstream>
 
 namespace {
 using namespace ovmesh;
@@ -113,11 +115,11 @@ void selection_and_privacy(Canvas& canvas, const Fixture& fixture) {
     ui.analyzed_query.geographic_filter = true;
     ui.analyzed_query.south = 39; ui.analyzed_query.north = 40;
     ui.analyzed_query.west = -81; ui.analyzed_query.east = -80;
-    ui.export_options.include_content = ui.export_options.include_receiver_positions = true;
+    ui.export_options.include_receiver_positions = true;
     prepare_report_export(ui, snapshot);
     require(ui.export_kind == 0 && ui.export_time_bucket_seconds == 60 && ui.export_geographic_cell_m == 100,
         "Export defaults to frequency summary, 60-second time groups and 100-meter geographic cells");
-    require(!ui.export_options.include_content && !ui.export_options.include_receiver_positions &&
+    require(!ui.export_options.include_receiver_positions &&
         !ui.export_options.include_provenance && ui.export_options.coordinate_decimals == 3,
         "Each export starts with the established private defaults");
     const auto render = [&] { report_export_panel(engine, ui, snapshot); };
@@ -133,6 +135,11 @@ void selection_and_privacy(Canvas& canvas, const Fixture& fixture) {
     contains(report_export_block_reason(ui, snapshot), ".csv filename");
     ui.export_path = fixture.path("summary.csv");
 
+    require(text.find("Include authorized decoded content") == std::string::npos, "Reports do not offer a content export opt-in");
+    ui.export_kind = 3;
+    const auto spectrum_report = canvas.frame(render);
+    require(ui.export_kind == 0 && spectrum_report.find("Waveform observations") == std::string::npos,
+        "The spectrum-only desktop cannot select a stale waveform report; frequency reports remain available");
     ui.export_kind = 1;
     contains(canvas.frame(render), "Time bucket / seconds");
     require(selected_report_options(ui).query.time_bucket_seconds == 60, "Report bucket default is independent of display coarsening");
@@ -150,12 +157,7 @@ void selection_and_privacy(Canvas& canvas, const Fixture& fixture) {
     ui.export_geographic_cell_m = 100;
     ui.export_kind = 4; ui.export_options.include_receiver_positions = false;
     contains(report_export_block_reason(ui, snapshot), "requires Include receiver GPS coordinates");
-    ui.export_kind = 5;
-    contains(report_export_block_reason(ui, snapshot), "requires Include authorized decoded content");
-    ui.export_options.include_content = true;
-    require(report_export_block_reason(ui, snapshot).empty(), "Authorized-content report requires explicit content opt-in");
-
-    ui.export_kind = 6; ui.export_path = fixture.path("archive.geojson");
+    ui.export_kind = 5; ui.export_path = fixture.path("archive.geojson");
     require(report_export_block_reason(ui, snapshot).empty(), "Explicit detailed archive still supports GeoJSON");
     ImVec2 write_point;
     const auto archive = canvas.frame([&] {
@@ -200,19 +202,55 @@ void aggregated_power(Canvas& canvas) {
 }
 void narrative_controls(Canvas& canvas,const Fixture& fixture) {
     Engine engine;DesktopState ui;auto snapshot=saved_snapshot(fixture);
-    prepare_report_export(ui,snapshot);ui.export_kind=7;
+    prepare_report_export(ui,snapshot);ui.export_kind=6;
     const auto render=[&]{report_export_panel(engine,ui,snapshot);};
+    require(selected_report_options(ui).kind == ReportKind::Analysis, "Narrative UI choice maps explicitly to the HTML report kind");
     const auto page=canvas.frame(render);
-    contains(page,"Analysis report (HTML)");contains(page,"No cloud service or message text");
+    contains(page,"Analysis report (HTML)");contains(page,"No cloud service is used");
     require(page.find("Include authorized decoded content")==std::string::npos,"Narrative does not offer a misleading payload opt-in");
+    contains(page,"Preview");
+    require(report_export_block_reason(ui,snapshot,true).empty(),"Preview needs no selected output path");
+    const auto preview=analysis_preview_path(ui,snapshot);
+    require(fs::path(preview).parent_path()==fixture.directory && fs::path(preview).extension()==".html" && !fs::exists(preview),"Preview reserves no file and stays in the local session directory without an initialized profile");
     ui.export_path=fixture.path("analysis.csv");require(!report_export_block_reason(ui,snapshot).empty(),"Wrong HTML suffix blocked");
     ui.export_path=fixture.path("analysis.html");require(report_export_block_reason(ui,snapshot).empty(),"HTML suffix accepted");
     begin_file_picker(ui,FilePickerPurpose::Export,"",snapshot.config.session_path);
     require(std::string(ui.file_picker.filename.data())=="survey-analysis.html","HTML chooser suggests usable filename");
-    snapshot.running=true;require(!report_export_block_reason(ui,snapshot).empty(),"Narrative requires a stopped consistent session");
+    snapshot.running=true;require(!report_export_block_reason(ui,snapshot).empty() && !report_export_block_reason(ui,snapshot,true).empty(),"Preview and export require a stopped consistent session");
     ui.export_time_bucket_seconds=0;snapshot.running=false;
     require(!report_export_block_reason(ui,snapshot).empty(),"Narrative grouping validated before write");
     require(!engine.snapshot().running&&!fs::exists(fixture.path("analysis.html")),"Preview does not open devices or create report");
+}
+
+void report_open_flow(const Fixture& fixture) {
+    const auto source=fixture.path("open-flow.sqlite");
+    { SessionStore store; ReceiverConfig config;config.lanes.clear();config.discover_lora=false;
+      store.create(source,config,"synthetic-preview");
+      SpectrumTile tile;tile.id=1;tile.frame_count=4;tile.first_sample=0;tile.end_sample=16384;
+      tile.elapsed_end_seconds=double(tile.end_sample)/config.sample_rate;
+      tile.utc_start_seconds=1700000000;tile.utc_end_seconds=1700000000+tile.elapsed_end_seconds;
+      tile.first_center_hz=config.center_hz;tile.bin_width_hz=double(config.sample_rate)/4096;
+      tile.mean_dbfs={-80,-80};tile.peak_dbfs={-40,-40};tile.activity={1,0,1,0};tile.background_dbfs=-100;store.append(tile);
+      Snapshot snapshot;snapshot.config=config;snapshot.elapsed_seconds=tile.elapsed_end_seconds;store.update(snapshot,true); }
+    Engine engine;std::string error;require(engine.open_session(source,error),"Load report fixture without hardware");
+    DesktopState ui;prepare_report_export(ui,engine.snapshot());ui.export_kind=6;
+    const auto path=analysis_preview_path(ui,engine.snapshot());bool opened=false;
+    start_analysis_report(engine,ui,path,[&](const std::string& value){
+        require(value==path && fs::is_regular_file(value),"Browser receives the generated file only after success");opened=true;
+    });
+    ui.operation.wait();ui.finish_operation();
+    require(opened && !ui.show_export,"Successful preview opens once and closes export dialog");
+    opened=false;start_analysis_report(engine,ui,path,[&](const auto&){opened=true;});
+    ui.operation.wait();ui.finish_operation();
+    require(!opened,"Exclusive-write failure never opens or overwrites a previous report");
+    const auto second=analysis_preview_path(ui,engine.snapshot());
+    start_analysis_report(engine,ui,second,[](const auto&){throw std::runtime_error("No default browser");});
+    ui.operation.wait();ui.finish_operation();
+    require(fs::is_regular_file(second) && ui.notice.find("Browser opening failed")!=std::string::npos,"Browser launch failure preserves the generated file and reports its location");
+    for(const auto* bad:{"https://example.invalid/report.html","relative.html","/missing-report.html"}) {
+        bool rejected=false;try{open_local_report(bad);}catch(const std::exception&){rejected=true;}
+        require(rejected,"Opener rejects URL, relative, or absent files before launching");
+    }
 }
 
 void compact_analysis_keeps_frequency_context(Canvas& canvas, const Fixture& fixture) {
@@ -251,6 +289,7 @@ int main() {
         selection_and_privacy(canvas, fixture);
         aggregated_power(canvas);
         narrative_controls(canvas,fixture);
+        report_open_flow(fixture);
         compact_analysis_keeps_frequency_context(canvas, fixture);
         std::cout << "Compact recording and report UI checks passed; no hardware or ordinary profile access\n";
         return 0;

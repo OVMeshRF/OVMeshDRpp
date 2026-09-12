@@ -89,14 +89,24 @@ void reception_timestamps(Canvas& canvas) {
     s.running = false; s.historical = true;
     Reception record; record.id = 1; record.utc_seconds = 1700000000.125; record.elapsed_seconds = 5.25;
     record.frequency_hz = 864123456; record.bandwidth_hz = 250000; record.spreading_factor = 11;
+    record.decoded.status = protocol::Status::classified;
+    record.decoded.classification = "likely Meshtastic";
+    record.decoded.evidence = protocol::EnvelopeEvidence{1, true};
     s.receptions = {record};
     const auto log = canvas.frame([&] { packet_table(ui, s, 150); });
     contains(log, "Received at (UTC)"); contains(log, "2023-11-14 22:13:20.125");
-    const auto detail = canvas.frame([&] { content_detail(record); });
+    const auto detail = canvas.frame([&] { reception_detail(record); });
+    contains(detail, "Envelope evidence: port 1");
+    contains(detail, "not authenticated");
+    contains(detail, "may be a false positive");
+    for (const auto* removed : {"AUTHORIZED SCHEMA FIELDS", "Reported origin", "Sender-reported", "Request ID", "Content:", "Node ID", "Reported forward route"})
+        require(detail.find(removed) == std::string::npos, "Reception details expose no semantic packet fields");
+    contains(log, "Envelope evidence"); contains(log, "Port 1");
+    copy_text(ui.filter, "likely Meshtastic");
+    require(matches_filter(record, ui), "Classification remains searchable");
     contains(detail, "2023-11-14 22:13:20.125 UTC"); contains(detail, "Elapsed session time: 5.250000 s");
     const auto signals = canvas.frame([&] { compact_signal_table(ui, s, 150); });
-    contains(signals, "Observed at (UTC)"); contains(signals, "2023-11-14 22:13:20.125");
-    contains(signals, "2023-11-15 22:13:20.875");
+    require(signals.empty(), "Disabled compact waveform table renders no historical observations");
     const auto advanced = canvas.frame([&] { waveform_panel(s, 180); });
     contains(advanced, "Observed at (UTC)"); contains(advanced, "2023-11-14 22:13:20.125");
     contains(advanced, "1.071234");
@@ -163,30 +173,30 @@ void discovery_setting_persists_without_decoder_or_hardware(Canvas& canvas) {
     struct RemoveFixture { fs::path path; ~RemoveFixture() { std::error_code e; fs::remove_all(path, e); } } cleanup{folder};
     const auto utf8 = folder.u8string(); const std::string path(utf8.begin(), utf8.end());
     DesktopState initial; initial.initialize_preferences(path, false);
-    require(initial.preferences_ready && initial.config.discover_lora && initial.config.lanes.size()==1 && initial.decode_enabled && !initial.spectrum_only,
-        "Fresh ordinary setup enables discovery and arms one explicitly keyed decoder profile");
+    require(initial.preferences_ready && !initial.config.discover_lora && initial.config.lanes.empty() && !initial.decode_enabled && initial.spectrum_only,
+        "Fresh ordinary setup enforces spectrum only without discovery or classification");
     initial.persist_preferences();
     DesktopState reopened; reopened.initialize_preferences(path, false);
-    require(reopened.preferences_ready && reopened.config.discover_lora && reopened.config.lanes.size()==1,
-        "Discovery selection and the default armed profile survive ordinary setup reload");
+    require(reopened.preferences_ready && !reopened.config.discover_lora && reopened.config.lanes.empty() && !reopened.decode_enabled && reopened.spectrum_only,
+        "Reload preserves the spectrum-only policy without a fixed-frequency profile");
     Engine engine; Snapshot idle;
     const auto text = canvas.frame([&] { receiver_controls(engine, reopened, idle); });
     require(text.find("Spectrum only")==std::string::npos && text.find("Discover LoRa waveforms")==std::string::npos,
         "Discovery and decode-mode controls are removed from the operating receiver panel");
     const auto settings = canvas.frame([&] { detection_settings(engine, reopened, idle); });
-    contains(settings, "Spectrum only"); contains(settings, "Discover LoRa waveforms");
-    contains(settings, "Decode authorized messages");
+    require(settings.empty(), "Disabled detection settings render no controls");
     require(!engine.snapshot().running && engine.configured_key_count()==0,
         "Rendering setup never opens a receiver or implicitly configures a public channel key");
     reopened.config.discover_lora = false; reopened.persist_preferences();
     DesktopState opted_out; opted_out.initialize_preferences(path, false);
-    require(!opted_out.config.discover_lora && opted_out.config.lanes.size()==1, "Explicit discovery opt-out persists independently of the armed profile");
+    require(!opted_out.config.discover_lora && opted_out.config.lanes.empty(), "Explicit discovery opt-out persists without introducing a fixed-frequency profile");
     DesktopState launch_override; launch_override.config.discover_lora = true;
     launch_override.initialize_preferences(path, false);
-    require(launch_override.config.discover_lora, "Explicit launch discovery request takes precedence over saved opt-out");
+    require(!launch_override.config.discover_lora && !launch_override.decode_enabled && launch_override.spectrum_only,
+        "Spectrum-only policy overrides an old explicit discovery launch request");
 }
 
-void small_window_shows_modem_rows(Canvas& canvas) {
+void small_window_shows_energy_results(Canvas& canvas) {
     ImGui::GetIO().DisplaySize = {962, 769};
     Engine engine; DesktopState ui; auto s = observations_fixture(); ui.config = s.config;
     s.spectrum_dbfs.assign(4096, -90); s.spectrum_sequence = 1;
@@ -203,22 +213,128 @@ void small_window_shows_modem_rows(Canvas& canvas) {
             result_window = window;
     }
     require(result_window, "Live RF result region exists at a small desktop size");
-    // The selected Detected signals tab contributes an ID-stack component.
-    // Resolve the active table by its owning pane rather than rebuilding that
-    // internal tab ID from the outside.
-    const ImGuiTable* table = nullptr;
-    auto& tables = ImGui::GetCurrentContext()->Tables;
-    for (int i = 0; i < tables.GetMapSize(); ++i)
-        if (const auto* candidate = tables.TryGetMapData(i); candidate && candidate->OuterWindow == result_window && candidate->ColumnsCount == 5)
-            table = candidate;
-    if (table) std::cout << "962x769 result viewport y=" << result_window->InnerClipRect.Min.y << ".."
-        << result_window->InnerClipRect.Max.y << "; full signal table y=" << table->OuterRect.Min.y << ".."
-        << table->OuterRect.Max.y << '\n';
-    require(table && table->OuterRect.Min.y >= result_window->InnerClipRect.Min.y &&
-        table->OuterRect.Min.y + 3 * ImGui::GetTextLineHeightWithSpacing() <= result_window->InnerClipRect.Max.y,
-        "BW/SF header and two observation rows are visible without scrolling at 962x769");
-    require(table->OuterRect.Max.y <= result_window->InnerClipRect.Max.y,
-        "The whole waveform table also fits the initial result viewport at 962x769");
+    require(result_window->InnerClipRect.GetHeight() >= 3 * ImGui::GetTextLineHeightWithSpacing(),
+        "Energy results retain a usable viewport at 962x769");
+    const auto visible = canvas.frame([&] { ovmesh::render(engine, ui, s); });
+    for (const auto* hidden : {"Detected signals", "Packet classifications", "LoRa receptions"})
+        require(visible.find(hidden) == std::string::npos,
+            "Disabled LoRa result tabs remain hidden even when a snapshot contains observations");
+    contains(visible, "Energy details");
+
+}
+
+struct ColoredBounds {
+    size_t vertices = 0;
+    float top = std::numeric_limits<float>::infinity();
+    float bottom = -std::numeric_limits<float>::infinity();
+};
+
+ColoredBounds rendered_color(ImU32 color) {
+    ColoredBounds result;
+    const auto* draw = ImGui::GetDrawData();
+    for (int list = 0; list < draw->CmdListsCount; ++list)
+        for (const auto& vertex : draw->CmdLists[list]->VtxBuffer)
+            if (vertex.col == color) {
+                ++result.vertices;
+                result.top = std::min(result.top, vertex.pos.y);
+                result.bottom = std::max(result.bottom, vertex.pos.y);
+            }
+    return result;
+}
+
+void waterfall_resize_preserves_signal_geometry(Canvas& canvas) {
+    ImGui::GetIO().DisplaySize = {1600, 1100};
+    for (const float scale : {1.f, 1.5f}) {
+        DesktopState ui; auto snapshot = observations_fixture();
+        snapshot.config.lanes.clear(); snapshot.spectrum_sequence = 20;
+        snapshot.spectrum_dbfs = {-99.f, -99.f};
+        ui.config = snapshot.config; ui.ui_scale = scale; ui.freeze_waterfall = true;
+        ui.last_session = snapshot.session_id; ui.last_spectrum = snapshot.spectrum_sequence;
+        ui.waterfall_center_hz = snapshot.config.center_hz;
+        ui.waterfall_span_hz = snapshot.config.survey_span_hz;
+        ui.spectrum_height = 80; ui.waterfall_height = 100;
+        ui.waterfall.assign(140, std::vector<float>{-99.f, -99.f});
+        ui.waterfall[10] = {-35.f, -35.f};
+        ui.waterfall[80] = {-50.f, -50.f};
+        const auto retained = ui.waterfall;
+        const auto event_color = heat_color(-35.f, ui.display_floor, ui.display_ceiling);
+        const auto older_color = heat_color(-50.f, ui.display_floor, ui.display_ceiling);
+        const auto render = [&] { canvas.frame([&] { spectrum_view(ui, snapshot, 900); }, false); };
+        render();
+        const auto initial = rendered_color(event_color);
+        require(initial.vertices == 8 && rendered_color(older_color).vertices == 0,
+            "Short waterfall renders the recent event and clips the older event");
+        const float waterfall_top = ui.spectrum_grabber.y + 12 * scale;
+        require(std::abs(initial.top - waterfall_top - 20 * scale) < .01f &&
+            std::abs(initial.bottom - initial.top - (2 * scale + .5f)) < .01f,
+            "Actual event rectangles use two logical pixels per row with a half-pixel seam overlap");
+        const auto initial_capture = waveform_framebuffer_crop(ui.capture_origin, ui.capture_size,
+            *ImGui::GetDrawData(), 3200, 2200);
+        ui.waterfall_height = 220;
+        render();
+        const auto taller = rendered_color(event_color);
+        require(taller.vertices == initial.vertices && taller.top == initial.top && taller.bottom == initial.bottom,
+            "Making the waterfall taller does not move or stretch the same signal");
+        require(rendered_color(older_color).vertices == 8,
+            "A taller waterfall reveals retained older rows");
+        const auto taller_capture = waveform_framebuffer_crop(ui.capture_origin, ui.capture_size,
+            *ImGui::GetDrawData(), 3200, 2200);
+        require(taller_capture.width == initial_capture.width &&
+            taller_capture.height - initial_capture.height == static_cast<int>(240 * scale),
+            "Retina PNG crop follows the visible panel height, not the retained history length");
+        ui.waterfall_height = 80;
+        render();
+        const auto shorter = rendered_color(event_color);
+        require(shorter.top == initial.top && shorter.bottom == initial.bottom &&
+            rendered_color(older_color).vertices == 0,
+            "Making the waterfall shorter clips history without squashing recent signals");
+        ui.spectrum_height += 30;
+        render();
+        const auto translated = rendered_color(event_color);
+        require(std::abs(translated.top - initial.top - 30 * scale) < .01f &&
+            translated.bottom - translated.top == initial.bottom - initial.top,
+            "Resizing the spectrum translates the waterfall without changing its row thickness");
+        ui.waterfall_height = 320;
+        render();
+        const auto background = rendered_color(heat_color(-99.f, ui.display_floor, ui.display_ceiling));
+        const float viewport_bottom = ui.waterfall_grabber.y - 22 * scale;
+        require(background.bottom < viewport_bottom - 30 * scale,
+            "A viewport taller than retained history leaves empty space instead of stretching old rows");
+        require(ui.waterfall == retained && ui.last_spectrum == snapshot.spectrum_sequence,
+            "Every resize preserves the complete frozen history buffer and update cursor");
+
+        snapshot.spectrum_sequence += 7; snapshot.spectrum_dbfs = {-42.f, -42.f};
+        render();
+        require(ui.waterfall == retained, "Frozen display does not append new publications during resizing");
+        ui.freeze_waterfall = false;
+        render();
+        require(ui.waterfall.size() == retained.size() + 1 && ui.waterfall.front() == snapshot.spectrum_dbfs &&
+            ui.waterfall[1] == retained.front(),
+            "Unfreezing appends only the latest actual update, without fabricating missed history");
+        const auto resumed = ui.waterfall;
+        render(); snapshot.running = false; render();
+        require(ui.waterfall == resumed, "Repeated renders and stopped reception do not duplicate a display update");
+
+        ui.waterfall.assign(waterfall_rows, std::vector<float>{-90.f});
+        ui.waterfall.back() = {-91.f};
+        ++snapshot.spectrum_sequence;
+        render();
+        require(ui.waterfall.size() == waterfall_rows && ui.waterfall.front() == snapshot.spectrum_dbfs &&
+            ui.waterfall.back() == std::vector<float>{-90.f},
+            "Only a new publication evicts the oldest row at the bounded history limit");
+        ++snapshot.config.center_hz;
+        render();
+        require(ui.waterfall.size() == 1 && ui.waterfall.front() == snapshot.spectrum_dbfs,
+            "A changed frequency axis clears incompatible waterfall history");
+        ++snapshot.spectrum_sequence; render();
+        require(ui.waterfall.size() == 2, "New updates accumulate on the new frequency axis");
+        ++snapshot.config.survey_span_hz; render();
+        require(ui.waterfall.size() == 1, "A changed frequency span clears incompatible history");
+        ++snapshot.spectrum_sequence; render();
+        snapshot.session_id = "source-generated-new-waterfall-session";
+        render();
+        require(ui.waterfall.size() == 1, "An explicit new session clears prior-session display history");
+    }
 }
 } // namespace
 
@@ -229,7 +345,8 @@ int main() {
         actual_waveform_rendering(canvas);
         coverage_and_selected_results(canvas);
         discovery_setting_persists_without_decoder_or_hardware(canvas);
-        small_window_shows_modem_rows(canvas);
+        small_window_shows_energy_results(canvas);
+        waterfall_resize_preserves_signal_geometry(canvas);
         std::cout << "Waveform UI checks passed (metadata-only, no hardware)\n";
         return 0;
     } catch (const std::exception& error) {

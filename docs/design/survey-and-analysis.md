@@ -25,7 +25,7 @@ First inspect the recorded range by arbitrary frequency bounds, time and geograp
 Proposed report dimensions:
 
 - Total observed activity and background/noise distribution.
-- Authorized decoded mesh activity and likely mesh activity without decoded content.
+- Physical receptions and likely Meshtastic envelope evidence, with unauthenticated and false-positive limitations.
 - Supported other-protocol evidence and unknown activity.
 - Burst durations, recurrence patterns, and busy periods.
 - Valid listening time, decoder coverage, measurement settings, and uncertainty.

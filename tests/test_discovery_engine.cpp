@@ -45,7 +45,7 @@ int main() {
                 "Every measured source sample must be accepted or explicitly rejected by discovery");
         require(final.discovery.channelized_input_samples==final.discovery.accepted_input_samples,
                 "Clean drain processes all accepted discovery input");
-        require(final.total_receptions==0&&final.authorized_messages==0&&engine.configured_key_count()==0,
+        require(final.total_receptions==0&&final.classified_receptions==0&&engine.configured_key_count()==0,
                 "Waveform discovery must not enable payload decoding or introduce keys");
         require(final.measurement_seconds>0&&final.measurement_seconds<=final.input_seconds,"RF measurements remain independent");
         bool found=false;

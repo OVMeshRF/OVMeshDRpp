@@ -136,7 +136,6 @@ struct Statement {
     }
 };
 Value number(const std::optional<double>& v) { return v ? Value(*v) : Value(nullptr); }
-Value integer(const std::optional<uint32_t>& v) { return v ? Value(static_cast<int64_t>(*v)) : Value(nullptr); }
 void insert(sqlite3* db,const std::string& table,const std::string& columns,const std::vector<Value>& values) {
     std::string q="INSERT INTO "+table+"("+columns+") VALUES(";
     for(size_t n=0;n<values.size();++n) { if(n)q+=',';q+='?'; } q+=')';
@@ -285,7 +284,7 @@ std::string canonical_classification(const std::string& value) {
     if(value=="likely Meshtastic" || value=="possible Meshtastic" || value=="likely LoRaWAN")return value;
     return "unknown LoRa";
 }
-void validate_reception(const Reception& r, size_t forward_route_limit = 32) {
+void validate_reception(const Reception& r) {
     if (r.id > static_cast<uint64_t>(INT64_MAX) || r.frequency_hz == 0 || r.frequency_hz > 6000000000ULL ||
         r.bandwidth_hz == 0 || r.bandwidth_hz > 2000000 || r.spreading_factor < 5 || r.spreading_factor > 12 ||
         r.coding_rate < 5 || r.coding_rate > 8 || r.lane_label.size() > 160)
@@ -293,38 +292,20 @@ void validate_reception(const Reception& r, size_t forward_route_limit = 32) {
     nonnegative(r.utc_seconds, "reception time"); nonnegative(r.elapsed_seconds, "reception elapsed time");
     nonnegative(r.duration_seconds, "reception duration");
     if (!std::isfinite(r.snr_db) || !std::isfinite(r.frequency_error_hz)) throw std::runtime_error("Invalid RF estimate");
-    if (r.decoded.status < protocol::Status::decoded || r.decoded.status > protocol::Status::crypto_error)
+    if (r.decoded.status < protocol::Status::classified || r.decoded.status > protocol::Status::crypto_error)
         throw std::runtime_error("Invalid decode status");
     if(r.decoded.authentication!="not authenticated")throw std::runtime_error("Unsupported authentication claim at persistence boundary");
-    const auto* a = r.decoded.authorized ? &*r.decoded.authorized : nullptr;
-    if ((r.decoded.status == protocol::Status::decoded) != (a != nullptr) ||
-        (a && (!r.crc_valid || !r.header_valid))) throw std::runtime_error("Content rejected at persistence boundary");
+    if (r.decoded.status == protocol::Status::classified &&
+        (!r.crc_valid || !r.header_valid || r.decoded.classification != "likely Meshtastic"))
+        throw std::runtime_error("Classification rejected at persistence boundary");
     if (r.decoded.evidence) {
         const auto& evidence = *r.decoded.evidence;
         if (!r.crc_valid || !r.header_valid || evidence.port == 0 || evidence.port > 65535 ||
-            (a ? evidence.port != a->port || evidence.signature_present != a->signature_present
-               : r.decoded.status != protocol::Status::unsupported_payload || r.decoded.classification != "possible Meshtastic"))
+            (r.decoded.status != protocol::Status::classified &&
+             (r.decoded.status != protocol::Status::unsupported_payload || r.decoded.classification != "possible Meshtastic")))
             throw std::runtime_error("Envelope evidence eligibility is inconsistent");
     } else if (r.decoded.classification == "possible Meshtastic") {
         throw std::runtime_error("Possible Meshtastic classification requires envelope evidence");
-    }
-    if (a) {
-        const auto& c = a->content;
-        const std::array<std::string_view,7> supported_kinds{"text","position","node","device telemetry","environment telemetry","routing","traceroute"};
-        if(canonical_classification(r.decoded.classification)!="likely Meshtastic" ||
-           std::find(supported_kinds.begin(),supported_kinds.end(),c.kind)==supported_kinds.end())
-            throw std::runtime_error("Unsupported authorized protocol/content kind");
-        if (a->profile_id.empty() || a->profile_id.size() > 160 || c.kind.empty() || c.kind.size() > 64 ||
-            c.text.size() > 2048 || c.node_id.size() > 128 || c.long_name.size() > 256 || c.short_name.size() > 64 ||
-            c.route.size() > forward_route_limit || c.route_back.size() > 32 || c.snr_towards.size() > 32 ||
-            c.snr_back.size() > 32 || a->hop_limit > 7 || a->hop_start > 7)
-            throw std::runtime_error("Content exceeds approved bounds");
-        if (!c.routing_variant.empty() && (a->port != 5 || c.kind != "routing" ||
-            (c.routing_variant != "request" && c.routing_variant != "reply" && c.routing_variant != "error")))
-            throw std::runtime_error("Invalid routing variant");
-        if (c.latitude.has_value() != c.longitude.has_value()) throw std::runtime_error("Incomplete sender-reported position");
-        if (c.latitude) coordinates(*c.latitude, *c.longitude);
-        for (const auto* value : {&c.altitude, &c.voltage, &c.temperature, &c.humidity, &c.battery_percent, &c.channel_utilization, &c.air_util_tx}) optional_finite(*value);
     }
     if (r.receiver_position && r.receiver_position->valid) validate_fix(*r.receiver_position);
 }
@@ -364,6 +345,25 @@ std::string reception_columns_for(int version) {
     return std::string(reception_columns) + (version >= 3 ?
         ",evidence_port,evidence_signature_present,request_id,reply_id,signature_present,routing_variant" : "");
 }
+// Historical payload, identity and routing columns are never selected into
+// application result objects. Keep their positions as NULL for the compatible reader.
+std::string reception_metadata_columns(int version) {
+    std::string result="id,utc,elapsed,frequency,bw,sf,cr,duration,snr,cfo,header_ok,crc_ok,lane,status,classification,authentication";
+    for(int i=0;i<31;++i)result+=",NULL";
+    result+=",receiver_latitude,receiver_longitude,receiver_altitude,receiver_manual,receiver_utc,receiver_monotonic,receiver_source,receiver_hdop,receiver_satellites";
+    if(version>=3)result+=",evidence_port,evidence_signature_present,NULL,NULL,NULL,NULL";
+    return result;
+}
+constexpr const char* metadata_policy_ddl="CREATE TABLE metadata_policy(id INTEGER PRIMARY KEY,policy TEXT NOT NULL)";
+constexpr const char* metadata_policy_name="metadata-only-v1";
+bool has_metadata_policy(sqlite3* db) {
+    Statement exists(db,"SELECT 1 FROM sqlite_schema WHERE type='table' AND name='metadata_policy'");
+    if(!exists.row())return false;
+    Statement policy(db,"SELECT id,policy FROM metadata_policy LIMIT 2");
+    if(!policy.row()||policy.integer(0)!=1||policy.text(1)!=metadata_policy_name||policy.row())
+        throw std::runtime_error("Unsupported recording metadata policy");
+    return true;
+}
 uint64_t unsigned_value(const Statement& s, int column, uint64_t maximum = UINT32_MAX) {
     const auto value = s.integer(column);
     if (value < 0 || static_cast<uint64_t>(value) > maximum) throw std::runtime_error("Saved integer is outside its allowed range");
@@ -374,16 +374,6 @@ Reception reception_from(Statement& s, int version) {
     Reception r;r.id=unsigned_value(s,0,INT64_MAX);r.utc_seconds=s.real(1);r.elapsed_seconds=s.real(2);r.frequency_hz=unsigned_value(s,3,6000000000ULL);r.bandwidth_hz=static_cast<uint32_t>(unsigned_value(s,4));r.spreading_factor=static_cast<unsigned>(unsigned_value(s,5,12));r.coding_rate=static_cast<unsigned>(unsigned_value(s,6,8));r.duration_seconds=s.real(7);r.snr_db=s.real(8);r.frequency_error_hz=s.real(9);r.header_valid=boolean(s,10);r.crc_valid=boolean(s,11);r.lane_label=s.text(12);
     auto status=s.integer(13);if(status<0||status>static_cast<int>(protocol::Status::crypto_error))throw std::runtime_error("Unsupported saved decode status");
     r.decoded.status=static_cast<protocol::Status>(status);r.decoded.classification=canonical_classification(s.text(14));r.decoded.authentication=s.text(15);
-    if(!s.null(16)) {
-        protocol::AuthorizedContent a;a.profile_id=s.text(16);a.from=static_cast<uint32_t>(unsigned_value(s,17));a.to=static_cast<uint32_t>(unsigned_value(s,18));a.packet_id=static_cast<uint32_t>(unsigned_value(s,19));a.port=static_cast<uint32_t>(unsigned_value(s,20));a.hop_limit=static_cast<uint8_t>(unsigned_value(s,21,7));a.hop_start=static_cast<uint8_t>(unsigned_value(s,22,7));a.channel_hash=static_cast<uint8_t>(unsigned_value(s,23,255));a.next_hop=static_cast<uint8_t>(unsigned_value(s,24,255));a.relay_node=static_cast<uint8_t>(unsigned_value(s,25,255));a.want_ack=boolean(s,26);a.via_mqtt=boolean(s,27);a.want_response=boolean(s,28);
-        auto& c=a.content;c.kind=s.text(29);c.text=s.text(30);c.node_id=s.text(31);c.long_name=s.text(32);c.short_name=s.text(33);
-        std::optional<double>* fields[]={&c.latitude,&c.longitude,&c.altitude,&c.voltage,&c.temperature,&c.humidity,&c.battery_percent,&c.channel_utilization,&c.air_util_tx};
-        for(int n=0;n<9;++n)if(!s.null(34+n))*fields[n]=s.real(34+n);
-        std::optional<uint32_t>* ints[]={&c.reported_time,&c.hardware_model,&c.role,&c.routing_error};
-        for(int n=0;n<4;++n)if(!s.null(43+n))*ints[n]=static_cast<uint32_t>(unsigned_value(s,43+n));
-        if(!r.header_valid||!r.crc_valid||r.decoded.status!=protocol::Status::decoded)throw std::runtime_error("Saved content eligibility is inconsistent");
-        r.decoded.authorized=std::move(a);
-    } else for (int column=17;column<47;++column) if(!s.null(column)) throw std::runtime_error("Unauthorised content fields in saved record");
     if (!s.null(47) || !s.null(48)) {
         PositionFix f;f.latitude=s.real(47);f.longitude=s.real(48);if(!s.null(49))f.altitude_m=s.real(49);
         f.manual=boolean(s,50);f.valid=true;f.utc_seconds=s.real(51);f.monotonic_seconds=s.real(52);f.source=s.text(53);
@@ -392,49 +382,9 @@ Reception reception_from(Statement& s, int version) {
     if (version >= 3) {
         if (!s.null(56) || !s.null(57))
             r.decoded.evidence=protocol::EnvelopeEvidence{static_cast<uint32_t>(unsigned_value(s,56)),boolean(s,57)};
-        if (r.decoded.authorized) {
-            auto& a=*r.decoded.authorized;
-            a.request_id=static_cast<uint32_t>(unsigned_value(s,58));a.reply_id=static_cast<uint32_t>(unsigned_value(s,59));
-            a.signature_present=boolean(s,60);
-            if(s.null(61))throw std::runtime_error("Missing saved routing variant");
-            a.content.routing_variant=s.text(61);
-        } else for (int column=58;column<62;++column) if(!s.null(column))
-            throw std::runtime_error("Unauthorized correlation or routing fields in saved record");
     }
-    validate_reception(r,version>=3?32:64);
+    validate_reception(r);
     return r;
-}
-
-void read_route(sqlite3* db, Reception& reception, int version) {
-    Statement route(db,"SELECT step,node FROM routes WHERE reception=? ORDER BY step");
-    route.bind(1,int64_t(reception.id));
-    size_t expected = 0;
-    while(route.row()) {
-        const size_t limit=version>=3?32:64;
-        if(!reception.decoded.authorized || expected >= limit || unsigned_value(route,0,limit-1) != expected++)
-            throw std::runtime_error("Invalid saved authorized route");
-        reception.decoded.authorized->content.route.push_back(static_cast<uint32_t>(unsigned_value(route,1)));
-    }
-    if(version>=3) {
-        Statement details(db,"SELECT kind,step,value FROM route_details WHERE reception=? ORDER BY kind,step");
-        details.bind(1,int64_t(reception.id));
-        while(details.row()) {
-            if(!reception.decoded.authorized)throw std::runtime_error("Unauthorized saved route details");
-            auto& c=reception.decoded.authorized->content;
-            const auto kind=details.text(0);
-            if(kind=="route_back") {
-                if(c.route_back.size()>=32 || unsigned_value(details,1,31)!=c.route_back.size())throw std::runtime_error("Invalid saved return route");
-                c.route_back.push_back(static_cast<uint32_t>(unsigned_value(details,2)));
-            } else if(kind=="snr_towards" || kind=="snr_back") {
-                auto& snr=kind=="snr_towards"?c.snr_towards:c.snr_back;
-                const auto value=details.integer(2);
-                if(snr.size()>=32 || unsigned_value(details,1,31)!=snr.size() || value<INT32_MIN || value>INT32_MAX)
-                    throw std::runtime_error("Invalid saved route SNR");
-                snr.push_back(static_cast<int32_t>(value));
-            } else throw std::runtime_error("Unsupported saved route detail");
-        }
-    }
-    validate_reception(reception,version>=3?32:64);
 }
 
 constexpr const char* tile_columns="id,first_sample,end_sample,utc_start,utc_end,elapsed_start,elapsed_end,first_center,bin_width,fft_size,frame_count,bin_count,background,clipped,quality,mean_cdb,peak_cdb,activity,start_lat,start_lon,start_alt,start_manual,start_utc,start_monotonic,start_source,start_hdop,start_satellites,end_lat,end_lon,end_alt,end_manual,end_utc,end_monotonic,end_source,end_hdop,end_satellites";
@@ -471,6 +421,42 @@ const std::map<std::string,std::string>& discovery_tables() {
         {"discovery_bands","CREATE TABLE discovery_bands(subband_index INTEGER PRIMARY KEY,center_hz REAL,processed_samples INTEGER,abandoned_samples INTEGER,source_gap_input_samples INTEGER,candidate_limit_hits INTEGER,track_limit_hits INTEGER)"},
         {"discovery_gaps","CREATE TABLE discovery_gaps(id INTEGER PRIMARY KEY,first_input_sample INTEGER,end_input_sample INTEGER,subband_index INTEGER,reason TEXT)"}};
     return tables;
+}
+// Optional, versioned metadata extension. Older files have unknown decoder setup;
+// new files record each acquisition without retaining keys or frame bytes.
+constexpr const char* automatic_columns="acquisition_id,version,available,enabled,finished,candidates,started,completed,crc_valid,classified,history_misses,active_limit_hits,duplicate_candidates,excluded_candidates,outside_range_candidates,unsupported_candidates,timeouts,resets,abandoned_decoders,frame_overflows,active_decoders,history_samples";
+constexpr const char* automatic_ddl="CREATE TABLE automatic_decoder(acquisition_id INTEGER PRIMARY KEY,version INTEGER NOT NULL,available INTEGER,enabled INTEGER,finished INTEGER,candidates INTEGER,started INTEGER,completed INTEGER,crc_valid INTEGER,classified INTEGER,history_misses INTEGER,active_limit_hits INTEGER,duplicate_candidates INTEGER,excluded_candidates INTEGER,outside_range_candidates INTEGER,unsupported_candidates INTEGER,timeouts INTEGER,resets INTEGER,abandoned_decoders INTEGER,frame_overflows INTEGER,active_decoders INTEGER,history_samples INTEGER)";
+constexpr std::array<uint64_t AutomaticDecoderStatus::*,15> automatic_counters{
+    &AutomaticDecoderStatus::candidates,&AutomaticDecoderStatus::started,&AutomaticDecoderStatus::completed,
+    &AutomaticDecoderStatus::crc_valid,&AutomaticDecoderStatus::classified,&AutomaticDecoderStatus::history_misses,
+    &AutomaticDecoderStatus::active_limit_hits,&AutomaticDecoderStatus::duplicate_candidates,&AutomaticDecoderStatus::excluded_candidates,
+    &AutomaticDecoderStatus::outside_range_candidates,&AutomaticDecoderStatus::unsupported_candidates,&AutomaticDecoderStatus::timeouts,
+    &AutomaticDecoderStatus::resets,&AutomaticDecoderStatus::abandoned_decoders,&AutomaticDecoderStatus::frame_overflows};
+bool has_automatic_decoder(sqlite3* db) {
+    Statement q(db,"SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='automatic_decoder'");
+    return q.row()&&q.integer(0)==1;
+}
+void validate_automatic(const AutomaticDecoderStatus& s) {
+    for(auto member:automatic_counters)if(s.*member>INT64_MAX)throw std::runtime_error("Invalid automatic decoder counter");
+    if(s.active_decoders>256||s.history_samples>(uint64_t{1}<<27)||
+       s.started>s.candidates||s.crc_valid>s.completed||s.classified>s.crc_valid||
+       (!s.available&&(s.enabled||s.completed))||(!s.enabled&&(s.started||s.active_decoders)))
+        throw std::runtime_error("Invalid automatic decoder status");
+}
+AutomaticDecoderStatus automatic_from(const Statement& row) {
+    if(unsigned_value(row,0,2048)>2048||row.integer(1)!=1)throw std::runtime_error("Unsupported automatic decoder metadata");
+    AutomaticDecoderStatus s;s.available=boolean(row,2);s.enabled=boolean(row,3);s.finished=boolean(row,4);
+    int index=5;for(auto member:automatic_counters)s.*member=unsigned_value(row,index++,INT64_MAX);
+    s.active_decoders=unsigned_value(row,index++,256);s.history_samples=unsigned_value(row,index++,uint64_t{1}<<27);
+    validate_automatic(s);return s;
+}
+void save_automatic(sqlite3* db,uint64_t id,const AutomaticDecoderStatus& s) {
+    validate_automatic(s);
+    Statement erase(db,"DELETE FROM automatic_decoder WHERE acquisition_id=?");erase.bind(1,int64_t(id));erase.run();
+    std::vector<Value> values{int64_t(id),int64_t(1),int64_t(s.available),int64_t(s.enabled),int64_t(s.finished)};
+    for(auto member:automatic_counters)values.emplace_back(int64_t(s.*member));
+    values.emplace_back(int64_t(s.active_decoders));values.emplace_back(int64_t(s.history_samples));
+    insert(db,"automatic_decoder",automatic_columns,values);
 }
 constexpr unsigned discovery_band_limit=32;
 constexpr uint64_t discovery_sample_limit=uint64_t{1}<<53;
@@ -587,7 +573,7 @@ void validate_waveform(const WaveformObservation& w,const ReceiverConfig& c) {
     const double upper=double(c.center_hz)+c.survey_span_hz/2.;
     if(!c.discover_lora || w.id==0 || w.id>INT64_MAX ||
        !std::isfinite(w.center_hz) || w.center_hz<=0 || w.center_hz>6000000000. ||
-       (w.bandwidth_hz!=125000 && w.bandwidth_hz!=250000 && w.bandwidth_hz!=500000) ||
+       !supported_lora_bandwidth(w.bandwidth_hz) ||
        w.spreading_factor<7 || w.spreading_factor>12 ||
        w.contributing_subbands==0 || w.contributing_subbands>discovery_band_limit ||
        w.center_hz+w.bandwidth_hz/2.<=lower || w.center_hz-w.bandwidth_hz/2.>=upper ||
@@ -623,7 +609,7 @@ void validate_discovery_band(const DiscoveryBandCoverage& b) {
     for(uint64_t value:{b.processed_samples,b.abandoned_samples,b.source_gap_input_samples,b.candidate_limit_hits,b.track_limit_hits})discovery_counter(value);
 }
 void validate_discovery_status(const DiscoveryStatus& d,bool enabled) {
-    if(d.enabled!=enabled || d.method!="lora-preamble-v1" || d.fault.size()>160 ||
+    if(d.enabled!=enabled || (d.method!="lora-preamble-v1"&&d.method!="lora-preamble-v2") || d.fault.size()>160 ||
        !valid_utf8(d.fault) || d.fault.find('\0')!=std::string::npos || d.bands.size()>discovery_band_limit)
         throw std::runtime_error("Invalid discovery status or unsupported method");
     for(uint64_t value:{d.accepted_input_samples,d.rejected_input_samples,d.channelized_input_samples,d.abandoned_input_samples,
@@ -732,8 +718,8 @@ ConcentratorScan concentrator_scan_from(const Statement& row,const ReceiverConfi
     scan.receiver_position=read_fix(row,11);validate_concentrator_scan(scan,c);return scan;
 }
 void validate_concentrator_packet(const Reception& r,const ReceiverConfig& c) {
-    if(!c.concentrators.decode_enabled&&(r.decoded.authorized||r.decoded.evidence))
-        throw std::runtime_error("Decoded content is disabled for this concentrator recording");
+    if(!c.concentrators.decode_enabled&&(r.decoded.status==protocol::Status::classified||r.decoded.evidence))
+        throw std::runtime_error("Protocol classification is disabled for this concentrator recording");
     if(!r.concentrator||r.concentrator->board_index>=c.concentrators.boards.size()||!std::isfinite(r.concentrator->rssi_dbm)||r.concentrator->rssi_dbm< -200||r.concentrator->rssi_dbm>50)
         throw std::runtime_error("Invalid concentrator packet provenance");
     const auto& b=c.concentrators.boards[r.concentrator->board_index];
@@ -745,6 +731,51 @@ void read_concentrator_packet(sqlite3* db,Reception& r,const ReceiverConfig& c) 
     if(!row.row())throw std::runtime_error("Missing concentrator packet provenance");
     r.concentrator=ConcentratorPacketMetadata{static_cast<unsigned>(unsigned_value(row,0,1)),row.real(1),static_cast<uint32_t>(unsigned_value(row,2,UINT32_MAX))};
     validate_concentrator_packet(r,c);
+}
+constexpr const char* acquisition_columns="id,elapsed_start,elapsed_end,finalized,synthetic,hardware,center,sample_rate,span,lna,vga,amp,threshold,offset_hz,rtl_gain,rtl_auto,discovery,antenna,receiver,notes";
+constexpr const char* acquisition_ddl="CREATE TABLE acquisition_segments(id INTEGER PRIMARY KEY,elapsed_start REAL NOT NULL,elapsed_end REAL NOT NULL,finalized INTEGER NOT NULL,synthetic INTEGER NOT NULL,hardware INTEGER NOT NULL,center INTEGER NOT NULL,sample_rate INTEGER NOT NULL,span INTEGER NOT NULL,lna INTEGER NOT NULL,vga INTEGER NOT NULL,amp INTEGER NOT NULL,threshold REAL NOT NULL,offset_hz INTEGER NOT NULL,rtl_gain INTEGER NOT NULL,rtl_auto INTEGER NOT NULL,discovery INTEGER NOT NULL,antenna TEXT NOT NULL,receiver TEXT NOT NULL,notes TEXT NOT NULL)";
+constexpr const char* acquisition_lanes_columns="segment_id,lane_index,label,channel,protocol,frequency,bw,sf,cr,enabled";
+constexpr const char* acquisition_lanes_ddl="CREATE TABLE acquisition_lanes(segment_id INTEGER REFERENCES acquisition_segments(id),lane_index INTEGER,label TEXT,channel TEXT,protocol TEXT,frequency INTEGER,bw INTEGER,sf INTEGER,cr INTEGER,enabled INTEGER,PRIMARY KEY(segment_id,lane_index))";
+constexpr const char* acquisition_frequencies_ddl="CREATE TABLE frequencies(center INTEGER,width INTEGER,mean REAL,peak REAL,observed REAL,active REAL,PRIMARY KEY(center,width))";
+bool has_acquisition_extension(sqlite3* db) {
+    Statement found(db,"SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('acquisition_segments','acquisition_lanes')");
+    if(!found.row())throw std::runtime_error("Cannot inspect acquisition provenance");
+    const auto count=found.integer(0);
+    if(count!=0&&count!=2)throw std::runtime_error("Incomplete acquisition provenance extension");
+    return count==2;
+}
+void validate_acquisition(const AcquisitionSegment& segment,const ReceiverConfig& legacy) {
+    const auto& c=segment.config;
+    nonnegative(segment.elapsed_start_seconds,"acquisition start");nonnegative(segment.elapsed_end_seconds,"acquisition end");
+    if(!segment.id||segment.id>2048||segment.elapsed_end_seconds<segment.elapsed_start_seconds||segment.elapsed_end_seconds>1e10)
+        throw std::runtime_error("Invalid acquisition interval");
+    if(c.synthetic!=legacy.synthetic||c.hardware_receiver!=legacy.hardware_receiver||c.compact_recording!=legacy.compact_recording)
+        throw std::runtime_error("A survey cannot mix synthetic and physical receiver types or storage encodings");
+    (void)tuned_center_hz(c);
+    if(c.automatic_decode&&!c.discover_lora)throw std::runtime_error("Automatic decoding requires waveform discovery");
+    const bool rak=!c.synthetic&&c.hardware_receiver==HardwareReceiver::Rak5146;
+    if(rak&&(c.sample_rate!=0||c.discover_lora||!c.lanes.empty()||c.center_hz!=legacy.center_hz||
+        c.survey_span_hz!=legacy.survey_span_hz||c.tuning_offset_hz!=legacy.tuning_offset_hz))
+        throw std::runtime_error("Concentrator acquisition must retain its fixed scan configuration");
+    if(!rak && (c.sample_rate<1000000||c.sample_rate>20000000||c.survey_span_hz<500000||c.survey_span_hz>c.sample_rate*4/5||
+       c.center_hz<c.survey_span_hz/2||c.center_hz+c.survey_span_hz/2>6000000000ULL))
+        throw std::runtime_error("Invalid acquisition frequency or sample configuration");
+    if(c.lna_gain>40||c.lna_gain%8||c.vga_gain>62||c.vga_gain%2||!std::isfinite(c.activity_threshold_dbfs)||
+       c.activity_threshold_dbfs< -140||c.activity_threshold_dbfs>0||c.rtl_gain_tenths_db< -100||c.rtl_gain_tenths_db>600||
+       c.lanes.size()>4||c.antenna_description.size()>512||c.receiver_description.size()>512||c.survey_notes.size()>2048||
+       !valid_utf8(c.antenna_description)||!valid_utf8(c.receiver_description)||!valid_utf8(c.survey_notes))
+        throw std::runtime_error("Invalid acquisition receiver settings");
+    if(!c.synthetic&&c.hardware_receiver==HardwareReceiver::RtlSdr&&
+       ((c.sample_rate!=1000000&&c.sample_rate!=2000000)||c.amplifier||
+        (c.discover_lora&&(c.sample_rate!=2000000||c.survey_span_hz>1500000))))
+        throw std::runtime_error("Invalid acquisition RTL-SDR settings");
+    for(const auto& l:c.lanes) {
+        if(l.label.size()>160||l.channel_name.size()>160||!valid_utf8(l.label)||!valid_utf8(l.channel_name)||l.frequency_hz>6000000000ULL||
+           (l.protocol!="Meshtastic"&&l.protocol!="MeshCore")||
+           !supported_lora_bandwidth(l.bandwidth_hz)||
+           l.spreading_factor<7||l.spreading_factor>12||l.coding_rate<5||l.coding_rate>8)
+            throw std::runtime_error("Invalid acquisition decoder profile");
+    }
 }
 void validate_schema(sqlite3* db, int version) {
     std::map<std::string,std::string> layouts{
@@ -763,16 +794,26 @@ void validate_schema(sqlite3* db, int version) {
     if(version>=5){layouts.at("session")+=",discover_lora";layouts.emplace("waveform_observations",waveform_columns);layouts.emplace("discovery_status",discovery_status_columns);layouts.emplace("discovery_bands",discovery_band_columns);layouts.emplace("discovery_gaps",discovery_gap_columns);}
     if(version>=6){layouts.at("spectrum_tiles")=compact_tile_columns;layouts.emplace("power_blocks",power_columns);layouts.at("positions")+=",id";}
     if(version>=7)for(const auto& [name,definition]:concentrator_tables())layouts.emplace(name,definition.first);
+    const bool segmented=has_acquisition_extension(db);
+    if(segmented&&version<5)throw std::runtime_error("Acquisition provenance requires schema 5 or newer");
+    if(segmented){layouts.emplace("acquisition_segments",acquisition_columns);layouts.emplace("acquisition_lanes",acquisition_lanes_columns);}
     std::set<std::string> found;
     Statement objects(db,"SELECT type,name,sql FROM sqlite_schema ORDER BY name");
     while(objects.row()) {
         const auto type=objects.text(0), name=objects.text(1), sql=objects.text(2);
+        if(segmented && type=="index" && (name=="sqlite_autoindex_acquisition_lanes_1"||name=="sqlite_autoindex_frequencies_1")&&sql.empty())continue;
+        if(segmented && ((name=="acquisition_segments"&&sql!=acquisition_ddl)||(name=="acquisition_lanes"&&sql!=acquisition_lanes_ddl)||(name=="frequencies"&&sql!=acquisition_frequencies_ddl)))
+            throw std::runtime_error("Unsupported acquisition table definition");
         if(type=="index" && (name=="sqlite_autoindex_session_1" || name=="sqlite_autoindex_routes_1" || name=="sqlite_autoindex_window_bins_1") && sql.empty()) continue;
         if(version>=3 && type=="index" && name=="sqlite_autoindex_route_details_1" && sql.empty())continue;
         if(version>=6 && type=="index" && name=="position_identity" && sql=="CREATE INDEX position_identity ON positions(utc,monotonic,source)")continue;
         if(type=="index" && name=="reception_time" && sql=="CREATE INDEX reception_time ON receptions(utc)") continue;
         if(version>=5 && name=="receiver_setup" && type=="table" && sql==receiver_setup_ddl)
             layouts.emplace("receiver_setup","id,hardware,gain_tenths_db,auto_gain");
+        if(version>=5 && name=="automatic_decoder" && type=="table" && sql==automatic_ddl)
+            layouts.emplace("automatic_decoder",automatic_columns);
+        if(version>=5 && name=="metadata_policy" && type=="table" && sql==metadata_policy_ddl)
+            layouts.emplace("metadata_policy","id,policy");
         const auto expected=layouts.find(name);
         if(type!="table" || expected==layouts.end() || sql.rfind("CREATE TABLE "+name+"(",0)!=0)
             throw std::runtime_error("Unexpected or executable objects in session schema");
@@ -829,6 +870,7 @@ void SessionStore::create(const std::string& path,const ReceiverConfig& c,const 
     if(rak){validate_concentrator_config(c.concentrators,c.center_hz,c.survey_span_hz,c.tuning_offset_hz,false);if(c.discover_lora||c.sample_rate!=0||!c.lanes.empty())throw std::runtime_error("Concentrator configuration must not claim SDR sampling or software discovery");}
     // Validate nominal and corrected tuner frequencies before creating a file.
     (void)tuned_center_hz(c);
+    if(c.automatic_decode&&!c.discover_lora)throw std::runtime_error("Automatic decoding requires waveform discovery");
     if((!rak&&(c.sample_rate<1000000 || c.sample_rate>20000000 || !c.survey_span_hz || c.survey_span_hz>c.sample_rate)) ||
        c.antenna_description.size()>512||c.receiver_description.size()>512||c.survey_notes.size()>2048)
         throw std::runtime_error("Invalid survey configuration or notes");
@@ -867,6 +909,9 @@ void SessionStore::create(const std::string& path,const ReceiverConfig& c,const 
         insert(db_,"receiver_setup","id,hardware,gain_tenths_db,auto_gain",
             {int64_t(1),std::string("rtl_sdr"),int64_t(c.rtl_gain_tenths_db),int64_t(c.rtl_auto_gain)});
     }
+    execute(automatic_ddl);
+    AutomaticDecoderStatus initial_decoder;initial_decoder.available=true;initial_decoder.enabled=c.automatic_decode;
+    save_automatic(db_,0,initial_decoder);
     DiscoveryStatus initial_discovery;initial_discovery.enabled=c.discover_lora;
     insert(db_,"discovery_status",discovery_status_columns,discovery_status_values(initial_discovery));
     for(const auto& l:c.lanes)insert(db_,"lanes","label,channel,protocol,frequency,bw,sf,cr,enabled",{l.label,l.channel_name,l.protocol,int64_t(l.frequency_hz),int64_t(l.bandwidth_hz),int64_t(l.spreading_factor),int64_t(l.coding_rate),int64_t(l.enabled)});
@@ -882,8 +927,84 @@ void SessionStore::create(const std::string& path,const ReceiverConfig& c,const 
             {int64_t(1),int64_t(1),int64_t(c.concentrators.scan_enabled),int64_t(c.concentrators.scan_step_hz),int64_t(c.concentrators.scan_samples),std::string(concentrator_method),std::string(concentrator_coverage),c.antenna_description,c.receiver_description,c.survey_notes,int64_t(c.concentrators.decode_enabled)});
         for(size_t i=0;i<c.concentrators.boards.size();++i){const auto& b=c.concentrators.boards[i];insert(db_,"concentrator_profiles",concentrator_tables().at("concentrator_profiles").first,{int64_t(i),int64_t(b.packets_enabled),int64_t(b.frequency_hz),int64_t(b.bandwidth_hz),int64_t(b.spreading_factor),int64_t(b.sync_word)});}
     }
+    execute(metadata_policy_ddl);
+    insert(db_,"metadata_policy","id,policy",{int64_t(1),std::string(metadata_policy_name)});
     std::string query="INSERT INTO spectrum_tiles VALUES(";for(int i=0;i<((c.compact_recording||rak)?19:36);++i){if(i)query+=',';query+='?';}query+=')';check(sqlite3_prepare_v2(db_,query.c_str(),-1,&tile_insert_,nullptr));
     } catch(...) { if(db_)sqlite3_close_v2(db_);db_=nullptr;schema_version_=0;throw; }
+}
+void SessionStore::enable_acquisitions() {
+    if(!db_||readonly_)throw std::runtime_error("Acquisition history requires a new writable recording");
+    if(acquisition_extension_)return;
+    {Statement count(db_,"SELECT count(*) FROM spectrum_tiles");
+    if(!count.row()||count.integer(0)!=0)throw std::runtime_error("Cannot retrofit acquisition provenance onto existing measurements");}
+    begin_batch();
+    execute(acquisition_ddl);execute(acquisition_lanes_ddl);
+    execute("DROP TABLE frequencies;");execute(acquisition_frequencies_ddl);
+    execute("COMMIT;");pending_=false;acquisition_extension_=true;
+}
+void SessionStore::begin_acquisition(const AcquisitionSegment& segment) {
+    if(!acquisition_extension_||readonly_)throw std::runtime_error("This recording cannot be resumed without acquisition provenance");
+    validate_acquisition(segment,recorded_config_);
+    Statement previous(db_,"SELECT id,elapsed_end,finalized FROM acquisition_segments ORDER BY id DESC LIMIT 1");
+    if(previous.row() && (segment.id!=unsigned_value(previous,0)+1||!boolean(previous,2)||segment.elapsed_start_seconds<previous.real(1)-1e-8))
+        throw std::runtime_error("Previous acquisition must be finalized before resuming");
+    if(!acquisition_id_ && segment.id!=1)throw std::runtime_error("New acquisition history must start at one");
+    begin_batch();save_power_block();const auto power_id=power_block_.id;power_block_=PowerBlock{};power_block_.id=power_id;
+    const auto& c=segment.config;
+    insert(db_,"acquisition_segments",acquisition_columns,{int64_t(segment.id),segment.elapsed_start_seconds,segment.elapsed_end_seconds,int64_t(segment.finalized),
+        int64_t(c.synthetic),int64_t(c.hardware_receiver),int64_t(c.center_hz),int64_t(c.sample_rate),int64_t(c.survey_span_hz),int64_t(c.lna_gain),int64_t(c.vga_gain),int64_t(c.amplifier),double(c.activity_threshold_dbfs),c.tuning_offset_hz,int64_t(c.rtl_gain_tenths_db),int64_t(c.rtl_auto_gain),int64_t(c.discover_lora),c.antenna_description,c.receiver_description,c.survey_notes});
+    for(size_t i=0;i<c.lanes.size();++i){const auto& l=c.lanes[i];insert(db_,"acquisition_lanes",acquisition_lanes_columns,
+        {int64_t(segment.id),int64_t(i),l.label,l.channel_name,l.protocol,int64_t(l.frequency_hz),int64_t(l.bandwidth_hz),int64_t(l.spreading_factor),int64_t(l.coding_rate),int64_t(l.enabled)});}
+    AutomaticDecoderStatus decoder;decoder.available=true;decoder.enabled=c.automatic_decode;
+    execute("DELETE FROM automatic_decoder WHERE acquisition_id=0;");save_automatic(db_,segment.id,decoder);
+    recorded_config_=c;acquisition_id_=segment.id;
+    // Publish the new acquisition and its setup as one readable checkpoint.
+    // Analysis can run concurrently before the receiver produces its first tile.
+    Statement session(db_,"UPDATE session SET complete=0,elapsed=max(elapsed,?)");
+    session.values({segment.elapsed_end_seconds});session.run();
+    execute("DELETE FROM discovery_status; DELETE FROM discovery_bands;");
+    DiscoveryStatus initial;initial.enabled=c.discover_lora;
+    insert(db_,"discovery_status",discovery_status_columns,discovery_status_values(initial));
+    execute("COMMIT;");pending_=false;
+}
+std::vector<AcquisitionSegment> SessionStore::acquisitions(const ReceiverConfig& legacy) const {
+    if(!has_acquisition_extension(db_))return {};
+    std::vector<AcquisitionSegment> result;
+    Statement segments(db_,"SELECT * FROM acquisition_segments ORDER BY id LIMIT 2049");
+    while(segments.row()) {
+        AcquisitionSegment a;a.id=unsigned_value(segments,0,2048);a.elapsed_start_seconds=segments.real(1);a.elapsed_end_seconds=segments.real(2);a.finalized=boolean(segments,3);
+        auto& c=a.config;c=legacy;c.device_serial.clear();c.session_path.clear();
+        c.synthetic=boolean(segments,4);c.hardware_receiver=static_cast<HardwareReceiver>(unsigned_value(segments,5,2));
+        c.center_hz=unsigned_value(segments,6,6000000000ULL);c.sample_rate=static_cast<uint32_t>(unsigned_value(segments,7,20000000));c.survey_span_hz=static_cast<uint32_t>(unsigned_value(segments,8,26000000));
+        c.lna_gain=static_cast<unsigned>(unsigned_value(segments,9,40));c.vga_gain=static_cast<unsigned>(unsigned_value(segments,10,62));c.amplifier=boolean(segments,11);
+        c.activity_threshold_dbfs=static_cast<float>(segments.real(12));c.tuning_offset_hz=segments.integer(13);const auto rtl_gain=segments.integer(14);if(rtl_gain< -100||rtl_gain>600)throw std::runtime_error("Invalid acquisition RTL gain");c.rtl_gain_tenths_db=static_cast<int>(rtl_gain);c.rtl_auto_gain=boolean(segments,15);c.discover_lora=boolean(segments,16);
+        c.antenna_description=segments.text(17);c.receiver_description=segments.text(18);c.survey_notes=segments.text(19);c.lanes.clear();
+        Statement lanes(db_,"SELECT lane_index,label,channel,protocol,frequency,bw,sf,cr,enabled FROM acquisition_lanes WHERE segment_id=? ORDER BY lane_index LIMIT 5");lanes.bind(1,int64_t(a.id));
+        while(lanes.row()) {
+            if(unsigned_value(lanes,0,4)!=c.lanes.size())throw std::runtime_error("Invalid acquisition lane index");
+            LaneConfig l;l.label=lanes.text(1);l.channel_name=lanes.text(2);l.protocol=lanes.text(3);l.frequency_hz=unsigned_value(lanes,4,6000000000ULL);
+            l.bandwidth_hz=static_cast<uint32_t>(unsigned_value(lanes,5,500000));l.spreading_factor=static_cast<uint8_t>(unsigned_value(lanes,6,12));l.coding_rate=static_cast<uint8_t>(unsigned_value(lanes,7,8));l.enabled=boolean(lanes,8);c.lanes.push_back(std::move(l));
+        }
+        if(has_automatic_decoder(db_)) {
+            Statement decoder(db_,"SELECT * FROM automatic_decoder WHERE acquisition_id=?");decoder.bind(1,int64_t(a.id));
+            if(!decoder.row())throw std::runtime_error("Missing acquisition decoder metadata");
+            c.automatic_decode=automatic_from(decoder).enabled;
+        }
+        validate_acquisition(a,legacy);
+        if(a.id!=result.size()+1||(!result.empty()&&(!result.back().finalized||a.elapsed_start_seconds<result.back().elapsed_end_seconds-1e-8)))
+            throw std::runtime_error("Overlapping or unordered acquisition history");
+        result.push_back(std::move(a));
+    }
+    if(has_automatic_decoder(db_)) {
+        Statement orphan_decoder(db_,"SELECT 1 FROM automatic_decoder d LEFT JOIN acquisition_segments a ON a.id=d.acquisition_id WHERE a.id IS NULL LIMIT 1");
+        if(orphan_decoder.row()&&!result.empty())throw std::runtime_error("Orphan automatic decoder metadata");
+    }
+    Statement orphan(db_,"SELECT 1 FROM acquisition_lanes l LEFT JOIN acquisition_segments s ON s.id=l.segment_id WHERE s.id IS NULL LIMIT 1");
+    if(orphan.row())throw std::runtime_error("Orphan acquisition decoder profile");
+    return result;
+}
+ReceiverConfig SessionStore::config_at(double elapsed,const ReceiverConfig& legacy) const {
+    const auto segments=acquisitions(legacy);return acquisition_config_at(segments,legacy,elapsed);
 }
 void SessionStore::open_readonly(const std::string& path) {
     ensure_local_path(path);if(db_)throw std::runtime_error("Session already open");
@@ -895,40 +1016,73 @@ void SessionStore::open_readonly(const std::string& path) {
     if(version<1 || version>7)throw std::runtime_error("Unsupported OVMeshDRpp session format");
     validate_schema(db_,static_cast<int>(version));
     schema_version_=static_cast<int>(version);
+    (void)has_metadata_policy(db_);
     } catch(...) { if(db_)sqlite3_close_v2(db_);db_=nullptr;schema_version_=0;throw; }
 }
 void SessionStore::save_copy(const std::string& path) const {
     if(!db_||!readonly_)throw std::runtime_error("Open the source session read-only before making a copy");
     validate_local_file_path(path);
-    // Validate the source before reserving the destination. ReadSnapshot pins
-    // all copied pages to one committed revision even if capture is advancing.
-    ReadSnapshot snapshot(db_);(void)read();
-    PrivateFile reserved(path);reserved.close();
-    sqlite3* destination=nullptr;
-    sqlite3_backup* backup=nullptr;
+    // Pin one committed revision. Historical files remain inspectable/exportable,
+    // but their original bytes are never copied or represented as sanitized.
+    ReadSnapshot snapshot(db_);
+    if(!has_metadata_policy(db_))
+        throw std::runtime_error("This historical recording predates metadata-only storage. Save copy is unavailable; export metadata or start a new session. The original is unchanged.");
+    const auto summary=read();
+    SessionStore destination;
     try {
-        check(sqlite3_open_v2(path.c_str(),&destination,SQLITE_OPEN_READWRITE|SQLITE_OPEN_NOMUTEX|SQLITE_OPEN_NOFOLLOW,nullptr));
-        sqlite3_busy_timeout(destination,1500);
-        sqlite3_db_config(destination,SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION,0,nullptr);
-        sqlite3_db_config(destination,SQLITE_DBCONFIG_DEFENSIVE,1,nullptr);
-        check(sqlite3_exec(destination,"PRAGMA trusted_schema=OFF; PRAGMA synchronous=FULL; PRAGMA journal_mode=DELETE;",nullptr,nullptr,nullptr));
-        backup=sqlite3_backup_init(destination,"main",db_,"main");
-        if(!backup)throw std::runtime_error("Cannot initialize the session copy");
-        int result;
-        do { result=sqlite3_backup_step(backup,256); } while(result==SQLITE_OK);
-        const int finished=sqlite3_backup_finish(backup);backup=nullptr;
-        check(result);check(finished);
-        if(result!=SQLITE_DONE)throw std::runtime_error("Session copy did not complete");
-        // Emit a standalone database, not a copy that depends on WAL sidecars.
-        check(sqlite3_exec(destination,"PRAGMA journal_mode=DELETE;",nullptr,nullptr,nullptr));
-        check(sqlite3_close(destination));destination=nullptr;
-        SessionStore verified;verified.open_readonly(path);(void)verified.read();
+        // Rebuild from our canonical schema, never sqlite3_backup or source DDL.
+        // Reading only allowlisted columns excludes live semantic data as well as
+        // freed pages and unused cell bytes, even in a modified marked source.
+        destination.create(path,summary.config,summary.session_id);
+        if(!has_automatic_decoder(db_))save_automatic(destination.db_,0,AutomaticDecoderStatus{});
+        if(has_acquisition_extension(db_)) {
+            destination.enable_acquisitions();
+            if(!has_automatic_decoder(db_)) {
+                destination.execute("DELETE FROM automatic_decoder;");
+                for(const auto& segment:summary.acquisitions)save_automatic(destination.db_,segment.id,AutomaticDecoderStatus{});
+            }
+        }
+        destination.execute("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE;");
+        Statement tables(destination.db_,"SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name");
+        while(tables.row()) {
+            const auto table=tables.text(0);
+            if(table=="metadata_policy"||(table=="automatic_decoder"&&!has_automatic_decoder(db_)))continue;
+            destination.execute(("DELETE FROM "+table).c_str());
+            if(table=="routes"||table=="route_details")continue;
+            std::string columns;
+            Statement layout(destination.db_,"PRAGMA table_info("+table+")");
+            while(layout.row()){if(!columns.empty())columns+=',';columns+=layout.text(1);}
+            const auto projection=table=="receptions"?reception_metadata_columns(schema_version_):columns;
+            Statement rows(db_,"SELECT "+projection+" FROM "+table+" ORDER BY rowid");
+            while(rows.row()) {
+                std::vector<Value> values;
+                for(int i=0;i<sqlite3_column_count(rows.s);++i) {
+                    switch(sqlite3_column_type(rows.s,i)) {
+                        case SQLITE_NULL:values.emplace_back(nullptr);break;
+                        case SQLITE_INTEGER:values.emplace_back(rows.integer(i));break;
+                        case SQLITE_FLOAT:values.emplace_back(rows.real(i));break;
+                        case SQLITE_TEXT:values.emplace_back(rows.text(i));break;
+                        case SQLITE_BLOB:values.emplace_back(rows.blob(i,65537));break;
+                        default:throw std::runtime_error("Unsupported metadata copy value");
+                    }
+                }
+                insert(destination.db_,table,columns,values);
+            }
+        }
+        Statement foreign_keys(destination.db_,"PRAGMA foreign_key_check");
+        if(foreign_keys.row())throw std::runtime_error("Invalid saved metadata references");
+        (void)destination.read();
+        destination.visit_receptions([](const auto&){});
+        destination.visit_positions([](const auto&){});
+        destination.visit_waveforms([](const auto&){});
+        if(schema_version_==7)destination.visit_concentrator_scans([](const auto&){});
+        else destination.visit_tiles([](const auto&){});
+        destination.execute("COMMIT; PRAGMA foreign_keys=ON; PRAGMA journal_mode=DELETE;");
     } catch(...) {
-        if(backup)sqlite3_backup_finish(backup);
-        if(destination)sqlite3_close_v2(destination);
-        // Never remove/rewrite an existing filename after releasing the initial
-        // private-file handle. An incomplete new file remains inspectable.
-        throw std::runtime_error("Could not finish the new session copy; an incomplete destination may remain. Choose a new local filename and retry");
+        if(destination.db_)sqlite3_exec(destination.db_,"ROLLBACK;",nullptr,nullptr,nullptr);
+        // Never remove an existing path after releasing its exclusive-create
+        // handle. A failed new destination may remain, without copied payloads.
+        throw;
     }
 }
 void SessionStore::append(const Reception& r) {
@@ -936,29 +1090,16 @@ void SessionStore::append(const Reception& r) {
     if(schema_version_==7)validate_concentrator_packet(r,recorded_config_);
     else if(r.concentrator)throw std::runtime_error("Concentrator metadata requires a concentrator recording");
     begin_batch();
-    const auto* a=r.decoded.authorized?&*r.decoded.authorized:nullptr;
-    if(a&&(!r.crc_valid||!r.header_valid||r.decoded.status!=protocol::Status::decoded))throw std::runtime_error("Content rejected at persistence boundary");
     std::vector<Value> v={int64_t(r.id),r.utc_seconds,r.elapsed_seconds,int64_t(r.frequency_hz),int64_t(r.bandwidth_hz),int64_t(r.spreading_factor),int64_t(r.coding_rate),r.duration_seconds,r.snr_db,r.frequency_error_hz,int64_t(r.header_valid),int64_t(r.crc_valid),r.lane_label,int64_t(r.decoded.status),canonical_classification(r.decoded.classification),std::string("not authenticated")};
-    if(a) {
-        const auto& c=a->content;
-        std::vector<Value> content={a->profile_id,int64_t(a->from),int64_t(a->to),int64_t(a->packet_id),int64_t(a->port),int64_t(a->hop_limit),int64_t(a->hop_start),int64_t(a->channel_hash),int64_t(a->next_hop),int64_t(a->relay_node),int64_t(a->want_ack),int64_t(a->via_mqtt),int64_t(a->want_response),c.kind,c.text,c.node_id,c.long_name,c.short_name,number(c.latitude),number(c.longitude),number(c.altitude),number(c.voltage),number(c.temperature),number(c.humidity),number(c.battery_percent),number(c.channel_utilization),number(c.air_util_tx),integer(c.reported_time),integer(c.hardware_model),integer(c.role),integer(c.routing_error)};
-        v.insert(v.end(),content.begin(),content.end());
-    } else v.insert(v.end(),31,nullptr);
+    // Reserved legacy semantic columns remain NULL in every new reception.
+    v.insert(v.end(),31,nullptr);
     if(r.receiver_position&&r.receiver_position->valid) {const auto& f=*r.receiver_position;v.insert(v.end(),{f.latitude,f.longitude,number(f.altitude_m),int64_t(f.manual),f.utc_seconds,f.monotonic_seconds,f.source,number(f.hdop),int64_t(f.satellites)});} else v.insert(v.end(),9,nullptr);
     if(r.decoded.evidence) {const auto& e=*r.decoded.evidence;v.insert(v.end(),{int64_t(e.port),int64_t(e.signature_present)});}
     else v.insert(v.end(),2,nullptr);
-    if(a)v.insert(v.end(),{int64_t(a->request_id),int64_t(a->reply_id),int64_t(a->signature_present),a->content.routing_variant});
-    else v.insert(v.end(),4,nullptr);
+    v.insert(v.end(),4,nullptr);
     execute("SAVEPOINT reception;");
     try {
         insert(db_,"receptions",reception_columns_for(3),v);
-        if(a) {
-            for(size_t i=0;i<a->content.route.size();++i)insert(db_,"routes","reception,step,node",{int64_t(r.id),int64_t(i),int64_t(a->content.route[i])});
-            const auto details=[&](const char* kind,const auto& values) {
-                for(size_t i=0;i<values.size();++i)insert(db_,"route_details","reception,kind,step,value",{int64_t(r.id),std::string(kind),int64_t(i),int64_t(values[i])});
-            };
-            details("route_back",a->content.route_back);details("snr_towards",a->content.snr_towards);details("snr_back",a->content.snr_back);
-        }
         if(r.concentrator)insert(db_,"concentrator_packets",concentrator_tables().at("concentrator_packets").first,{int64_t(r.id),int64_t(r.concentrator->board_index),r.concentrator->rssi_dbm,int64_t(r.concentrator->hardware_timestamp_us)});
         execute("RELEASE reception;");
     }
@@ -1102,6 +1243,7 @@ void SessionStore::append(const ConcentratorScan& scan) {
 void SessionStore::update(const Snapshot& s,bool final) {
     nonnegative(s.elapsed_seconds,"session elapsed time");nonnegative(s.input_seconds,"session input time");nonnegative(s.measurement_seconds,"session measurement time");
     validate_discovery_status(s.discovery,recorded_config_.discover_lora);
+    if(s.automatic_decoder.enabled!=recorded_config_.automatic_decode)throw std::runtime_error("Automatic decoding mode differs from acquisition");
     if(schema_version_==7&&(s.input_seconds!=0||s.measurement_seconds!=0||s.delivered_samples!=0||s.dropped_samples!=0||!s.frequencies.empty()||!s.lane_health.empty()||s.spectrum_tiles||s.spectrum_events||s.discovery.enabled))
         throw std::runtime_error("Concentrator scans cannot be reported as continuous SDR measurements");
     begin_batch();
@@ -1118,13 +1260,18 @@ void SessionStore::update(const Snapshot& s,bool final) {
             }
         }
         Statement q(db_,"UPDATE session SET complete=?,elapsed=?,input_seconds=?,measurement_seconds=?,delivered=?,dropped=?,receptions=?,authorized=?");
-        q.values({int64_t(final&&!s.incomplete),s.elapsed_seconds,s.input_seconds,s.measurement_seconds,int64_t(s.delivered_samples),int64_t(s.dropped_samples),int64_t(s.total_receptions),int64_t(s.authorized_messages)});q.run();
-        Statement f(db_,"INSERT INTO frequencies VALUES(?,?,?,?,?,?) ON CONFLICT(center) DO UPDATE SET width=excluded.width,mean=excluded.mean,peak=excluded.peak,observed=excluded.observed,active=excluded.active");
+        q.values({int64_t(final&&!s.incomplete),s.elapsed_seconds,s.input_seconds,s.measurement_seconds,int64_t(s.delivered_samples),int64_t(s.dropped_samples),int64_t(s.total_receptions),int64_t(s.classified_receptions)});q.run();
+        if(acquisition_extension_ && acquisition_id_) {
+            Statement a(db_,"UPDATE acquisition_segments SET elapsed_end=?,finalized=? WHERE id=?");
+            a.values({s.elapsed_seconds,int64_t(final),int64_t(acquisition_id_)});a.run();
+        }
+        Statement f(db_,std::string("INSERT INTO frequencies VALUES(?,?,?,?,?,?) ON CONFLICT(")+(acquisition_extension_?"center,width":"center")+") DO UPDATE SET width=excluded.width,mean=excluded.mean,peak=excluded.peak,observed=excluded.observed,active=excluded.active");
         for(const auto& b:s.frequencies){validate_bin(b);sqlite3_reset(f.s);f.values({int64_t(b.center_hz),int64_t(b.width_hz),b.mean_dbfs,b.peak_dbfs,b.observed_seconds,b.active_seconds});f.run();}
+        save_automatic(db_,acquisition_id_,s.automatic_decoder);
         execute("DELETE FROM lane_health;");
         for(const auto& l:s.lane_health) {
             nonnegative(l.processed_seconds,"decoder observed time");
-            insert(db_,"lane_health","label,frequency,processed,frames,decoded,crc_failures,resets,state",{l.label,int64_t(l.frequency_hz),l.processed_seconds,int64_t(l.frames),int64_t(l.decoded),int64_t(l.crc_failures),int64_t(l.resets),l.state});
+            insert(db_,"lane_health","label,frequency,processed,frames,decoded,crc_failures,resets,state",{l.label,int64_t(l.frequency_hz),l.processed_seconds,int64_t(l.frames),int64_t(l.classified),int64_t(l.crc_failures),int64_t(l.resets),l.state});
         }
         execute("DELETE FROM discovery_status; DELETE FROM discovery_bands;");
         insert(db_,"discovery_status",discovery_status_columns,discovery_status_values(s.discovery));
@@ -1136,6 +1283,17 @@ void SessionStore::update(const Snapshot& s,bool final) {
         execute("COMMIT;");pending_=false;
         if(final)sqlite3_wal_checkpoint_v2(db_,nullptr,SQLITE_CHECKPOINT_TRUNCATE,nullptr,nullptr);
     } catch(...){sqlite3_exec(db_,"ROLLBACK;",nullptr,nullptr,nullptr);pending_=false;throw;}
+}
+namespace {
+const ReceiverConfig& record_config(const Snapshot& summary,double from,double to) {
+    const auto& config=acquisition_config_at(summary.acquisitions,summary.config,from);
+    if(!summary.acquisitions.empty()) {
+        const auto found=std::find_if(summary.acquisitions.begin(),summary.acquisitions.end(),[&](const auto& segment){return &segment.config==&config;});
+        if(found==summary.acquisitions.end() || to<from || (found->finalized&&to>found->elapsed_end_seconds+1e-7))
+            throw std::runtime_error("Measurement crosses an acquisition boundary");
+    }
+    return config;
+}
 }
 Snapshot SessionStore::read() const {
     ReadSnapshot snapshot(db_);
@@ -1155,12 +1313,20 @@ Snapshot SessionStore::read() const {
     c.activity_threshold_dbfs=static_cast<float>(s.real(10));out.incomplete=!boolean(s,11);
     out.elapsed_seconds=s.real(12);out.input_seconds=s.real(13);out.measurement_seconds=s.real(14);
     out.delivered_samples=unsigned_value(s,15,INT64_MAX);out.dropped_samples=unsigned_value(s,16,INT64_MAX);
-    out.total_receptions=unsigned_value(s,17,INT64_MAX);out.authorized_messages=unsigned_value(s,18,INT64_MAX);
+    out.total_receptions=unsigned_value(s,17,INT64_MAX);out.classified_receptions=unsigned_value(s,18,INT64_MAX);
     c.tuning_offset_hz=schema_version_>=2?s.integer(19):0;
     c.discover_lora=schema_version_>=5?boolean(s,20):false;
+    if(has_automatic_decoder(db_)) {
+        Statement rows(db_,"SELECT * FROM automatic_decoder ORDER BY acquisition_id LIMIT 2050");
+        uint64_t count=0;while(rows.row()){if(++count>2049)throw std::runtime_error("Too many decoder metadata rows");out.automatic_decoder=automatic_from(rows);}
+        if(!count)throw std::runtime_error("Missing automatic decoder metadata");
+        Statement first(db_,"SELECT * FROM automatic_decoder ORDER BY acquisition_id LIMIT 1");
+        if(first.row())c.automatic_decode=automatic_from(first).enabled;
+    }
     c.compact_recording=schema_version_>=6;
     if(source==3)read_concentrator_setup(db_,c);
     (void)tuned_center_hz(c);
+    if(c.automatic_decode&&!c.discover_lora)throw std::runtime_error("Automatic decoding requires waveform discovery");
     if(s.row())throw std::runtime_error("Multiple session metadata records");
     if(c.center_hz==0 || (source!=3&&c.sample_rate==0) || c.survey_span_hz==0 || (source!=3&&c.survey_span_hz>c.sample_rate) ||
        c.lna_gain%8!=0 || c.vga_gain%2!=0 || out.session_id.empty() || out.session_id.size()>160 || c.session_title.size()>160)
@@ -1181,17 +1347,31 @@ Snapshot SessionStore::read() const {
             throw std::runtime_error("Invalid saved decoder profile");
         c.lanes.push_back(l);
     }
-    Statement freq(db_,"SELECT * FROM frequencies ORDER BY center LIMIT 8193");
+    out.acquisitions=acquisitions(c);
+    if(has_automatic_decoder(db_)&&out.acquisitions.empty()) {
+        Statement ids(db_,"SELECT acquisition_id FROM automatic_decoder ORDER BY acquisition_id");
+        if(!ids.row()||ids.integer(0)!=0||ids.row())throw std::runtime_error("Invalid unsegmented decoder metadata");
+    }
+    if(has_acquisition_extension(db_)&&out.acquisitions.empty()) {
+        for(const auto* table:{"spectrum_tiles","spectrum_events","waveform_observations","receptions","coverage_gaps"}) {
+            Statement records(db_,std::string("SELECT 1 FROM ")+table+" LIMIT 1");
+            if(records.row())throw std::runtime_error("Recorded measurements are missing acquisition provenance");
+        }
+        if(source==3){Statement scans(db_,"SELECT 1 FROM concentrator_scans LIMIT 1");if(scans.row())throw std::runtime_error("Recorded scans are missing acquisition provenance");}
+    }
+    for(const auto& segment:out.acquisitions)if(segment.elapsed_end_seconds>out.elapsed_seconds+1e-7)
+        throw std::runtime_error("Acquisition history exceeds recorded session duration");
+    Statement freq(db_,"SELECT * FROM frequencies ORDER BY center,width LIMIT 65537");
     while(freq.row()) {
-        if(out.frequencies.size()>=8192)throw std::runtime_error("Too many saved frequency bins");
+        if(out.frequencies.size()>=65536)throw std::runtime_error("Too many saved frequency bins");
         FrequencySummary bin{unsigned_value(freq,0,6000000000ULL),static_cast<uint32_t>(unsigned_value(freq,1)),freq.real(2),freq.real(3),freq.real(4),freq.real(5)};
         validate_bin(bin);out.frequencies.push_back(bin);
     }
-    Statement packets(db_,std::string("SELECT ")+reception_columns_for(schema_version_)+" FROM receptions ORDER BY id DESC LIMIT 512");
-    while(packets.row()) {auto r=reception_from(packets,schema_version_);read_route(db_,r,schema_version_);if(source==3)read_concentrator_packet(db_,r,c);out.receptions.push_back(std::move(r));}
+    Statement packets(db_,std::string("SELECT ")+reception_metadata_columns(schema_version_)+" FROM receptions ORDER BY id DESC LIMIT 512");
+    while(packets.row()) {auto r=reception_from(packets,schema_version_);record_config(out,r.elapsed_seconds,r.elapsed_seconds);if(source==3)read_concentrator_packet(db_,r,c);out.receptions.push_back(std::move(r));}
     // The UI is bounded, but saved counts and exports cover the whole database.
-    Statement counts(db_,"SELECT count(*),count(profile) FROM receptions");
-    if(counts.row()){out.total_receptions=unsigned_value(counts,0,INT64_MAX);out.authorized_messages=unsigned_value(counts,1,INT64_MAX);}
+    Statement counts(db_,"SELECT count(*),coalesce(sum(status=0),0) FROM receptions");
+    if(counts.row()){out.total_receptions=unsigned_value(counts,0,INT64_MAX);out.classified_receptions=unsigned_value(counts,1,INT64_MAX);}
     Statement positions(db_,"SELECT * FROM (SELECT rowid,* FROM positions ORDER BY rowid DESC LIMIT 12000) ORDER BY rowid");
     while(positions.row()) {
         PositionFix f;f.utc_seconds=positions.real(1);f.latitude=positions.real(2);f.longitude=positions.real(3);
@@ -1203,7 +1383,7 @@ Snapshot SessionStore::read() const {
     while(health.row()) {
         if(out.lane_health.size()>=8)throw std::runtime_error("Too many saved lane-health records");
         LaneHealth l;l.label=health.text(0);l.frequency_hz=unsigned_value(health,1,6000000000ULL);l.processed_seconds=health.real(2);
-        l.frames=unsigned_value(health,3,INT64_MAX);l.decoded=unsigned_value(health,4,INT64_MAX);l.crc_failures=unsigned_value(health,5,INT64_MAX);l.resets=unsigned_value(health,6,INT64_MAX);l.state=health.text(7);
+        l.frames=unsigned_value(health,3,INT64_MAX);l.classified=unsigned_value(health,4,INT64_MAX);l.crc_failures=unsigned_value(health,5,INT64_MAX);l.resets=unsigned_value(health,6,INT64_MAX);l.state=health.text(7);
         nonnegative(l.processed_seconds,"saved decoder observation time");out.lane_health.push_back(l);
     }
     if(!out.track.empty())out.gps_status="Saved receiver positions (historical)";
@@ -1221,8 +1401,8 @@ Snapshot SessionStore::read() const {
         if(c.antenna_description.size()>512||c.receiver_description.size()>512||c.survey_notes.size()>2048||m.row())throw std::runtime_error("Invalid survey metrology metadata");
         Statement count(db_,"SELECT count(*),coalesce(sum(clipped),0) FROM spectrum_tiles");if(count.row()){out.spectrum_tiles=unsigned_value(count,0,INT64_MAX);out.clipped_samples=unsigned_value(count,1,INT64_MAX);}
         Statement events_count(db_,"SELECT count(*) FROM spectrum_events");if(events_count.row())out.spectrum_events=unsigned_value(events_count,0,INT64_MAX);
-        Statement latest(db_,tiles_sql(schema_version_,"ORDER BY t.id DESC LIMIT 1"));if(latest.row())out.background_dbfs=tile_from(latest,c,schema_version_).background_dbfs;
-        Statement events(db_,"SELECT * FROM spectrum_events ORDER BY id DESC LIMIT 200");while(events.row())out.recent_spectrum_events.push_back(event_from(events,c));
+        Statement latest(db_,tiles_sql(schema_version_,"ORDER BY t.id DESC LIMIT 1"));if(latest.row())out.background_dbfs=tile_from(latest,record_config(out,latest.real(5),latest.real(6)),schema_version_).background_dbfs;
+        Statement events(db_,"SELECT * FROM spectrum_events ORDER BY id DESC LIMIT 200");while(events.row())out.recent_spectrum_events.push_back(event_from(events,record_config(out,events.real(5),events.real(6))));
     }
     if(schema_version_>=5) {
         Statement status(db_,"SELECT * FROM discovery_status LIMIT 2");
@@ -1234,9 +1414,9 @@ Snapshot SessionStore::read() const {
             if(out.discovery.bands.size()>=discovery_band_limit)throw std::runtime_error("Too many discovery subbands");
             out.discovery.bands.push_back(discovery_band_from(bands));
         }
-        validate_discovery_status(out.discovery,c.discover_lora);
+        validate_discovery_status(out.discovery,out.acquisitions.empty()?c.discover_lora:out.acquisitions.back().config.discover_lora);
         Statement waveforms(db_,"SELECT * FROM waveform_observations ORDER BY id DESC LIMIT 256");
-        while(waveforms.row())out.waveforms.push_back(waveform_from(waveforms,c));
+        while(waveforms.row())out.waveforms.push_back(waveform_from(waveforms,record_config(out,waveforms.real(4),waveforms.real(5))));
         // Gap rows are exported from durable history. Snapshot is deliberately
         // bounded and exposes cumulative status, not an unbounded interval list.
     }
@@ -1249,7 +1429,7 @@ Snapshot SessionStore::read() const {
         Statement scan_counts(db_,"SELECT count(*),coalesce(sum(sample_count),0) FROM concentrator_scans");
         if(scan_counts.row()){out.concentrator_scans=unsigned_value(scan_counts,0,INT64_MAX/2000);out.concentrator_rssi_samples=unsigned_value(scan_counts,1,INT64_MAX);if(out.concentrator_rssi_samples!=out.concentrator_scans*2000)throw std::runtime_error("Invalid concentrator scan total");}
         Statement recent(db_,concentrator_scan_sql("WHERE s.id IN (SELECT max(id) FROM concentrator_scans GROUP BY board_index,frequency_hz) ORDER BY s.board_index,s.frequency_hz LIMIT 2081"));
-        while(recent.row()){if(out.recent_concentrator_scans.size()>=2080)throw std::runtime_error("Too many concentrator scan frequencies");out.recent_concentrator_scans.push_back(concentrator_scan_from(recent,c));}
+        while(recent.row()){if(out.recent_concentrator_scans.size()>=2080)throw std::runtime_error("Too many concentrator scan frequencies");out.recent_concentrator_scans.push_back(concentrator_scan_from(recent,record_config(out,recent.real(7),recent.real(8))));}
         Statement board_health(db_,"SELECT * FROM concentrator_health ORDER BY board_index LIMIT 3");
         while(board_health.row()) {
             if(out.concentrator_health.size()>=c.concentrators.boards.size()||unsigned_value(board_health,0,1)!=out.concentrator_health.size())throw std::runtime_error("Invalid concentrator health board index");
@@ -1267,14 +1447,16 @@ Snapshot SessionStore::read() const {
 
 SurveyAnalysis SessionStore::analyze(const SurveyQuery& query) const {
     ReadSnapshot snapshot(db_);
-    SurveyAnalysis result;const auto config=read().config;if(schema_version_==7)throw std::runtime_error("This concentrator survey contains sampled RSSI histograms, not FFT occupancy. Use the concentrator frequency report.");if(schema_version_<4)return result;result.detailed_available=true;
+    SurveyAnalysis result;const auto summary=read();const auto& config=summary.config;if(schema_version_==7)throw std::runtime_error("This concentrator survey contains sampled RSSI histograms, not FFT occupancy. Use the concentrator frequency report.");if(schema_version_<4)return result;result.detailed_available=true;
     for(double value:{query.lower_hz,query.upper_hz,query.elapsed_start,query.elapsed_end})nonnegative(value,"survey query bound");
     if((query.upper_hz>0 && query.upper_hz<=query.lower_hz)||(query.elapsed_end>0 && query.elapsed_end<=query.elapsed_start)||
        !std::isfinite(query.time_bucket_seconds)||query.time_bucket_seconds<0.001||query.time_bucket_seconds>1e10 ||
        query.max_observations>2000 || query.max_events>2000)throw std::runtime_error("Invalid survey query interval or display bound");
     if(query.geographic_filter){coordinates(query.south,query.west);coordinates(query.north,query.east);if(query.south>query.north||query.west>query.east)throw std::runtime_error("Invalid geographic rectangle");}
-    const double lower=query.lower_hz>0?query.lower_hz:double(config.center_hz)-double(config.survey_span_hz)/2;
-    const double upper=query.upper_hz>0?query.upper_hz:double(config.center_hz)+double(config.survey_span_hz)/2;
+    double default_lower=double(config.center_hz)-double(config.survey_span_hz)/2,default_upper=double(config.center_hz)+double(config.survey_span_hz)/2;
+    for(const auto& segment:summary.acquisitions){default_lower=std::min(default_lower,double(segment.config.center_hz)-segment.config.survey_span_hz/2.);default_upper=std::max(default_upper,double(segment.config.center_hz)+segment.config.survey_span_hz/2.);}
+    const double lower=query.lower_hz>0?query.lower_hz:default_lower;
+    const double upper=query.upper_hz>0?query.upper_hz:default_upper;
     // Resolve the entire recorded interval before choosing display buckets. A
     // single read transaction keeps a growing live file's extent and rows in sync.
     double recorded_start=1e10,recorded_end=0;
@@ -1308,37 +1490,58 @@ SurveyAnalysis SessionStore::analyze(const SurveyQuery& query) const {
     std::map<uint64_t,Accumulator> buckets;
     std::vector<double> powers,peaks;
     std::vector<uint8_t> center_masks;
+    std::map<std::pair<double,double>,size_t> bin_indexes;
+    std::set<size_t> guarded_bins,outside_bins;
+    std::vector<size_t> tile_indexes;
+    const ReceiverConfig* previous_config=nullptr;
+    double grid_width=0;bool outside_available=false;
     uint64_t previous_sample=0;double previous_elapsed=0,grid_first=0;size_t grid_count=0,first=0,last=0;
     Statement tiles(db_,tiles_sql(schema_version_));
-    BurstGrouper bursts(double(config.center_hz));
+    std::unique_ptr<BurstGrouper> bursts;
     const auto on_burst=[&](SpectrumBurst burst) {
-        ++result.burst_count;
+        ++result.burst_count;burst.id=result.burst_count;
         if(result.bursts.size()<query.max_events)result.bursts.push_back(std::move(burst));
     };
     while(tiles.row()) {
-        const auto tile=tile_from(tiles,config,schema_version_);const size_t count=tile.mean_dbfs.size();const double width=tile.bin_width_hz;
+        const auto& active_config=record_config(summary,tiles.real(5),tiles.real(6));
+        const auto tile=tile_from(tiles,active_config,schema_version_);const size_t count=tile.mean_dbfs.size();const double width=tile.bin_width_hz;
+        if(schema_version_>=6)record_config(summary,tile.power_elapsed_start,tile.power_elapsed_end);
         if(tile.first_sample<previous_sample || tile.elapsed_start_seconds<previous_elapsed-1e-8)throw std::runtime_error("Overlapping or unordered saved spectrum tiles");
         previous_sample=tile.end_sample;previous_elapsed=tile.elapsed_end_seconds;
+        if(previous_config!=&active_config) {
+            if(bursts)bursts->finish(on_burst);
+            bursts=std::make_unique<BurstGrouper>(double(active_config.center_hz));
+            previous_config=&active_config;grid_count=0;
+        }
+        const double from=std::max(result.resolved_elapsed_start,tile.elapsed_start_seconds),to=std::min(end,tile.elapsed_end_seconds);
+        if(to<=from||!in_region(tile.receiver_end))continue;
         if(!grid_count) {
-            grid_count=count;grid_first=tile.first_center_hz;
+            grid_count=count;grid_first=tile.first_center_hz;grid_width=width;first=0;
             while(first<count && tile.first_center_hz+(double(first)+0.5)*width<=lower)++first;
             last=first;while(last<count && tile.first_center_hz+(double(last)-0.5)*width<upper)++last;
-            if(last>first){result.covered_lower_hz=tile.first_center_hz+(double(first)-0.5)*width;result.covered_upper_hz=tile.first_center_hz+(double(last)-0.5)*width;result.bin_width_hz=width;
-                center_masks.resize((count+7)/8);
-                for(size_t b=first;b<last;++b){SurveyBin bin;bin.center_hz=tile.first_center_hz+double(b)*width;bin.width_hz=width;result.bins.push_back(bin);
-                    if(std::abs(bin.center_hz-double(config.center_hz))<=2*width+1e-5) {
-                        center_masks[b/8]|=static_cast<uint8_t>(1u<<(b%8));
-                        if(!result.center_guard_bin_count)result.center_guard_lower_hz=bin.center_hz-width/2;
-                        result.center_guard_upper_hz=bin.center_hz+width/2;++result.center_guard_bin_count;
-                    }
+            center_masks.assign((count+7)/8,0);tile_indexes.assign(count,0);outside_available=false;
+            for(size_t b=first;b<last;++b) {
+                const double center=tile.first_center_hz+double(b)*width;
+                const auto [found,inserted]=bin_indexes.emplace(std::pair{center,width},result.bins.size());
+                if(inserted) {
+                    if(result.bins.size()>=65536)throw std::runtime_error("Too many distinct survey measurement bins; narrow the selection");
+                    SurveyBin bin;bin.center_hz=center;bin.width_hz=width;result.bins.push_back(bin);powers.push_back(0);peaks.push_back(0);
+                    if(result.bins.size()==1){result.covered_lower_hz=center-width/2;result.covered_upper_hz=center+width/2;result.bin_width_hz=width;}
+                    else {result.covered_lower_hz=std::min(result.covered_lower_hz,center-width/2);result.covered_upper_hz=std::max(result.covered_upper_hz,center+width/2);if(result.bin_width_hz!=width)result.bin_width_hz=0;}
                 }
-                result.outside_center_bin_count=last-first-result.center_guard_bin_count;
-                powers.resize(last-first);peaks.resize(last-first);}
-        } else if(count!=grid_count || std::abs(grid_first-tile.first_center_hz)>1e-5)throw std::runtime_error("Saved spectrum grid changes within session");
-        const double from=std::max(result.resolved_elapsed_start,tile.elapsed_start_seconds),to=std::min(end,tile.elapsed_end_seconds);
-        if(last==first||to<=from||!in_region(tile.receiver_end))continue;
-        bursts.consume(tile,on_burst,first,last,from,to);
-        ++result.tile_count;const double duration=to-from;result.observed_seconds+=duration;
+                tile_indexes[b]=found->second;
+                if(std::abs(center-double(active_config.center_hz))<=2*width+1e-5) {
+                    center_masks[b/8]|=static_cast<uint8_t>(1u<<(b%8));
+                    if(guarded_bins.empty()){result.center_guard_lower_hz=center-width/2;result.center_guard_upper_hz=center+width/2;}
+                    else {result.center_guard_lower_hz=std::min(result.center_guard_lower_hz,center-width/2);result.center_guard_upper_hz=std::max(result.center_guard_upper_hz,center+width/2);}
+                    guarded_bins.insert(found->second);
+                } else {outside_bins.insert(found->second);outside_available=true;}
+            }
+            result.center_guard_bin_count=guarded_bins.size();result.outside_center_bin_count=outside_bins.size();
+        } else if(count!=grid_count || std::abs(grid_first-tile.first_center_hz)>1e-5 || std::abs(grid_width-width)>1e-8)throw std::runtime_error("Saved spectrum grid changes within acquisition");
+        if(last==first)continue;
+        bursts->consume(tile,on_burst,first,last,from,to);
+        ++result.tile_count;const double duration=to-from;result.observed_seconds+=duration;if(outside_available)result.outside_center_observed_seconds+=duration;
         if(!tile.receiver_start)result.missing_start_position_seconds+=duration;
         if(!tile.receiver_end)result.missing_end_position_seconds+=duration;
         uint32_t quality=tile.quality;if(!tile.receiver_end)quality|=SurveyPositionMissing;
@@ -1347,9 +1550,9 @@ SurveyAnalysis SessionStore::analyze(const SurveyQuery& query) const {
            result.resolved_elapsed_start>tile.power_elapsed_start || end<tile.power_elapsed_end))quality|=SurveyBoundary;
         result.quality|=quality;
         double integrated_mean=0,integrated_peak=0;
-        for(size_t b=first;b<last;++b){const auto index=b-first;const double mean=std::pow(10.0,tile.mean_dbfs[b]/10.0),peak=std::pow(10.0,tile.peak_dbfs[b]/10.0);
+        for(size_t b=first;b<last;++b){const auto index=tile_indexes[b];const double mean=std::pow(10.0,tile.mean_dbfs[b]/10.0),peak=std::pow(10.0,tile.peak_dbfs[b]/10.0);
             integrated_mean+=mean;integrated_peak+=peak;powers[index]+=mean*duration;peaks[index]=std::max(peaks[index],peak);result.bins[index].observed_seconds+=duration;}
-        const size_t stride=(count+7)/8;const double frame_seconds=double(tile.fft_size)/config.sample_rate;
+        const size_t stride=(count+7)/8;const double frame_seconds=double(tile.fft_size)/active_config.sample_rate;
         for(size_t frame=0;frame<tile.frame_count;++frame) {
             const double frame_from=std::max(from,tile.elapsed_start_seconds+double(frame)*frame_seconds),frame_to=std::min(to,tile.elapsed_start_seconds+double(frame+1)*frame_seconds);
             if(frame_to<=frame_from)continue;bool busy=false,center_busy=false,outside_busy=false;
@@ -1360,7 +1563,7 @@ SurveyAnalysis SessionStore::analyze(const SurveyQuery& query) const {
                 if(mask)busy=true;
                 if(mask&center_masks[byte])center_busy=true;
                 if(mask&~unsigned(center_masks[byte]))outside_busy=true;
-                while(mask){const unsigned bit=static_cast<unsigned>(std::countr_zero(mask));result.bins[byte*8+bit-first].active_seconds+=frame_to-frame_from;mask&=mask-1;}
+                while(mask){const unsigned bit=static_cast<unsigned>(std::countr_zero(mask));result.bins[tile_indexes[byte*8+bit]].active_seconds+=frame_to-frame_from;mask&=mask-1;}
             }
             if(busy)result.busy_seconds+=frame_to-frame_from;
             if(center_busy)result.center_busy_seconds+=frame_to-frame_from;
@@ -1379,7 +1582,7 @@ SurveyAnalysis SessionStore::analyze(const SurveyQuery& query) const {
                 if(boundary<=time)throw std::runtime_error("Unrepresentable survey time bucket");
                 auto found=buckets.find(bucket);
                 if(found==buckets.end()) {Accumulator value;value.value.elapsed_start=time;value.value.receiver_position=tile.receiver_end;found=buckets.emplace(bucket,std::move(value)).first;}
-                {auto& a=found->second;const double seconds=boundary-time;a.value.elapsed_end=boundary;a.value.observed_seconds+=seconds;if(busy)a.value.busy_seconds+=seconds;
+                {auto& a=found->second;const double seconds=boundary-time;a.value.elapsed_end=boundary;a.value.observed_seconds+=seconds;if(outside_available)a.value.outside_center_observed_seconds+=seconds;if(busy)a.value.busy_seconds+=seconds;
                     if(center_busy)a.value.center_busy_seconds+=seconds;
                     if(outside_busy)a.value.outside_center_busy_seconds+=seconds;
                     if(a.value.receiver_position && tile.receiver_end && (a.value.receiver_position->latitude!=tile.receiver_end->latitude || a.value.receiver_position->longitude!=tile.receiver_end->longitude))a.value.quality|=SurveyMerged;
@@ -1393,16 +1596,17 @@ SurveyAnalysis SessionStore::analyze(const SurveyQuery& query) const {
     for(size_t i=0;i<result.bins.size();++i)if(result.bins[i].observed_seconds>0){result.bins[i].mean_dbfs=10*std::log10(powers[i]/result.bins[i].observed_seconds);result.bins[i].peak_dbfs=10*std::log10(peaks[i]);}
     for(auto& [id,a]:buckets){(void)id;if(a.value.observed_seconds>0){a.value.mean_dbfs=10*std::log10(a.power/a.value.observed_seconds);a.value.peak_dbfs=10*std::log10(a.peak);a.value.background_dbfs=10*std::log10(a.background/a.value.observed_seconds);}result.observations.push_back(std::move(a.value));}
     Statement events(db_,"SELECT * FROM spectrum_events ORDER BY id");while(events.row()) {
-        auto event=event_from(events,config);
+        auto event=event_from(events,record_config(summary,events.real(5),events.real(6)));
         const double event_lower=result.bins.empty()?lower:result.covered_lower_hz,event_upper=result.bins.empty()?upper:result.covered_upper_hz;
         if(event.upper_hz<=event_lower||event.lower_hz>=event_upper||event.elapsed_end_seconds<=query.elapsed_start||event.elapsed_start_seconds>=event_query_end||!in_region(event.receiver_end))continue;
         ++result.event_count;if(result.events.size()<query.max_events)result.events.push_back(std::move(event));else result.events_truncated=true;
     }
-    bursts.finish(on_burst);
+    if(bursts)bursts->finish(on_burst);
+    std::sort(result.bins.begin(),result.bins.end(),[](const auto& x,const auto& y){return std::pair{x.center_hz,x.width_hz}<std::pair{y.center_hz,y.width_hz};});
     if(schema_version_>=5) {
         Statement waveforms(db_,"SELECT * FROM waveform_observations ORDER BY id DESC");
         while(waveforms.row()) {
-            auto w=waveform_from(waveforms,config);
+            auto w=waveform_from(waveforms,record_config(summary,waveforms.real(4),waveforms.real(5)));
             // Inferred RF footprint intersects the requested frequency range;
             // delimiter time selects a half-open interval. It is not airtime.
             if(w.center_hz+w.bandwidth_hz/2.<=lower || w.center_hz-w.bandwidth_hz/2.>=upper ||
@@ -1418,6 +1622,8 @@ SurveyAnalysis SessionStore::analyze(const SurveyQuery& query) const {
         if(query.geographic_filter)continue;
         if(result.gaps.size()>=100000)throw std::runtime_error("Too many coverage gaps for analysis");result.gaps.push_back(std::move(gap));
     }
+    result.mixed_acquisitions=summary.acquisitions.size()>1;
+    if(result.mixed_acquisitions)result.center_guard_lower_hz=result.center_guard_upper_hz=0;
     return result;
 }
 
@@ -1436,7 +1642,7 @@ namespace {
 const std::vector<std::string>& export_columns() {
     static const std::vector<std::string> columns=[] {
         std::vector<std::string> result;
-        std::istringstream input("record_type,session_id,utc_seconds,elapsed_seconds,frequency_hz,bandwidth_hz,spreading_factor,coding_rate,duration_seconds,snr_db,frequency_error_hz,header_valid,crc_valid,decode_status,classification,authentication,observed_seconds,active_seconds,occupancy_fraction,mean_dbfs,peak_dbfs,input_seconds,measurement_seconds,delivered_samples,dropped_samples,total_receptions,authorized_records,incomplete,profile_id,content_kind,text,origin,destination,packet_id,port,hop_limit,hop_start,channel_hash,next_hop,relay_node,want_ack,via_mqtt,want_response,node_id,long_name,short_name,sender_latitude,sender_longitude,sender_altitude,voltage,temperature,humidity,battery_percent,channel_utilization,air_util_tx,reported_time,hardware_model,role,routing_error,route,receiver_latitude,receiver_longitude,receiver_altitude,receiver_utc_seconds,receiver_monotonic_seconds,receiver_manual,receiver_source,receiver_hdop,receiver_satellites,window_id,window_utc_start_seconds,window_utc_end_seconds,window_elapsed_start_seconds,window_elapsed_end_seconds,position_association,activity_threshold_dbfs,sample_rate,survey_span_hz,source,rf_level_unit,application_version,lna_gain_db,vga_gain_db,rf_amplifier_enabled,tuning_offset_hz,tuner_command_hz,evidence_port,evidence_signature_present,request_id,reply_id,signature_present,routing_variant,route_back,snr_towards_db_x4,snr_back_db_x4");
+        std::istringstream input("record_type,session_id,utc_seconds,elapsed_seconds,frequency_hz,bandwidth_hz,spreading_factor,coding_rate,duration_seconds,snr_db,frequency_error_hz,header_valid,crc_valid,decode_status,classification,authentication,observed_seconds,active_seconds,occupancy_fraction,mean_dbfs,peak_dbfs,input_seconds,measurement_seconds,delivered_samples,dropped_samples,total_receptions,classified_receptions,incomplete,receiver_latitude,receiver_longitude,receiver_altitude,receiver_utc_seconds,receiver_monotonic_seconds,receiver_manual,receiver_source,receiver_hdop,receiver_satellites,window_id,window_utc_start_seconds,window_utc_end_seconds,window_elapsed_start_seconds,window_elapsed_end_seconds,position_association,activity_threshold_dbfs,sample_rate,survey_span_hz,source,rf_level_unit,application_version,lna_gain_db,vga_gain_db,rf_amplifier_enabled,tuning_offset_hz,tuner_command_hz,evidence_port,evidence_signature_present");
         std::string column;while(std::getline(input,column,','))result.push_back(column);
         std::istringstream spectrum("spectrum_id,first_sample,end_sample,first_center_hz,bin_width_hz,fft_size,hop_size,frame_count,bin_count,background_dbfs,clipped_samples,quality_flags,mean_centidb_le_hex,peak_centidb_le_hex,activity_frame_start,activity_frame_count,activity_mask_hex,lower_hz,upper_hz,missing_samples,gap_reason,window_function,enbw_hz,normalization,time_association,power_time_association,peak_interpretation,antenna_description,receiver_description,survey_notes");
         while(std::getline(spectrum,column,','))result.push_back(column);
@@ -1446,6 +1652,9 @@ const std::vector<std::string>& export_columns() {
         result.push_back("rtl_tuner_gain_db");result.push_back("rtl_auto_gain");
         std::istringstream concentrator("concentrator_scan_id,concentrator_board_index,nominal_filter_bandwidth_hz,rssi_offset_db,rssi_sample_count,rssi_histogram_counts_33,quantized_threshold_dbm,sample_exceedance_fraction,concentrator_method,concentrator_coverage,configured_bandwidth_hz,configured_sync_word,packets_enabled,scan_enabled,scan_step_hz,scan_target_samples,concentrator_decode_enabled,packet_rssi_dbm,hardware_timestamp_us,hardware_timestamp_provenance,bandwidth_interpretation,concentrator_ready,concentrator_scans,concentrator_rssi_samples,concentrator_receptions,concentrator_crc_failures,concentrator_ready_elapsed_seconds,concentrator_last_update_elapsed_seconds");
         while(std::getline(concentrator,column,','))result.push_back(column);
+        std::istringstream automatic(automatic_columns);std::string field;
+        while(std::getline(automatic,field,','))if(field!="acquisition_id")result.push_back("decoder_"+field);
+        for(const auto* name:{"acquisition_id","acquisition_elapsed_start_seconds","acquisition_elapsed_end_seconds","acquisition_finalized","acquisition_scope"})result.push_back(name);
         return result;
     }();
     return columns;
@@ -1488,6 +1697,27 @@ struct CsvRecord {
         return out+'}';
     }
 };
+void acquisition_fields(CsvRecord& row,const Snapshot& summary,double elapsed) {
+    if(summary.acquisitions.empty())return;
+    const auto& c=acquisition_config_at(summary.acquisitions,summary.config,elapsed);
+    const auto it=std::find_if(summary.acquisitions.begin(),summary.acquisitions.end(),[&](const auto& segment){return &segment.config==&c;});
+    if(it==summary.acquisitions.end())throw std::runtime_error("Missing acquisition metadata");
+    row.number("acquisition_id",it->id);row.number("acquisition_elapsed_start_seconds",it->elapsed_start_seconds);row.number("acquisition_elapsed_end_seconds",it->elapsed_end_seconds);row.number("acquisition_finalized",int(it->finalized));
+    row.number("decoder_enabled",int(c.automatic_decode));
+    row.text("acquisition_scope","one receiver setup; pauses are unobserved");row.number("survey_span_hz",c.survey_span_hz);
+    if(c.synthetic||c.hardware_receiver!=HardwareReceiver::Rak5146){row.number("sample_rate",c.sample_rate);row.number("activity_threshold_dbfs",c.activity_threshold_dbfs);}
+    row.number("tuning_offset_hz",c.tuning_offset_hz);row.number("tuner_command_hz",tuned_center_hz(c));
+    if(c.synthetic||c.hardware_receiver==HardwareReceiver::HackRf){row.number("lna_gain_db",c.lna_gain);row.number("vga_gain_db",c.vga_gain);row.number("rf_amplifier_enabled",int(c.amplifier));}
+    if(c.hardware_receiver==HardwareReceiver::RtlSdr&&!c.synthetic){row.number("rtl_auto_gain",int(c.rtl_auto_gain));if(!c.rtl_auto_gain)row.number("rtl_tuner_gain_db",c.rtl_gain_tenths_db/10.);}
+}
+template<class Emit>void export_acquisitions(const Snapshot& summary,const ExportOptions& opt,Emit emit) {
+    for(const auto& segment:summary.acquisitions) {
+        CsvRecord row;row.text("record_type","acquisition_segment");row.text("session_id",summary.session_id);
+        acquisition_fields(row,summary,segment.elapsed_start_seconds);row.number("frequency_hz",segment.config.center_hz);
+        if(opt.include_provenance){row.text("antenna_description",segment.config.antenna_description);row.text("receiver_description",segment.config.receiver_description);row.text("survey_notes",segment.config.survey_notes);}
+        emit(row,std::optional<PositionFix>{});
+    }
+}
 void concentrator_packet_fields(CsvRecord& row,const Reception& r) {
     if(!r.concentrator)return;
     row.number("concentrator_board_index",r.concentrator->board_index);row.number("packet_rssi_dbm",r.concentrator->rssi_dbm);
@@ -1506,17 +1736,33 @@ void export_concentrator(const SessionStore& store,const Snapshot& summary,const
         const auto& h=summary.concentrator_health[i];auto row=base("concentrator_health");row.number("concentrator_board_index",i);row.number("concentrator_ready",int(h.ready));row.number("concentrator_scans",h.scans);row.number("concentrator_rssi_samples",h.rssi_samples);row.number("concentrator_receptions",h.receptions);row.number("concentrator_crc_failures",h.crc_failures);row.number("concentrator_ready_elapsed_seconds",h.ready_elapsed_seconds);row.number("concentrator_last_update_elapsed_seconds",h.last_update_elapsed_seconds);emit(row,std::optional<PositionFix>{});
     }
     store.visit_concentrator_scans([&](const ConcentratorScan& scan){
-        auto row=base("concentrator_rssi_scan");row.number("concentrator_scan_id",scan.id);row.number("concentrator_board_index",scan.board_index);row.number("frequency_hz",scan.frequency_hz);row.number("tuner_command_hz",int64_t(scan.frequency_hz)+summary.config.tuning_offset_hz);row.number("nominal_filter_bandwidth_hz",scan.filter_bandwidth_hz);row.number("rssi_offset_db",scan.rssi_offset_db);row.number("rssi_sample_count",concentrator_sample_count(scan));
+        auto row=base("concentrator_rssi_scan");acquisition_fields(row,summary,scan.elapsed_start_seconds);row.number("concentrator_scan_id",scan.id);row.number("concentrator_board_index",scan.board_index);row.number("frequency_hz",scan.frequency_hz);row.number("tuner_command_hz",int64_t(scan.frequency_hz)+summary.config.tuning_offset_hz);row.number("nominal_filter_bandwidth_hz",scan.filter_bandwidth_hz);row.number("rssi_offset_db",scan.rssi_offset_db);row.number("rssi_sample_count",concentrator_sample_count(scan));
         std::string counts;for(const auto count:scan.counts){if(!counts.empty())counts+=';';counts+=std::to_string(count);}row.text("rssi_histogram_counts_33",counts);
         row.number("quantized_threshold_dbm",-87);row.number("sample_exceedance_fraction",concentrator_fraction_above(scan,-87));row.number("window_utc_start_seconds",scan.utc_start_seconds);row.number("window_utc_end_seconds",scan.utc_end_seconds);row.number("window_elapsed_start_seconds",scan.elapsed_start_seconds);row.number("window_elapsed_end_seconds",scan.elapsed_end_seconds);row.text("position_association",concentrator_position);row.text("time_association","host transaction interval; not exact RF sample dwell");row.text("rf_level_unit","nominal vendor dBm; uncalibrated");
         if(opt.include_receiver_positions&&scan.receiver_position)row.position(*scan.receiver_position,opt);emit(row,opt.include_receiver_positions?scan.receiver_position:std::nullopt);
     });
-    if(packets)store.visit_receptions([&](const Reception& r){auto row=base("concentrator_reception");row.number("utc_seconds",r.utc_seconds);row.number("elapsed_seconds",r.elapsed_seconds);row.number("frequency_hz",r.frequency_hz);row.number("spreading_factor",r.spreading_factor);row.number("coding_rate",r.coding_rate);row.number("header_valid",int(r.header_valid));row.number("crc_valid",int(r.crc_valid));row.text("classification",r.decoded.classification);row.text("authentication",r.decoded.authentication);concentrator_packet_fields(row,r);if(opt.include_receiver_positions&&r.receiver_position)row.position(*r.receiver_position,opt);emit(row,opt.include_receiver_positions?r.receiver_position:std::nullopt);});
+    if(packets)store.visit_receptions([&](const Reception& r){auto row=base("concentrator_reception");acquisition_fields(row,summary,r.elapsed_seconds);row.number("utc_seconds",r.utc_seconds);row.number("elapsed_seconds",r.elapsed_seconds);row.number("frequency_hz",r.frequency_hz);row.number("spreading_factor",r.spreading_factor);row.number("coding_rate",r.coding_rate);row.number("header_valid",int(r.header_valid));row.number("crc_valid",int(r.crc_valid));row.text("classification",r.decoded.classification);row.text("authentication",r.decoded.authentication);concentrator_packet_fields(row,r);if(opt.include_receiver_positions&&r.receiver_position)row.position(*r.receiver_position,opt);emit(row,opt.include_receiver_positions?r.receiver_position:std::nullopt);});
 }
 // Shared evidence serialization prevents the geographic export from losing
 // unlocated observations, subband loss, rejected work, or overflow diagnostics.
 template<typename Emit>
 void export_discovery(sqlite3* db,const Snapshot& summary,const ExportOptions& opt,Emit emit) {
+    if(has_automatic_decoder(db)) {
+        Statement rows(db,"SELECT * FROM automatic_decoder ORDER BY acquisition_id");
+        while(rows.row()) {
+            (void)automatic_from(rows);
+            CsvRecord row;row.text("record_type","automatic_decoder_status");row.text("session_id",summary.session_id);
+            row.number("acquisition_id",rows.integer(0));
+            std::istringstream columns(automatic_columns);std::string name;int index=0;
+            while(std::getline(columns,name,',')) {
+                if(index)row.number(("decoder_"+name).c_str(),rows.integer(index));
+                ++index;
+            }
+            row.text("acquisition_scope","one acquisition; unavailable means diagnostics were not recorded");
+            row.text("discovery_coverage_interpretation","bounded experimental waveform-to-PHY dispatch; decoder counts are not unique traffic, airtime or exhaustive coverage");
+            emit(row,std::optional<PositionFix>{});
+        }
+    }
     const auto& d=summary.discovery;
     CsvRecord status;status.text("record_type","discovery_status");status.text("session_id",summary.session_id);
     status.text("discovery_method",d.method);status.number("discovery_enabled",int(d.enabled));status.number("discovery_finished",int(d.finished));
@@ -1525,7 +1771,8 @@ void export_discovery(sqlite3* db,const Snapshot& summary,const ExportOptions& o
     status.number("discovery_channelized_input_samples",d.channelized_input_samples);status.number("discovery_abandoned_input_samples",d.abandoned_input_samples);
     status.number("discovery_source_queue_drops",d.source_queue_drops);status.number("discovery_stream_resets",d.stream_resets);
     status.number("discovery_result_overflows",d.result_overflows);status.number("discovery_gap_overflows",d.gap_overflows);status.number("discovery_observations",d.observations);
-    status.number("sample_rate",summary.config.sample_rate);
+    if(summary.acquisitions.size()<2)status.number("sample_rate",summary.config.sample_rate);
+    status.text("acquisition_scope","latest acquisition discovery counters; RF history spans all acquisitions");
     status.text("discovery_coverage_interpretation","discovery is separate from spectrum coverage; accepted is not processed; rejected, abandoned and overflow are distinct; counters are not additive airtime");
     emit(status,std::optional<PositionFix>{});
     for(const auto& band:d.bands) {
@@ -1533,19 +1780,20 @@ void export_discovery(sqlite3* db,const Snapshot& summary,const ExportOptions& o
         row.number("discovery_subband_index",band.subband_index);row.number("frequency_hz",band.center_hz);row.number("discovery_output_sample_rate",2000000);
         row.number("discovery_processed_output_samples",band.processed_samples);row.number("discovery_abandoned_output_samples",band.abandoned_samples);
         row.number("discovery_source_gap_input_samples",band.source_gap_input_samples);row.number("discovery_candidate_limit_hits",band.candidate_limit_hits);row.number("discovery_track_limit_hits",band.track_limit_hits);
-        row.number("sample_rate",summary.config.sample_rate);
+        if(summary.acquisitions.size()<2)row.number("sample_rate",summary.config.sample_rate);
+        row.text("acquisition_scope","latest acquisition discovery counters");
         row.text("discovery_coverage_interpretation","processed/abandoned use 2 MS/s subband output samples; source gaps use receiver input samples; overlapping subbands are not additive coverage");
         emit(row,std::optional<PositionFix>{});
     }
     Statement waveforms(db,"SELECT * FROM waveform_observations ORDER BY id");
     while(waveforms.row()) {
-        const auto w=waveform_from(waveforms,summary.config);CsvRecord row;row.text("record_type","waveform_observation");row.text("session_id",summary.session_id);
+        const auto w=waveform_from(waveforms,record_config(summary,waveforms.real(4),waveforms.real(5)));CsvRecord row;row.text("record_type","waveform_observation");row.text("session_id",summary.session_id);
         row.number("waveform_id",w.id);row.number("frequency_hz",w.center_hz);row.number("inferred_bandwidth_hz",w.bandwidth_hz);row.number("inferred_spreading_factor",w.spreading_factor);
         row.number("evidence_first_elapsed_seconds",w.first_observed_elapsed);row.number("delimiter_elapsed_seconds",w.delimiter_elapsed);row.number("delimiter_utc_seconds",w.delimiter_utc);
         row.number("waveform_up_match_fraction",w.up_match);row.number("waveform_down_match_fraction",w.down_match);row.number("contributing_subbands",w.contributing_subbands);
         row.number("complete_in_requested_range",int(w.complete_in_requested_range));row.number("association_ambiguous",int(w.association_ambiguous));
         row.text("discovery_method",d.method);row.text("classification",waveform_interpretation);row.text("time_association",waveform_time_association);
-        row.text("position_association",waveform_position_association);
+        row.text("position_association",waveform_position_association);acquisition_fields(row,summary,w.first_observed_elapsed);
         if(opt.include_receiver_positions&&w.receiver_position)row.position(*w.receiver_position,opt);
         emit(row,opt.include_receiver_positions?w.receiver_position:std::optional<PositionFix>{});
     }
@@ -1553,7 +1801,8 @@ void export_discovery(sqlite3* db,const Snapshot& summary,const ExportOptions& o
     while(gaps.row()) {
         const auto g=discovery_gap_from(gaps);CsvRecord row;row.text("record_type","discovery_gap");row.text("session_id",summary.session_id);
         row.number("discovery_gap_id",g.id);row.number("discovery_gap_first_input_sample",g.first_input_sample);row.number("discovery_gap_end_input_sample",g.end_input_sample);
-        row.number("discovery_subband_index",g.subband_index);row.text("gap_reason",g.reason);row.number("sample_rate",summary.config.sample_rate);
+        row.number("discovery_subband_index",g.subband_index);row.text("gap_reason",g.reason);if(summary.acquisitions.size()<2)row.number("sample_rate",summary.config.sample_rate);
+        row.text("acquisition_scope","global input-sample counters; rate may vary by acquisition; no sample-to-time conversion supplied");
         row.text("discovery_coverage_interpretation","half-open input-sample coordinates; subband -1 means all; invalid_input_order is invalid submission, not additional RF time; overlapping gaps are not additive");
         emit(row,std::optional<PositionFix>{});
     }
@@ -1577,34 +1826,37 @@ void SessionStore::write_report_file(const std::string& path,
 }
 void SessionStore::visit_tiles(const std::function<void(const SpectrumTile&)>& visitor) const {
     ReadSnapshot snapshot(db_);if(schema_version_==7)throw std::runtime_error("Sampled concentrator RSSI is not FFT occupancy");if(schema_version_<4)throw std::runtime_error("This legacy recording has no fine frequency activity history");
-    const auto config=read().config;Statement rows(db_,tiles_sql(schema_version_));
-    uint64_t previous=0;double elapsed=0;size_t bins=0;double first=0;
+    const auto summary=read();Statement rows(db_,tiles_sql(schema_version_));
+    uint64_t previous=0;double elapsed=0;size_t bins=0;double first=0,width=0;
+    const ReceiverConfig* previous_config=nullptr;
     while(rows.row()) {
+        const auto& config=record_config(summary,rows.real(5),rows.real(6));
         const auto tile=tile_from(rows,config,schema_version_);
+        if(schema_version_>=6)record_config(summary,tile.power_elapsed_start,tile.power_elapsed_end);
         if(tile.first_sample<previous || tile.elapsed_start_seconds<elapsed-1e-8 ||
-           (bins&&(bins!=tile.mean_dbfs.size()||first!=tile.first_center_hz)))
+           (previous_config==&config&&bins&&(bins!=tile.mean_dbfs.size()||first!=tile.first_center_hz||width!=tile.bin_width_hz)))
             throw std::runtime_error("Unordered or inconsistent saved spectrum tiles");
-        previous=tile.end_sample;elapsed=tile.elapsed_end_seconds;bins=tile.mean_dbfs.size();first=tile.first_center_hz;
+        previous=tile.end_sample;elapsed=tile.elapsed_end_seconds;bins=tile.mean_dbfs.size();first=tile.first_center_hz;width=tile.bin_width_hz;previous_config=&config;
         visitor(tile);
     }
 }
 void SessionStore::visit_concentrator_scans(const std::function<void(const ConcentratorScan&)>& visitor) const {
     ReadSnapshot snapshot(db_);if(schema_version_!=7)return;
-    const auto config=read().config;std::array<double,2> ends{};
+    const auto summary=read();std::array<double,2> ends{};
     Statement rows(db_,concentrator_scan_sql());
-    while(rows.row()) {const auto scan=concentrator_scan_from(rows,config);if(scan.elapsed_start_seconds<ends[scan.board_index])throw std::runtime_error("Saved concentrator scans overlap or are out of order");ends[scan.board_index]=scan.elapsed_end_seconds;visitor(scan);}
+    while(rows.row()) {const auto scan=concentrator_scan_from(rows,record_config(summary,rows.real(7),rows.real(8)));if(scan.elapsed_start_seconds<ends[scan.board_index])throw std::runtime_error("Saved concentrator scans overlap or are out of order");ends[scan.board_index]=scan.elapsed_end_seconds;visitor(scan);}
 }
 void SessionStore::visit_positions(const std::function<void(const PositionFix&)>& visitor) const {
     ReadSnapshot snapshot(db_);Statement rows(db_,"SELECT * FROM positions ORDER BY rowid");
     while(rows.row())visitor(saved_position(rows));
 }
 void SessionStore::visit_waveforms(const std::function<void(const WaveformObservation&)>& visitor) const {
-    ReadSnapshot snapshot(db_);if(schema_version_<5)return;const auto config=read().config;
-    Statement rows(db_,"SELECT * FROM waveform_observations ORDER BY id");while(rows.row())visitor(waveform_from(rows,config));
+    ReadSnapshot snapshot(db_);if(schema_version_<5)return;const auto summary=read();
+    Statement rows(db_,"SELECT * FROM waveform_observations ORDER BY id");while(rows.row())visitor(waveform_from(rows,record_config(summary,rows.real(4),rows.real(5))));
 }
 void SessionStore::visit_receptions(const std::function<void(const Reception&)>& visitor) const {
-    ReadSnapshot snapshot(db_);const auto config=schema_version_==7?read().config:ReceiverConfig{};Statement rows(db_,std::string("SELECT ")+reception_columns_for(schema_version_)+" FROM receptions ORDER BY id");
-    while(rows.row()){auto reception=reception_from(rows,schema_version_);read_route(db_,reception,schema_version_);if(schema_version_==7)read_concentrator_packet(db_,reception,config);visitor(reception);}
+    ReadSnapshot snapshot(db_);const auto summary=read();Statement rows(db_,std::string("SELECT ")+reception_metadata_columns(schema_version_)+" FROM receptions ORDER BY id");
+    while(rows.row()){auto reception=reception_from(rows,schema_version_);const auto& config=record_config(summary,reception.elapsed_seconds,reception.elapsed_seconds);if(schema_version_==7)read_concentrator_packet(db_,reception,config);visitor(reception);}
 }
 void SessionStore::visit_gaps(const std::function<void(const CoverageGap&)>& visitor) const {
     ReadSnapshot snapshot(db_);if(schema_version_<4)throw std::runtime_error("This legacy recording has no fine coverage-gap history");
@@ -1621,7 +1873,7 @@ void SessionStore::export_csv(const std::string& path,const ExportOptions& opt) 
     session.number("elapsed_seconds",summary.elapsed_seconds);session.number("input_seconds",summary.input_seconds);
     session.number("measurement_seconds",summary.measurement_seconds);session.number("delivered_samples",summary.delivered_samples);
     session.number("dropped_samples",summary.dropped_samples);session.number("total_receptions",summary.total_receptions);
-    session.number("authorized_records",summary.authorized_messages);session.number("incomplete",int(summary.incomplete));
+    session.number("classified_receptions",summary.classified_receptions);session.number("incomplete",int(summary.incomplete));
     if(schema_version_!=7){session.number("activity_threshold_dbfs",summary.config.activity_threshold_dbfs);session.number("sample_rate",summary.config.sample_rate);}
     session.number("survey_span_hz",summary.config.survey_span_hz);session.text("source",summary.config.synthetic?"synthetic":receiver_source_name(summary.config));
     session.text("rf_level_unit",schema_version_==7?"nominal vendor dBm; uncalibrated":"uncalibrated dBFS/bin");session.number("frequency_hz",summary.config.center_hz);
@@ -1634,7 +1886,8 @@ void SessionStore::export_csv(const std::string& path,const ExportOptions& opt) 
     session.number("tuning_offset_hz",summary.config.tuning_offset_hz);if(schema_version_!=7)session.number("tuner_command_hz",tuned_center_hz(summary.config));
     if(schema_version_==7&&opt.include_provenance){session.text("antenna_description",summary.config.antenna_description);session.text("receiver_description",summary.config.receiver_description);session.text("survey_notes",summary.config.survey_notes);}
     session.number("session_schema_version",schema_version_);
-    Statement version(db_,"SELECT version FROM session");if(version.row())session.text("application_version",version.text(0));session.write(output);
+    Statement version(db_,"SELECT version FROM session");if(version.row())session.text("application_version",version.text(0));session.text("acquisition_scope","initial receiver configuration; see acquisition_segment rows for later setups");session.write(output);
+    export_acquisitions(summary,opt,[&](const CsvRecord& row,const std::optional<PositionFix>&){row.write(output);});
     if(schema_version_==7)export_concentrator(*this,summary,opt,[&](const CsvRecord& row,const std::optional<PositionFix>&){row.write(output);},false);
     if(schema_version_>=5&&schema_version_!=7)export_discovery(db_,summary,opt,[&](const CsvRecord& row,const std::optional<PositionFix>&){row.write(output);});
     if(schema_version_>=4&&schema_version_!=7) {
@@ -1642,14 +1895,14 @@ void SessionStore::export_csv(const std::string& path,const ExportOptions& opt) 
         metrology.number("fft_size",4096);metrology.number("hop_size",4096);metrology.text("window_function","periodic Hann");metrology.number("bin_width_hz",summary.spectrum_bin_width_hz);metrology.number("enbw_hz",summary.spectrum_enbw_hz);
         metrology.text("normalization",normalization);metrology.text("position_association",position_association);metrology.text("time_association","host UTC anchor + sample progress; activity frame-major LSB-first, contiguous nonoverlapping FFT frames");
         metrology.text("power_time_association",schema_version_>=6?"frame-weighted linear per-bin mean and maxima over <=1s power block; fine activity unchanged; time/location subsets use coarse block power":"per-bin power mean over entire tile; partial-tile selection assumes tile mean and sets boundary quality");
-        metrology.text("peak_interpretation","per-bin maxima over tile; sum across bins is an upper-bound peak envelope, not simultaneous interval peak");metrology.number("activity_threshold_dbfs",summary.config.activity_threshold_dbfs);
+        metrology.text("peak_interpretation","per-bin maxima over tile; sum across bins is an upper-bound peak envelope, not simultaneous interval peak");metrology.number("activity_threshold_dbfs",summary.config.activity_threshold_dbfs);metrology.text("acquisition_scope","initial metrology; acquisition_segment rows define subsequent rates and thresholds");
         // Free-form notes can contain operational details, so shareable exports omit them.
         if(opt.include_provenance){metrology.text("antenna_description",summary.config.antenna_description);metrology.text("receiver_description",summary.config.receiver_description);metrology.text("survey_notes",summary.config.survey_notes);}metrology.write(output);
         const auto analysis=analyze({});
-        for(const auto& bin:analysis.bins){CsvRecord row;row.text("record_type","spectrum_bin");row.text("session_id",summary.session_id);row.number("frequency_hz",bin.center_hz);row.number("bandwidth_hz",bin.width_hz);row.number("observed_seconds",bin.observed_seconds);row.number("active_seconds",bin.active_seconds);if(bin.observed_seconds>0)row.number("occupancy_fraction",bin.active_seconds/bin.observed_seconds);row.number("mean_dbfs",bin.mean_dbfs);row.number("peak_dbfs",bin.peak_dbfs);row.write(output);}
+        for(const auto& bin:analysis.bins){CsvRecord row;row.text("record_type","spectrum_bin");row.text("session_id",summary.session_id);row.text("acquisition_scope",summary.acquisitions.size()>1?"combined exact-frequency bins across acquisitions; gain and threshold may differ; use per-acquisition reports for comparisons":"one receiver configuration");row.number("frequency_hz",bin.center_hz);row.number("bandwidth_hz",bin.width_hz);row.number("observed_seconds",bin.observed_seconds);row.number("active_seconds",bin.active_seconds);if(bin.observed_seconds>0)row.number("occupancy_fraction",bin.active_seconds/bin.observed_seconds);row.number("mean_dbfs",bin.mean_dbfs);row.number("peak_dbfs",bin.peak_dbfs);row.write(output);}
         Statement tiles(db_,tiles_sql(schema_version_));
         while(tiles.row()) {
-            const auto t=tile_from(tiles,summary.config,schema_version_);CsvRecord row;row.text("record_type","spectrum_tile");row.text("session_id",summary.session_id);row.number("spectrum_id",t.id);
+            const auto t=tile_from(tiles,record_config(summary,tiles.real(5),tiles.real(6)),schema_version_);CsvRecord row;row.text("record_type","spectrum_tile");row.text("session_id",summary.session_id);row.number("spectrum_id",t.id);acquisition_fields(row,summary,t.elapsed_start_seconds);
             row.number("first_sample",t.first_sample);row.number("end_sample",t.end_sample);row.number("window_utc_start_seconds",t.utc_start_seconds);row.number("window_utc_end_seconds",t.utc_end_seconds);row.number("window_elapsed_start_seconds",t.elapsed_start_seconds);row.number("window_elapsed_end_seconds",t.elapsed_end_seconds);
             row.number("first_center_hz",t.first_center_hz);row.number("bin_width_hz",t.bin_width_hz);row.number("fft_size",t.fft_size);row.number("frame_count",t.frame_count);row.number("bin_count",t.mean_dbfs.size());row.number("background_dbfs",t.background_dbfs);row.number("clipped_samples",t.clipped_samples);row.number("quality_flags",t.quality);row.number("power_elapsed_start_seconds",t.power_elapsed_start);row.number("power_elapsed_end_seconds",t.power_elapsed_end);row.text("power_time_association",schema_version_>=6?"coarse block power; exact fine activity":"tile power");
             const auto means=quantize(t.mean_dbfs),peaks=quantize(t.peak_dbfs);row.text("mean_centidb_le_hex",hex_bytes(means.data(),means.size()));row.text("peak_centidb_le_hex",hex_bytes(peaks.data(),peaks.size()));row.text("position_association",position_association);
@@ -1660,7 +1913,7 @@ void SessionStore::export_csv(const std::string& path,const ExportOptions& opt) 
                 CsvRecord mask;mask.text("record_type","spectrum_activity_run");mask.text("session_id",summary.session_id);mask.number("spectrum_id",t.id);mask.number("activity_frame_start",frame);mask.number("activity_frame_count",end-frame);mask.text("activity_mask_hex",hex_bytes(t.activity.data()+frame*stride,stride));mask.write(output);frame=end;}
         }
         Statement events(db_,"SELECT * FROM spectrum_events ORDER BY id");while(events.row()) {
-            const auto e=event_from(events,summary.config);CsvRecord row;row.text("record_type","spectrum_event");row.text("session_id",summary.session_id);row.number("spectrum_id",e.id);row.number("first_sample",e.first_sample);row.number("end_sample",e.end_sample);
+            const auto e=event_from(events,record_config(summary,events.real(5),events.real(6)));CsvRecord row;row.text("record_type","spectrum_event");row.text("session_id",summary.session_id);row.number("spectrum_id",e.id);acquisition_fields(row,summary,e.elapsed_start_seconds);row.number("first_sample",e.first_sample);row.number("end_sample",e.end_sample);
             row.number("window_utc_start_seconds",e.utc_start_seconds);row.number("window_utc_end_seconds",e.utc_end_seconds);row.number("window_elapsed_start_seconds",e.elapsed_start_seconds);row.number("window_elapsed_end_seconds",e.elapsed_end_seconds);
             row.number("lower_hz",e.lower_hz);row.number("upper_hz",e.upper_hz);row.number("active_seconds",e.active_seconds);row.number("mean_dbfs",e.mean_dbfs);row.number("peak_dbfs",e.peak_dbfs);row.number("quality_flags",e.quality);row.text("position_association",position_association);if(opt.include_receiver_positions&&e.receiver_end)row.position(*e.receiver_end,opt);row.write(output);
             if(opt.include_receiver_positions&&e.receiver_start){CsvRecord start;start.text("record_type","spectrum_event_start_position");start.text("session_id",summary.session_id);start.number("spectrum_id",e.id);start.text("position_association","receiver-start fix");start.position(*e.receiver_start,opt);start.write(output);}
@@ -1671,16 +1924,16 @@ void SessionStore::export_csv(const std::string& path,const ExportOptions& opt) 
     Statement bins(db_,"SELECT * FROM frequencies ORDER BY center");
     while(bins.row()) {
         const FrequencySummary bin{unsigned_value(bins,0,6000000000ULL),static_cast<uint32_t>(unsigned_value(bins,1)),bins.real(2),bins.real(3),bins.real(4),bins.real(5)};
-        validate_bin(bin);CsvRecord row;row.text("record_type","frequency");row.text("session_id",summary.session_id);
+        validate_bin(bin);CsvRecord row;row.text("record_type","frequency");row.text("session_id",summary.session_id);row.text("acquisition_scope",summary.acquisitions.size()>1?"combined exact-frequency bins across acquisitions; settings may differ":"one receiver configuration");
         row.number("frequency_hz",bin.center_hz);row.number("bandwidth_hz",bin.width_hz);row.text("classification","sampled RF activity");
         row.number("observed_seconds",bin.observed_seconds);row.number("active_seconds",bin.active_seconds);
         if(bin.observed_seconds>0)row.number("occupancy_fraction",bin.active_seconds/bin.observed_seconds);
         row.number("mean_dbfs",bin.mean_dbfs);row.number("peak_dbfs",bin.peak_dbfs);row.write(output);
     }
-    Statement packets(db_,std::string("SELECT ")+reception_columns_for(schema_version_)+" FROM receptions ORDER BY id");
+    Statement packets(db_,std::string("SELECT ")+reception_metadata_columns(schema_version_)+" FROM receptions ORDER BY id");
     while(packets.row()) {
-        auto r=reception_from(packets,schema_version_);read_route(db_,r,schema_version_);if(schema_version_==7)read_concentrator_packet(db_,r,summary.config);CsvRecord row;concentrator_packet_fields(row,r);
-        row.text("record_type","reception");row.text("session_id",summary.session_id);row.number("utc_seconds",r.utc_seconds);
+        auto r=reception_from(packets,schema_version_);if(schema_version_==7)read_concentrator_packet(db_,r,summary.config);CsvRecord row;concentrator_packet_fields(row,r);
+        row.text("record_type","reception");row.text("session_id",summary.session_id);row.number("utc_seconds",r.utc_seconds);acquisition_fields(row,summary,r.elapsed_seconds);
         row.number("elapsed_seconds",r.elapsed_seconds);row.number("frequency_hz",r.frequency_hz);row.number("bandwidth_hz",r.bandwidth_hz);
         row.number("spreading_factor",r.spreading_factor);row.number("coding_rate",r.coding_rate);if(!r.concentrator)row.number("duration_seconds",r.duration_seconds);
         row.number("snr_db",r.snr_db);if(!r.concentrator)row.number("frequency_error_hz",r.frequency_error_hz);row.number("header_valid",int(r.header_valid));
@@ -1689,36 +1942,6 @@ void SessionStore::export_csv(const std::string& path,const ExportOptions& opt) 
         if(r.decoded.evidence) {
             row.number("evidence_port",r.decoded.evidence->port);
             row.number("evidence_signature_present",int(r.decoded.evidence->signature_present));
-        }
-        if(opt.include_content&&r.decoded.authorized) {
-            const auto& a=*r.decoded.authorized;const auto& c=a.content;
-            row.text("profile_id",a.profile_id);row.text("content_kind",c.kind);row.text("text",c.text);
-            row.number("origin",a.from);row.number("destination",a.to);row.number("packet_id",a.packet_id);row.number("port",a.port);
-            row.number("hop_limit",unsigned(a.hop_limit));row.number("hop_start",unsigned(a.hop_start));row.number("channel_hash",unsigned(a.channel_hash));
-            row.number("next_hop",unsigned(a.next_hop));row.number("relay_node",unsigned(a.relay_node));row.number("want_ack",int(a.want_ack));
-            row.number("via_mqtt",int(a.via_mqtt));row.number("want_response",int(a.want_response));
-            if(schema_version_>=3) {
-                row.number("request_id",a.request_id);row.number("reply_id",a.reply_id);row.number("signature_present",int(a.signature_present));
-                row.text("routing_variant",c.routing_variant);
-            }
-            row.text("node_id",c.node_id);row.text("long_name",c.long_name);row.text("short_name",c.short_name);
-            if(c.latitude)row.coordinate("sender_latitude",*c.latitude,opt.coordinate_decimals);
-            if(c.longitude)row.coordinate("sender_longitude",*c.longitude,opt.coordinate_decimals);
-            row.optional("sender_altitude",c.altitude);row.optional("voltage",c.voltage);row.optional("temperature",c.temperature);
-            row.optional("humidity",c.humidity);row.optional("battery_percent",c.battery_percent);row.optional("channel_utilization",c.channel_utilization);
-            row.optional("air_util_tx",c.air_util_tx);row.optional("reported_time",c.reported_time);row.optional("hardware_model",c.hardware_model);
-            row.optional("role",c.role);row.optional("routing_error",c.routing_error);
-            const auto sequence=[&](const char* name,const auto& values,bool json=false) {
-                std::string text;for(auto value:values){if(!text.empty())text+=json?',':';';text+=std::to_string(value);}
-                if(json)text='['+text+']';row.text(name,text);
-            };
-            sequence("route",c.route);
-            // JSON integer lists preserve negative raw values without invoking
-            // spreadsheet formula syntax or inventing route/SNR alignment.
-            if(schema_version_>=3) {
-                sequence("route_back",c.route_back);
-                sequence("snr_towards_db_x4",c.snr_towards,true);sequence("snr_back_db_x4",c.snr_back,true);
-            }
         }
         if(opt.include_receiver_positions&&r.receiver_position)row.position(*r.receiver_position,opt);
         row.write(output);
@@ -1741,7 +1964,7 @@ void SessionStore::export_csv(const std::string& path,const ExportOptions& opt) 
         row.text("position_association","window-end");row.number("frequency_hz",bin.center_hz);row.number("bandwidth_hz",bin.width_hz);
         row.text("classification","sampled RF activity");row.number("observed_seconds",bin.observed_seconds);row.number("active_seconds",bin.active_seconds);
         if(bin.observed_seconds>0)row.number("occupancy_fraction",bin.active_seconds/bin.observed_seconds);
-        row.number("mean_dbfs",bin.mean_dbfs);row.number("peak_dbfs",bin.peak_dbfs);row.number("activity_threshold_dbfs",summary.config.activity_threshold_dbfs);
+        row.number("mean_dbfs",bin.mean_dbfs);row.number("peak_dbfs",bin.peak_dbfs);row.number("activity_threshold_dbfs",record_config(summary,window.elapsed_start_seconds,window.elapsed_end_seconds).activity_threshold_dbfs);acquisition_fields(row,summary,window.elapsed_start_seconds);
         if(opt.include_receiver_positions&&window.receiver_position)row.position(*window.receiver_position,opt);row.write(output);
     }
     if(opt.include_receiver_positions) {
@@ -1756,7 +1979,8 @@ void SessionStore::export_geojson(const std::string& path,const ExportOptions& o
     ReadSnapshot snapshot(db_);
     const auto summary=read();
     if(schema_version_==7){visit_concentrator_scans([](const auto&){});visit_receptions([](const auto&){});}
-    CsvRecord receiver;receiver.text("source",summary.config.synthetic?"synthetic":receiver_source_name(summary.config));
+    else if(schema_version_>=4)visit_tiles([](const auto&){});
+    CsvRecord receiver;receiver.text("acquisition_scope","initial receiver configuration; acquisition_segment features provide later setups");receiver.text("source",summary.config.synthetic?"synthetic":receiver_source_name(summary.config));
     if(schema_version_!=7)receiver.number("sample_rate",summary.config.sample_rate);receiver.number("frequency_hz",summary.config.center_hz);
     receiver.number("survey_span_hz",summary.config.survey_span_hz);receiver.number("tuning_offset_hz",summary.config.tuning_offset_hz);
     if(!summary.config.synthetic&&summary.config.hardware_receiver==HardwareReceiver::RtlSdr) {
@@ -1780,19 +2004,21 @@ void SessionStore::export_geojson(const std::string& path,const ExportOptions& o
         // One RF feature per located measurement tile, with its own endpoint
         // association. Do not use capped display buckets as an export source.
         Statement tiles(db_,tiles_sql(schema_version_));while(tiles.row()) {
-            const auto t=tile_from(tiles,summary.config,schema_version_);if(!t.receiver_end)continue;const auto& fix=*t.receiver_end;
+            const auto t=tile_from(tiles,record_config(summary,tiles.real(5),tiles.real(6)),schema_version_);if(!t.receiver_end)continue;const auto& fix=*t.receiver_end;
             double mean=0,peak=0;for(float p:t.mean_dbfs)mean+=std::pow(10.0,p/10.0);for(float p:t.peak_dbfs)peak+=std::pow(10.0,p/10.0);
             const size_t stride=(t.mean_dbfs.size()+7)/8;size_t active_frames=0;for(size_t f=0;f<t.frame_count;++f){bool active=false;for(size_t b=0;b<stride;++b)active=active||t.activity[f*stride+b]!=0;if(active)++active_frames;}
             std::ostringstream row;row.imbue(std::locale::classic());if(comma)row<<',';comma=true;
             row<<"{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":["<<std::fixed<<std::setprecision(static_cast<int>(opt.coordinate_decimals))<<fix.longitude<<','<<fix.latitude
                <<"]},\"properties\":{\"record_type\":\"rf_observation\",\"spectrum_id\":"<<t.id<<std::setprecision(9)<<",\"elapsed_start\":"<<t.elapsed_start_seconds<<",\"elapsed_end\":"<<t.elapsed_end_seconds
                <<",\"utc_start\":"<<t.utc_start_seconds<<",\"utc_end\":"<<t.utc_end_seconds<<",\"lower_hz\":"<<t.first_center_hz-t.bin_width_hz/2<<",\"upper_hz\":"<<t.first_center_hz+(double(t.mean_dbfs.size())-0.5)*t.bin_width_hz
-               <<",\"observed_seconds\":"<<t.elapsed_end_seconds-t.elapsed_start_seconds<<",\"busy_seconds\":"<<double(active_frames)*4096/summary.config.sample_rate<<",\"integrated_mean_dbfs\":"<<10*std::log10(mean)
+               <<",\"observed_seconds\":"<<t.elapsed_end_seconds-t.elapsed_start_seconds<<",\"busy_seconds\":"<<double(active_frames)*4096/record_config(summary,t.elapsed_start_seconds,t.elapsed_end_seconds).sample_rate<<",\"integrated_mean_dbfs\":"<<10*std::log10(mean)
                <<",\"peak_envelope_upper_bound_dbfs\":"<<10*std::log10(peak)<<",\"background_dbfs_per_bin\":"<<t.background_dbfs<<",\"quality_flags\":"<<t.quality
                <<",\"power_elapsed_start_seconds\":"<<t.power_elapsed_start<<",\"power_elapsed_end_seconds\":"<<t.power_elapsed_end<<",\"power_time_association\":"<<json_string(schema_version_>=6?"coarse block power; exact fine activity":"tile power")
                <<",\"position_association\":"<<json_string(position_association)<<",\"receiver_end_fix_utc\":"<<fix.utc_seconds<<",\"receiver_end_hdop\":";
             if(fix.hdop)row<<*fix.hdop;else row<<"null";
             if(t.receiver_start)row<<",\"receiver_start_coordinates\":["<<std::setprecision(static_cast<int>(opt.coordinate_decimals))<<t.receiver_start->longitude<<','<<t.receiver_start->latitude<<"],\"receiver_start_fix_utc\":"<<std::setprecision(9)<<t.receiver_start->utc_seconds;
+            CsvRecord provenance;acquisition_fields(provenance,summary,t.elapsed_start_seconds);const auto fields=provenance.json();
+            if(fields.size()>2)row<<','<<fields.substr(1,fields.size()-2);
             row<<"}}";output.write(row.str());
         }
     }
@@ -1803,6 +2029,7 @@ void SessionStore::export_geojson(const std::string& path,const ExportOptions& o
         else row<<"null";
         row<<",\"properties\":"<<record.json()<<'}';output.write(row.str());
     };
+    export_acquisitions(summary,opt,feature);
     if(schema_version_==7)export_concentrator(*this,summary,opt,feature,true);
     else if(schema_version_>=5)export_discovery(db_,summary,opt,feature);
     output.write("]}\n");output.sync();

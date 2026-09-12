@@ -26,6 +26,12 @@ public:
     SessionStore& operator=(const SessionStore&) = delete;
     void create(const std::string& path, const ReceiverConfig&, const std::string& session_id);
     void open_readonly(const std::string& path);
+    // Only new, currently open writable recordings acquire this extension.
+    // No historical database is migrated or reopened for writing.
+    void enable_acquisitions();
+    void begin_acquisition(const AcquisitionSegment&);
+    std::vector<AcquisitionSegment> acquisitions(const ReceiverConfig& legacy) const;
+    ReceiverConfig config_at(double elapsed_seconds, const ReceiverConfig& legacy) const;
     void append(const Reception&);
     void append(const PositionFix&);
     void append(const SurveyWindow&);
@@ -59,11 +65,14 @@ public:
     int schema_version() const noexcept { return schema_version_; }
 private:
     sqlite3* db_ = nullptr;
-    // Versions 1–5 remain read-only legacy formats. Never migrate historical files.
+    // Historical files are never migrated. New metadata-policy files use the
+    // existing 5–7 RF encodings and reserve all former semantic columns as NULL.
     int schema_version_ = 0;
     bool readonly_ = true, pending_ = false;
     sqlite3_stmt* tile_insert_ = nullptr;
     ReceiverConfig recorded_config_;
+    bool acquisition_extension_ = false;
+    uint64_t acquisition_id_ = 0;
     uint64_t previous_tile_end_ = 0, previous_tile_id_ = 0;
     double previous_tile_elapsed_end_ = 0;
     struct PowerBlock {

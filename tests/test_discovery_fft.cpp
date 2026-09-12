@@ -97,7 +97,7 @@ void reference_and_roundtrip() {
 }
 
 void reject_invalid() {
-    for (std::size_t size : {0u, 1u, 3u, 1023u, 131073u, 262144u}) {
+    for (std::size_t size : {0u, 1u, 3u, 1023u, 131073u, 524288u}) {
         bool rejected = false;
         try { const ovmesh::DiscoveryFftPlan plan(size); }
         catch (const std::invalid_argument&) { rejected = true; }

@@ -31,6 +31,7 @@ bool same_observation(const SurveyObservation& first, const SurveyObservation& s
     return same_number(first.elapsed_start, second.elapsed_start) && same_number(first.elapsed_end, second.elapsed_end) &&
         same_number(first.observed_seconds, second.observed_seconds) && same_number(first.busy_seconds, second.busy_seconds) &&
         same_number(first.outside_center_busy_seconds, second.outside_center_busy_seconds) &&
+        same_number(first.outside_center_observed_seconds, second.outside_center_observed_seconds) &&
         same_number(first.center_busy_seconds, second.center_busy_seconds) &&
         same_number(first.mean_dbfs, second.mean_dbfs) && same_number(first.peak_dbfs, second.peak_dbfs) &&
         same_number(first.background_dbfs, second.background_dbfs) && first.quality == second.quality &&
@@ -50,6 +51,7 @@ SurveyObservation observation(const std::optional<PositionFix>& fix, double seco
     result.elapsed_start = seconds; result.elapsed_end = seconds + 1;
     result.observed_seconds = 1; result.busy_seconds = busy;
     result.outside_center_busy_seconds = busy;
+    result.outside_center_observed_seconds = 1;
     result.mean_dbfs = -72.25; result.peak_dbfs = -42.5; result.background_dbfs = -85.75;
     result.quality = SurveyUncalibrated; result.receiver_position = fix;
     return result;
@@ -262,6 +264,12 @@ void guard_selection_changes_display_only(GeographicUi& renderer) {
             "Guarded display uses the measured 25-percent outside-center union");
     require(renderer.frame(Chart::Rf, snapshot, ui).color_count(quarter_color) > 0,
             "Geographic palette agrees with the guarded busy fraction");
+    measured.outside_center_observed_seconds = .5;
+    require(displayed_busy_ratio(ui, measured) == std::optional<double>{.5},
+            "Guarded display excludes exposure assessed only while this frequency was at a prior receiver center");
+    measured.outside_center_observed_seconds = 0;
+    require(!displayed_busy_ratio(ui, measured), "A bucket with only guarded exposure is unavailable even when other buckets are unguarded");
+    measured.outside_center_observed_seconds = 1;
     ui.analysis.outside_center_bin_count = 0;
     require(!displayed_busy_ratio(ui, measured), "An all-guard frequency selection is unavailable, not quiet");
     shown = renderer.frame(Chart::Rf, snapshot, ui);
@@ -328,6 +336,33 @@ void complete_elapsed_axis_and_gaps(GeographicUi& renderer) {
     require(renderer.frame(Chart::Rf, snapshot, ui).route_vertices > 0,
             "Geographic connectivity uses actual coarsened display buckets rather than the requested width");
 }
+void overlapping_gaps_have_bounded_geometry(GeographicUi& renderer) {
+    Snapshot snapshot; DesktopState ui;
+    ui.analysis.resolved_elapsed_start = 0; ui.analysis.resolved_elapsed_end = 100;
+    ui.analysis.outside_center_bin_count = 1;
+    CoverageGap gap; gap.elapsed_start_seconds = 10; gap.elapsed_end_seconds = 90;
+    gap.reason = "synthetic-gap";
+    ui.analysis.gaps = {gap};
+    renderer.frame(Chart::BusyTime, snapshot, ui);
+    const auto one = renderer.frame(Chart::BusyTime, snapshot, ui);
+    ui.analysis.gaps.assign(100000, gap);
+    for (size_t n = 0; n < ui.analysis.gaps.size(); ++n) ui.analysis.gaps[n].id = n + 1;
+    const auto many = renderer.frame(Chart::BusyTime, snapshot, ui);
+    require(many.vertices.size() < 8000 &&
+            many.color_count(IM_COL32(100, 105, 115, 130)) == one.color_count(IM_COL32(100, 105, 115, 130)) &&
+            many.color_count(IM_COL32(40, 46, 58, 230)) == one.color_count(IM_COL32(40, 46, 58, 230)),
+            "100000 overlapping saved gaps use the same bounded geometry as one gap");
+    require(ui.analysis.gaps.size() == 100000 && ui.analysis.gaps.back().id == 100000 &&
+            ui.analysis.gaps.back().elapsed_start_seconds == 10 && ui.analysis.gaps.back().reason == gap.reason,
+            "Visual consolidation preserves all original gap records and their details");
+    // Include clipped and disjoint intervals; no line budget depends on row count.
+    for (size_t n = 0; n < ui.analysis.gaps.size(); ++n) {
+        ui.analysis.gaps[n].elapsed_start_seconds = n % 2 ? 80 : -10;
+        ui.analysis.gaps[n].elapsed_end_seconds = n % 2 ? 110 : 20;
+    }
+    const auto split = renderer.frame(Chart::BusyTime, snapshot, ui, {300, 440});
+    require(split.vertices.size() < 8000, "Clipped disjoint coverage stays within the display budget");
+}
 } // namespace
 
 int main() {
@@ -335,6 +370,7 @@ int main() {
         GeographicUi renderer;
         stationary_is_not_a_route(renderer); gaps_never_become_routes(renderer); edge_cases_render(renderer);
         guard_selection_changes_display_only(renderer); complete_elapsed_axis_and_gaps(renderer);
+        overlapping_gaps_have_bounded_geometry(renderer);
         std::cout << "Geographic/analysis UI stationary/mobile, center-guard, elapsed-coverage and data-preservation checks passed; no windows or USB opened\n";
         return 0;
     } catch (const std::exception& error) {

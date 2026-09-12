@@ -55,7 +55,7 @@ struct LoRaReceiver::Impl {
 
     explicit Impl(PhyConfig c):config(c),n(c.spreading_factor>=7&&c.spreading_factor<=12?1U<<c.spreading_factor:0) {
         if(!n || c.coding_rate<5 || c.coding_rate>8 ||
-            (c.bandwidth_hz!=125000&&c.bandwidth_hz!=250000&&c.bandwidth_hz!=500000))
+            !supported_lora_bandwidth(c.bandwidth_hz))
             throw std::invalid_argument("Unsupported LoRa profile");
         chirp.resize(n); fft.resize(n); buffer.reserve(12*n); symbols.reserve(1024);
         for(unsigned i=0;i<n;++i) {

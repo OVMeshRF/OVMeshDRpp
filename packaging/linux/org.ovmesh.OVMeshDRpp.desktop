@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=OVMeshDR++
+Comment=Receive-only RF spectrum survey
+Exec=OVMeshDRpp
+Icon=applications-science
+Terminal=false
+Categories=Science;HamRadio;
+StartupNotify=false

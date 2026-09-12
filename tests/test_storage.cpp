@@ -62,42 +62,31 @@ ovmesh::Reception fixture(uint64_t id=1) {
     ovmesh::Reception r;r.id=id;r.utc_seconds=1700000001.5;r.elapsed_seconds=1.5;r.frequency_hz=906875000;
     r.bandwidth_hz=250000;r.spreading_factor=11;r.coding_rate=5;r.duration_seconds=0.125;r.snr_db=-4.25;
     r.frequency_error_hz=-100.5;r.header_valid=true;r.crc_valid=true;r.lane_label="Synthetic profile";
-    r.decoded.status=ovmesh::protocol::Status::decoded;r.decoded.classification="likely Meshtastic";
+    r.decoded.status=ovmesh::protocol::Status::classified;r.decoded.classification="likely Meshtastic";
     r.decoded.authentication="not authenticated";r.receiver_position=fix();
-    ovmesh::protocol::AuthorizedContent a;a.profile_id="synthetic-profile";a.from=0x11111111;a.to=0xffffffff;a.packet_id=0x12345678;
-    a.port=1;a.hop_limit=3;a.hop_start=4;a.channel_hash=8;a.next_hop=9;a.relay_node=10;
-    a.want_ack=true;a.via_mqtt=true;a.want_response=true;
-    a.request_id=0x34567890;a.reply_id=0x45678901;a.signature_present=true;
-    r.decoded.evidence=ovmesh::protocol::EnvelopeEvidence{a.port,a.signature_present};
-    auto& c=a.content;c.kind="text";c.text="=SYNTHETIC(\"fixture\")\nquoted, text";
-    c.node_id="!11111111";c.long_name="  =SYNTHETIC_NAME";c.short_name="SYN";
-    c.latitude=-0.2345678;c.longitude=0.8765432;c.altitude=-2.25;c.voltage=3.1415;c.temperature=-5.5;c.humidity=45.5;
-    c.battery_percent=87;c.channel_utilization=2.5;c.air_util_tx=0.75;c.reported_time=1700000000;
-    c.hardware_model=42;c.role=2;c.routing_error=3;c.route={0x12345678,0x87654321};
-    c.route_back={0xffffffff,0x01020304,0};c.snr_towards={-128};
-    c.snr_back={INT32_MIN,0,7,INT32_MAX};r.decoded.authorized=std::move(a);return r;
+    r.decoded.evidence=ovmesh::protocol::EnvelopeEvidence{1,true};return r;
 }
-void content_equal(const ovmesh::Reception& actual,const ovmesh::Reception& original) {
-    require(actual.decoded.authorized.has_value(),"Authorized record lost");
-    const auto& a=*actual.decoded.authorized;const auto& b=*original.decoded.authorized;
-    require(a.profile_id==b.profile_id && a.from==b.from && a.to==b.to && a.packet_id==b.packet_id && a.port==b.port,"Envelope roundtrip");
-    require(a.hop_limit==b.hop_limit && a.hop_start==b.hop_start && a.channel_hash==b.channel_hash && a.next_hop==b.next_hop && a.relay_node==b.relay_node,"Hop field roundtrip");
-    require(a.want_ack==b.want_ack && a.via_mqtt==b.via_mqtt && a.want_response==b.want_response,"Flag roundtrip");
-    require(a.request_id==b.request_id && a.reply_id==b.reply_id && a.signature_present==b.signature_present,"Correlation/signature roundtrip");
+void metadata_equal(const ovmesh::Reception& actual,const ovmesh::Reception& original) {
+    require(actual.id==original.id && actual.frequency_hz==original.frequency_hz && actual.bandwidth_hz==original.bandwidth_hz &&
+        actual.spreading_factor==original.spreading_factor && actual.coding_rate==original.coding_rate &&
+        actual.duration_seconds==original.duration_seconds && actual.snr_db==original.snr_db &&
+        actual.frequency_error_hz==original.frequency_error_hz,"RF reception roundtrip");
+    require(actual.decoded.status==original.decoded.status && actual.decoded.classification==original.decoded.classification &&
+        actual.decoded.authentication==original.decoded.authentication,"Protocol metadata roundtrip");
     require(actual.decoded.evidence.has_value()==original.decoded.evidence.has_value(),"Envelope evidence presence roundtrip");
     if(original.decoded.evidence)require(actual.decoded.evidence->port==original.decoded.evidence->port &&
         actual.decoded.evidence->signature_present==original.decoded.evidence->signature_present,"Envelope evidence roundtrip");
-    const auto& c=a.content;const auto& d=b.content;
-    require(c.kind==d.kind && c.text==d.text && c.node_id==d.node_id && c.long_name==d.long_name && c.short_name==d.short_name,"Text/node roundtrip");
-    require(c.latitude==d.latitude && c.longitude==d.longitude && c.altitude==d.altitude,"Sender position roundtrip");
-    require(c.voltage==d.voltage && c.temperature==d.temperature && c.humidity==d.humidity && c.battery_percent==d.battery_percent,"Telemetry roundtrip");
-    require(c.channel_utilization==d.channel_utilization && c.air_util_tx==d.air_util_tx && c.reported_time==d.reported_time,"Utilization/time roundtrip");
-    require(c.hardware_model==d.hardware_model && c.role==d.role && c.routing_error==d.routing_error && c.route==d.route,"Enum/route roundtrip");
-    require(c.route_back==d.route_back && c.snr_towards==d.snr_towards && c.snr_back==d.snr_back &&
-        c.routing_variant==d.routing_variant,"Independent route/SNR/variant roundtrip");
     require(actual.receiver_position && actual.receiver_position->latitude==fix().latitude && actual.receiver_position->longitude==fix().longitude &&
         actual.receiver_position->monotonic_seconds==fix().monotonic_seconds && actual.receiver_position->hdop==fix().hdop &&
         actual.receiver_position->source==fix().source && actual.receiver_position->satellites==11,"Receiver fix roundtrip");
+}
+void assert_metadata_columns(const Record& row) {
+    for(const char* field:{"profile_id","content_kind","text","origin","destination","packet_id","port","hop_limit","hop_start",
+        "channel_hash","next_hop","relay_node","want_ack","via_mqtt","want_response","node_id","long_name","short_name",
+        "sender_latitude","sender_longitude","sender_altitude","voltage","temperature","humidity","battery_percent",
+        "channel_utilization","air_util_tx","reported_time","hardware_model","role","routing_error","route","request_id",
+        "reply_id","signature_present","routing_variant","route_back","snr_towards_db_x4","snr_back_db_x4"})
+        require(!row.contains(field),"Semantic/identity column remains in metadata export");
 }
 int schema_version(const std::filesystem::path& path) {
     sqlite3* db=nullptr;sqlite3_stmt* statement=nullptr;
@@ -107,8 +96,11 @@ int schema_version(const std::filesystem::path& path) {
     const int version=sqlite3_column_int(statement,0);sqlite3_finalize(statement);sqlite3_close(db);return version;
 }
 void make_legacy(const std::filesystem::path& path,int version) {
-    execute_sql(path,"DROP TABLE waveform_observations;DROP TABLE discovery_status;DROP TABLE discovery_bands;DROP TABLE discovery_gaps;ALTER TABLE session DROP COLUMN discover_lora;");
-    execute_sql(path,"PRAGMA journal_mode=DELETE;DROP TABLE spectrum_tiles;DROP TABLE spectrum_events;DROP TABLE coverage_gaps;DROP TABLE survey_metrology;");
+    // These fixtures predate both optional extensions; changing user_version
+    // alone must not leave a newly created decoder table in an old schema.
+    execute_sql(path,"DROP TABLE metadata_policy;DROP TABLE automatic_decoder;");
+    if(version<5)execute_sql(path,"DROP TABLE waveform_observations;DROP TABLE discovery_status;DROP TABLE discovery_bands;DROP TABLE discovery_gaps;ALTER TABLE session DROP COLUMN discover_lora;");
+    if(version<4)execute_sql(path,"PRAGMA journal_mode=DELETE;DROP TABLE spectrum_tiles;DROP TABLE spectrum_events;DROP TABLE coverage_gaps;DROP TABLE survey_metrology;");
     if(version<3)execute_sql(path,"DROP TABLE route_details;"
         "ALTER TABLE receptions DROP COLUMN evidence_port;ALTER TABLE receptions DROP COLUMN evidence_signature_present;"
         "ALTER TABLE receptions DROP COLUMN request_id;ALTER TABLE receptions DROP COLUMN reply_id;"
@@ -203,10 +195,9 @@ void calibration_storage(const std::filesystem::path& directory) {
         const auto records=csv_records(exported);
         require(records[0].at("tuning_offset_hz")=="0" && records[0].at("tuner_command_hz")=="907500000","Version 1 CSV calibration provenance");
         rejects([&]{reader.append(fix());},"Legacy readonly reader accepted a write");
-        const auto copied=directory/"legacy-v1-copy.sqlite";reader.save_copy(copied.string());
-        require(schema_version(copied)==1,"Save copy must not migrate historical schemas");
-        ovmesh::SessionStore copied_reader;copied_reader.open_readonly(copied.string());
-        require(copied_reader.read().session_id==saved.session_id,"Historical copy preserves session identity");
+        const auto copied=directory/"legacy-v1-copy.sqlite";
+        rejects([&]{reader.save_copy(copied.string());},"Unmarked historical copy accepted");
+        require(!std::filesystem::exists(copied),"Rejected historical copy created a destination");
     }
     require(schema_version(legacy)==1 && contents(legacy)==legacy_before,"Legacy schema was migrated or modified");
     require(!std::filesystem::exists(legacy.string()+"-wal") && !std::filesystem::exists(legacy.string()+"-shm"),"Legacy readonly open created journal files");
@@ -295,8 +286,6 @@ void spectrum_storage(const std::filesystem::path& directory) {
     require(csv_data.find("SYNTHETIC_PRIVATE")==std::string::npos&&csv_data.find("0.1234567")==std::string::npos,"Spectrum export disclosed notes or receiver coordinates");
     size_t activity_rows=0,tiles=0,events=0,gaps=0;for(const auto& row:csv_records(csv)){if(row.at("record_type")=="spectrum_activity_run"){++activity_rows;require(!row.at("activity_mask_hex").empty()&&!row.at("activity_frame_count").empty(),"Activity reconstruction metadata missing");}if(row.at("record_type")=="spectrum_tile"){++tiles;require(row.at("mean_centidb_le_hex")=="90e890e8","Quantized power array export changed");}if(row.at("record_type")=="spectrum_event")++events;if(row.at("record_type")=="coverage_gap")++gaps;}
     require(tiles==3&&events==3&&gaps==1&&activity_rows==12,"Export lost full detailed RF records");
-    ovmesh::ExportOptions content_only;content_only.include_content=true;const auto content_csv=directory/"spectrum-content-only.csv";geographic.export_csv(content_csv.string(),content_only);
-    require(contents(content_csv).find("SYNTHETIC_PRIVATE_NOTES")==std::string::npos,"Decoded-content opt-in unexpectedly disclosed provenance");
     ovmesh::ExportOptions provenance;provenance.include_provenance=true;const auto provenance_csv=directory/"spectrum-provenance.csv";geographic.export_csv(provenance_csv.string(),provenance);
     require(contents(provenance_csv).find("SYNTHETIC_PRIVATE_NOTES")!=std::string::npos&&contents(provenance_csv).find("0.1234567")==std::string::npos,"Independent provenance opt-in failed");
     ovmesh::ExportOptions full;full.include_receiver_positions=true;full.coordinate_decimals=3;
@@ -314,128 +303,82 @@ void spectrum_storage(const std::filesystem::path& directory) {
     {ovmesh::SessionStore writer;writer.create(quiet.string(),config,"synthetic-quiet");auto tile=make_tile(false);tile.frame_count=128;tile.end_sample=128*4096;tile.elapsed_end_seconds=double(tile.end_sample)/config.sample_rate;tile.utc_end_seconds=1700000000+tile.elapsed_end_seconds;tile.activity.assign(128,0);writer.append(tile);}
     {ovmesh::SessionStore reader;reader.open_readonly(quiet.string());const auto result=reader.analyze({});require(result.tile_count==1&&result.observed_seconds>0&&result.busy_seconds==0,"Valid compressed quiet mask failed roundtrip");}
 }
-void route_evidence_storage(const std::filesystem::path& directory) {
-    const auto path=directory/"route-evidence.sqlite";
-    auto request=fixture(1);auto& request_a=*request.decoded.authorized;
-    request_a.port=5;request_a.content=ovmesh::protocol::DecodedContent{};
-    request_a.content.kind="routing";request_a.content.routing_variant="request";
-    request.decoded.evidence->port=5;
-    auto reply=fixture(2);reply.decoded.authorized->port=5;reply.decoded.evidence->port=5;
-    reply.decoded.authorized->content.kind="routing";reply.decoded.authorized->content.routing_variant="reply";
-    reply.decoded.authorized->content.routing_error.reset();
-    auto error=fixture(3);error.decoded.authorized->port=5;error.decoded.evidence->port=5;
-    error.decoded.authorized->content=ovmesh::protocol::DecodedContent{};
-    error.decoded.authorized->content.kind="routing";error.decoded.authorized->content.routing_variant="error";
-    error.decoded.authorized->content.routing_error=0;
-    auto empty_trace=fixture(4);empty_trace.decoded.authorized->port=70;empty_trace.decoded.evidence->port=70;
-    empty_trace.decoded.authorized->content=ovmesh::protocol::DecodedContent{};
-    empty_trace.decoded.authorized->content.kind="traceroute";
-    auto unsupported=fixture(5);unsupported.decoded.authorized.reset();unsupported.decoded.status=ovmesh::protocol::Status::unsupported_payload;
-    unsupported.decoded.classification="possible Meshtastic";unsupported.decoded.evidence=ovmesh::protocol::EnvelopeEvidence{42,true};
-    auto maximum=fixture(6);auto& maximum_c=maximum.decoded.authorized->content;
-    maximum_c.route.resize(32,1);maximum_c.route_back.resize(32,UINT32_MAX);
-    maximum_c.snr_towards.resize(32,-128);maximum_c.snr_back.clear();
+void metadata_evidence_storage(const std::filesystem::path& directory) {
+    const auto path=directory/"metadata-evidence.sqlite";
     {
-        ovmesh::SessionStore writer;writer.create(path.string(),detailed_config(),"synthetic-route-evidence");
-        for(const auto* reception:{&request,&reply,&error,&empty_trace,&unsupported,&maximum})writer.append(*reception);
-        auto bad=unsupported;bad.crc_valid=false;rejects([&]{writer.append(bad);},"Bad CRC envelope evidence retained");
-        bad=unsupported;bad.header_valid=false;rejects([&]{writer.append(bad);},"Bad header envelope evidence retained");
-        for (uint32_t port : {0u,65536u}) {
-            bad=unsupported;bad.decoded.evidence->port=port;
-            rejects([&]{writer.append(bad);},"Out of range evidence port retained");
-        }
-        bad=unsupported;bad.decoded.status=ovmesh::protocol::Status::no_matching_key;
-        rejects([&]{writer.append(bad);},"Unmatched-key envelope evidence retained");
-        bad=unsupported;bad.decoded.evidence.reset();rejects([&]{writer.append(bad);},"Possible Meshtastic without evidence retained");
-        bad=reply;bad.decoded.evidence->port=1;rejects([&]{writer.append(bad);},"Inconsistent envelope port retained");
-        bad=reply;bad.decoded.evidence->signature_present=false;rejects([&]{writer.append(bad);},"Inconsistent signature presence retained");
-        bad=reply;bad.decoded.authorized->content.routing_variant="ACK";rejects([&]{writer.append(bad);},"Invented routing variant retained");
-        bad=reply;bad.decoded.authorized->port=70;bad.decoded.evidence->port=70;
-        rejects([&]{writer.append(bad);},"Routing wrapper variant attached to direct traceroute");
-        for(unsigned which=0;which<4;++which) {
-            bad=maximum;auto& c=bad.decoded.authorized->content;
-            if(which==0)c.route.resize(33);if(which==1)c.route_back.resize(33);
-            if(which==2)c.snr_towards.resize(33);if(which==3)c.snr_back.resize(33);
-            rejects([&]{writer.append(bad);},"Route or SNR list exceeded 32 entries");
-        }
+        ovmesh::SessionStore writer;writer.create(path.string(),detailed_config(),"synthetic-metadata-evidence");
+        for(uint64_t id=1;id<=4;++id){auto record=fixture(id);record.decoded.evidence->port=id==1?1:id==2?5:id==3?70:67;writer.append(record);}
+        auto unsupported=fixture(5);unsupported.decoded.status=ovmesh::protocol::Status::unsupported_payload;
+        unsupported.decoded.classification="possible Meshtastic";unsupported.decoded.evidence=ovmesh::protocol::EnvelopeEvidence{42,true};writer.append(unsupported);
+        auto bad=unsupported;bad.crc_valid=false;rejects([&]{writer.append(bad);},"Bad CRC evidence retained");
+        bad=unsupported;bad.header_valid=false;rejects([&]{writer.append(bad);},"Bad header evidence retained");
+        for(uint32_t port:{0u,65536u}){bad=unsupported;bad.decoded.evidence->port=port;rejects([&]{writer.append(bad);},"Invalid evidence port retained");}
+        bad=unsupported;bad.decoded.status=ovmesh::protocol::Status::no_matching_key;rejects([&]{writer.append(bad);},"Unmatched-key evidence retained");
+        bad=unsupported;bad.decoded.evidence.reset();rejects([&]{writer.append(bad);},"Possible classification lacks evidence");
     }
     const auto before=contents(path);
     ovmesh::SessionStore reader;reader.open_readonly(path.string());const auto restored=reader.read();
-    require(restored.receptions.size()==6 && restored.authorized_messages==5,"Evidence-only record counted as authorized content");
-    content_equal(restored.receptions[0],maximum);content_equal(restored.receptions[2],empty_trace);
-    content_equal(restored.receptions[3],error);content_equal(restored.receptions[4],reply);content_equal(restored.receptions[5],request);
-    const auto& unknown=restored.receptions[1].decoded;
-    require(!unknown.authorized && unknown.evidence && unknown.evidence->port==42 && unknown.evidence->signature_present &&
-        unknown.classification=="possible Meshtastic" && unknown.authentication=="not authenticated","Unsupported payload evidence roundtrip changed");
-    require(!restored.receptions[5].decoded.authorized->content.routing_error,"Empty routing request became an ACK");
-    for(const bool include:{false,true}) {
-        ovmesh::ExportOptions options;options.include_content=include;
-        const auto exported=directory/(include?"route-full.csv":"route-redacted.csv");reader.export_csv(exported.string(),options);
-        bool found_unsupported=false,found_empty_request=false,found_reply=false;
-        for(const auto& row:csv_records(exported))if(row.at("record_type")=="reception") {
-            if(row.at("classification")=="possible Meshtastic") {
-                found_unsupported=true;require(row.at("evidence_port")=="42" && row.at("evidence_signature_present")=="1","Unsupported envelope metadata missing");
-                for(const char* field:{"origin","destination","packet_id","profile_id","port","text","request_id","reply_id","signature_present","routing_variant","route","route_back","snr_towards_db_x4","snr_back_db_x4"})
-                    require(row.at(field).empty(),"Unsupported payload gained content or correlation fields");
-            }
-            if(include && row.at("routing_variant")=="request") {
-                found_empty_request=true;require(row.at("routing_error").empty() && row.at("route").empty() && row.at("snr_towards_db_x4")=="[]","Empty request export invented ACK or hops");
-            }
-            if(include && row.at("routing_variant")=="reply") {
-                found_reply=true;require(row.at("route_back")=="4294967295;16909060;0" && row.at("snr_towards_db_x4")=="[-128]","Reply route/SNR export changed");
-            }
-        }
-        require(found_unsupported && (!include || (found_empty_request && found_reply)),"Routing/evidence export records missing");
-    }
-    require(contents(path)==before,"Schema 3 inspection changed the saved file");
-
+    require(restored.receptions.size()==5&&restored.classified_receptions==4,"Classification counts include only classified records");
+    require(restored.receptions[0].decoded.evidence->port==42&&restored.receptions[0].decoded.classification=="possible Meshtastic","Unsupported envelope evidence preserved");
+    const auto exported=directory/"metadata-evidence.csv";reader.export_csv(exported.string(),{});
+    for(const auto& row:csv_records(exported))assert_metadata_columns(row);
+    require(contents(path)==before,"Metadata reading/export changed original");
     unsigned bad_index=0;
-    for(const std::string& sql:{
-            "UPDATE receptions SET evidence_port=NULL WHERE id=5;", "UPDATE receptions SET evidence_signature_present=2 WHERE id=5;",
-            "UPDATE receptions SET evidence_port=-1 WHERE id=5;", "UPDATE receptions SET evidence_port=4294967296 WHERE id=5;",
-            "UPDATE receptions SET evidence_port=0 WHERE id=5;", "UPDATE receptions SET evidence_port=65536 WHERE id=5;",
-            "UPDATE receptions SET request_id=7 WHERE id=5;", "UPDATE receptions SET signature_present=0 WHERE id=5;",
-            "UPDATE receptions SET request_id=-1 WHERE id=1;", "UPDATE receptions SET reply_id=4294967296 WHERE id=1;",
-            "UPDATE receptions SET routing_variant=NULL WHERE id=1;", "UPDATE receptions SET routing_variant='ack' WHERE id=1;",
-            "UPDATE route_details SET value=2147483648 WHERE reception=2 AND kind='snr_towards';",
-            "UPDATE route_details SET value=-2147483649 WHERE reception=2 AND kind='snr_towards';",
-            "UPDATE route_details SET value=X'00' WHERE reception=2 AND kind='snr_towards';",
-            "UPDATE route_details SET value=-1 WHERE reception=2 AND kind='route_back';",
-            "UPDATE route_details SET value=4294967296 WHERE reception=2 AND kind='route_back';",
-            "UPDATE route_details SET step=1 WHERE reception=2 AND kind='snr_towards';",
-            "UPDATE route_details SET kind='unknown' WHERE reception=2 AND kind='snr_towards';",
-            "INSERT INTO route_details VALUES(5,'snr_back',0,1);",
-            "INSERT INTO route_details VALUES(6,'snr_towards',32,1);", "INSERT INTO routes VALUES(6,32,1);"}) {
-        const auto malformed=directory/("bad-route-evidence-"+std::to_string(bad_index++)+".sqlite");std::filesystem::copy_file(path,malformed);
-        execute_sql(malformed,sql);ovmesh::SessionStore rejected;rejected.open_readonly(malformed.string());
-        rejects([&]{rejected.read();},"Malformed route/evidence record accepted");
-        rejects([&]{rejected.export_csv((directory/("bad-route-export-"+std::to_string(bad_index)+".csv")).string(),{});},"Malformed route/evidence record exported");
+    for(const std::string& mutation:{"UPDATE receptions SET evidence_port=NULL WHERE id=5;","UPDATE receptions SET evidence_signature_present=2 WHERE id=5;",
+        "UPDATE receptions SET evidence_port=-1 WHERE id=5;","UPDATE receptions SET evidence_port=4294967296 WHERE id=5;",
+        "UPDATE receptions SET evidence_port=0 WHERE id=5;","UPDATE receptions SET evidence_port=65536 WHERE id=5;"}) {
+        const auto malformed=directory/("bad-evidence-"+std::to_string(bad_index++)+".sqlite");std::filesystem::copy_file(path,malformed);
+        execute_sql(malformed,mutation);ovmesh::SessionStore rejected;rejected.open_readonly(malformed.string());
+        rejects([&]{rejected.read();},"Malformed evidence accepted");
+        rejects([&]{rejected.export_csv((directory/("bad-export-"+std::to_string(bad_index)+".csv")).string(),{});},"Malformed evidence exported");
     }
-    for(const int version:{1,2}) {
-        const auto legacy=directory/("legacy-content-v"+std::to_string(version)+".sqlite");
-        {ovmesh::SessionStore writer;writer.create(legacy.string(),detailed_config(),"synthetic-legacy-content");writer.append(fixture());}
+    // Oversized and malformed semantic fields intentionally would fail the old
+    // reader. Metadata projection must never load or validate those values.
+    for(const int version:{1,2,3,4,5,6}) {
+        const auto legacy=directory/("legacy-private-v"+std::to_string(version)+".sqlite");
+        auto config=detailed_config();config.compact_recording=version==6;
+        {ovmesh::SessionStore writer;writer.create(legacy.string(),config,"synthetic-legacy-private");writer.append(fixture());writer.append(fix());}
         make_legacy(legacy,version);
-        for(unsigned i=2;i<64;++i)execute_sql(legacy,"INSERT INTO routes VALUES(1,"+std::to_string(i)+",1);");
+        execute_sql(legacy,"UPDATE receptions SET profile='SYNTHETIC_PRIVATE_PROFILE',origin=286331153,destination=572662306,packet_id=858993459,"
+            "text='SYNTHETIC_PRIVATE_MESSAGE',node_id='SYNTHETIC_PRIVATE_ID',long_name='SYNTHETIC_PRIVATE_NAME',short_name='SECRET',"
+            "latitude=999,longitude=999,voltage=X'ff',temperature='SYNTHETIC_PRIVATE_TELEMETRY';"
+            "INSERT INTO routes VALUES(1,999999,'SYNTHETIC_PRIVATE_ROUTE');");
+        if(version>=3)execute_sql(legacy,"INSERT INTO route_details VALUES(1,'SYNTHETIC_PRIVATE_ROUTE_BACK',999999,X'ff');UPDATE receptions SET routing_variant='SYNTHETIC_PRIVATE_ROUTING',request_id=X'ff';");
         const auto legacy_before=contents(legacy);
-        {
-            ovmesh::SessionStore old;old.open_readonly(legacy.string());const auto saved=old.read();
-            require(saved.receptions.size()==1 && saved.receptions[0].decoded.authorized,"Legacy authorized content lost");
-            const auto& a=*saved.receptions[0].decoded.authorized;
-            require(!saved.receptions[0].decoded.evidence && a.request_id==0 && a.reply_id==0 && !a.signature_present &&
-                a.content.routing_variant.empty() && a.content.route_back.empty() && a.content.snr_towards.empty() && a.content.snr_back.empty(),"Legacy absent fields fabricated");
-            require(a.content.route.size()==64,"Previously valid legacy route rejected or truncated");
-            const auto exported=directory/("legacy-content-v"+std::to_string(version)+".csv");
-            ovmesh::ExportOptions full;full.include_content=true;old.export_csv(exported.string(),full);
-            for(const auto& row:csv_records(exported))if(row.at("record_type")=="reception") {
-                require(!row.at("text").empty(),"Legacy authorized export lost content");
-                for(const char* field:{"evidence_port","evidence_signature_present","request_id","reply_id","signature_present","routing_variant","route_back","snr_towards_db_x4","snr_back_db_x4"})
-                    require(row.at(field).empty(),"Unavailable legacy fields fabricated in full export");
-            }
-            rejects([&]{old.append(fixture(2));},"Legacy content reader accepted a write");
-        }
-        require(schema_version(legacy)==version && contents(legacy)==legacy_before,"Legacy content reader migrated or modified file");
+        ovmesh::SessionStore old;old.open_readonly(legacy.string());const auto saved=old.read();
+        require(saved.total_receptions==1&&saved.classified_receptions==1&&saved.receptions.size()==1&&saved.track.size()==1,"Legacy RF/GPS/counts lost");
+        auto expected=fixture();if(version<3)expected.decoded.evidence.reset();metadata_equal(saved.receptions[0],expected);
+        size_t n=0;old.visit_receptions([&](const auto& r){metadata_equal(r,expected);++n;});require(n==1,"Legacy visitor lost metadata");
+        const auto csv=directory/("legacy-private-v"+std::to_string(version)+".csv");
+        ovmesh::ExportOptions options;options.include_receiver_positions=true;options.include_provenance=true;old.export_csv(csv.string(),options);
+        require(contents(csv).find("SYNTHETIC_PRIVATE_")==std::string::npos,"Legacy semantic fields leaked through archive");
+        for(const auto& row:csv_records(csv))assert_metadata_columns(row);
+        const auto geo=directory/("legacy-private-v"+std::to_string(version)+".geojson");old.export_geojson(geo.string(),options);
+        require(contents(geo).find("SYNTHETIC_PRIVATE_")==std::string::npos,"Legacy semantic fields leaked through GeoJSON");
+        const auto copy=directory/("legacy-copy-v"+std::to_string(version)+".sqlite");
+        rejects([&]{old.save_copy(copy.string());},"Unmarked historical content copied");require(!std::filesystem::exists(copy),"Rejected old copy left destination");
+        require(contents(legacy)==legacy_before,"Legacy private source changed");
+    }
+    // A marked file is not proof that externally added data is harmless. Rebuild
+    // from allowed values, dropping live reserved fields and free-page remnants.
+    const auto injected=directory/"marked-injected.sqlite";std::filesystem::copy_file(path,injected);
+    execute_sql(injected,"PRAGMA secure_delete=OFF;UPDATE receptions SET text='SYNTHETIC_PRIVATE_LIVE',origin=286331153;"
+        "INSERT INTO routes VALUES(1,0,'SYNTHETIC_PRIVATE_ROUTE');"
+        "INSERT INTO route_details VALUES(1,'SYNTHETIC_PRIVATE_FREED',0,zeroblob(200000));"
+        "DELETE FROM route_details;");
+    require(contents(injected).find("SYNTHETIC_PRIVATE_FREED")!=std::string::npos,"Deleted-content fixture must leave identifiable remnants");
+    const auto injected_before=contents(injected);ovmesh::SessionStore marked;marked.open_readonly(injected.string());
+    const auto clean=directory/"reconstructed-copy.sqlite";marked.save_copy(clean.string());
+    require(contents(clean).find("SYNTHETIC_PRIVATE_")==std::string::npos,"Logical copy included private live values or freed pages");
+    require(contents(injected)==injected_before,"Reconstruction modified its source");
+    ovmesh::SessionStore copied;copied.open_readonly(clean.string());require(copied.read().total_receptions==5,"Reconstruction lost receptions");
+    size_t n=0;copied.visit_receptions([&](const auto& r){require(r.frequency_hz==fixture().frequency_hz&&r.receiver_position->latitude==fix().latitude,"Reconstruction changed RF/GPS values");++n;});require(n==5,"Reconstructed full metadata history lost");
+    for(const std::string& mutation:{"UPDATE metadata_policy SET policy='unknown';","DELETE FROM metadata_policy;","INSERT INTO metadata_policy VALUES(2,'metadata-only-v1');","ALTER TABLE metadata_policy ADD COLUMN extra TEXT;"}) {
+        const auto bad=directory/("bad-policy-"+std::to_string(bad_index++)+".sqlite");std::filesystem::copy_file(path,bad);execute_sql(bad,mutation);
+        rejects([&]{ovmesh::SessionStore invalid;invalid.open_readonly(bad.string());},"Malformed metadata policy accepted");
     }
 }
+
 }
 
 int main() {
@@ -444,15 +387,15 @@ int main() {
         while(!std::filesystem::exists(root/"CMakeLists.txt") && root.has_parent_path() && root!=root.parent_path())root=root.parent_path();
         require(std::filesystem::exists(root/"include/ovmesh/engine.hpp"),"Run tests from within this repository");
         const auto unique=std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-        const auto directory=root/"build/test-output"/("storage-"+unique);std::filesystem::create_directories(directory);
+        const auto directory=root/"build/publication-review"/("storage-"+unique);std::filesystem::create_directories(directory);
         calibration_storage(directory);
         rtl_receiver_storage(directory);
         spectrum_storage(directory);
-        route_evidence_storage(directory);
+        metadata_evidence_storage(directory);
         const auto path=directory/"roundtrip.sqlite";
         ovmesh::ReceiverConfig config;config.compact_recording=false;config.session_title="Synthetic storage fixture";
         ovmesh::Snapshot state;state.config=config;state.elapsed_seconds=100;state.input_seconds=98;state.measurement_seconds=1;
-        state.delivered_samples=1000;state.dropped_samples=12;state.total_receptions=600;state.authorized_messages=599;
+        state.delivered_samples=1000;state.dropped_samples=12;state.total_receptions=600;state.classified_receptions=599;
         state.frequencies={{906875000,250000,-80,-20,1,0.25},{907125000,250000,-120,-120,0,0}};
         state.lane_health.push_back({"Synthetic profile",906875000,98,600,599,1,2,"stopped",{}});
         {
@@ -460,13 +403,10 @@ int main() {
             auto bad=fixture();bad.crc_valid=false;rejects([&]{store.append(bad);},"Bad CRC content retained");
             bad=fixture();bad.decoded.status=ovmesh::protocol::Status::no_matching_key;rejects([&]{store.append(bad);},"Unauthorized content retained");
             bad=fixture();bad.receiver_position->latitude=91;rejects([&]{store.append(bad);},"Invalid receiver coordinates retained");
-            bad=fixture();bad.decoded.authorized->content.longitude=181;rejects([&]{store.append(bad);},"Invalid sender coordinates retained");
             bad=fixture();bad.snr_db=std::numeric_limits<double>::quiet_NaN();rejects([&]{store.append(bad);},"NaN retained");
-            bad=fixture();bad.decoded.authorized->content.route.resize(33);rejects([&]{store.append(bad);},"Oversize route retained");
-            bad=fixture();bad.decoded.authorized->content.kind="arbitrary bytes";rejects([&]{store.append(bad);},"Unsupported content kind retained");
             bad=fixture();bad.decoded.authentication="authenticated sender";rejects([&]{store.append(bad);},"Unjustified authentication claim retained");
             for(uint64_t i=1;i<=599;++i)store.append(fixture(i));
-            auto unknown=fixture(600);unknown.decoded.authorized.reset();unknown.decoded.status=ovmesh::protocol::Status::no_matching_key;
+            auto unknown=fixture(600);unknown.decoded.status=ovmesh::protocol::Status::no_matching_key;
             unknown.decoded.evidence.reset();
             unknown.decoded.classification="SYNTHETIC_UNAPPROVED_METADATA";store.append(unknown);store.append(fix());
             ovmesh::SurveyWindow window;window.id=1;window.utc_start_seconds=1700000000;window.utc_end_seconds=1700000005;
@@ -491,8 +431,8 @@ int main() {
         {ovmesh::SessionStore collision;rejects([&]{collision.create(path.string(),config,"other");},"Existing session overwritten");}
         require(contents(path)==before,"Existing session contents changed");
         ovmesh::SessionStore store;store.open_readonly(path.string());const auto restored=store.read();
-        require(!restored.incomplete && restored.total_receptions==600 && restored.authorized_messages==599,"Complete counts wrong");
-        require(restored.receptions.size()==512,"Bounded UI history wrong");content_equal(restored.receptions[1],fixture(599));
+        require(!restored.incomplete && restored.total_receptions==600 && restored.classified_receptions==599,"Complete counts wrong");
+        require(restored.receptions.size()==512,"Bounded UI history wrong");metadata_equal(restored.receptions[1],fixture(599));
         require(restored.track.size()==1 && restored.track[0].monotonic_seconds==fix().monotonic_seconds,"Track timing lost");
         require(restored.lane_health.size()==1 && restored.lane_health[0].resets==2,"Lane health lost");
         const auto copied_path=directory/"saved-copy.sqlite";store.save_copy(copied_path.string());
@@ -500,9 +440,9 @@ int main() {
             "Save copy is a standalone database without required WAL sidecars");
         {
             ovmesh::SessionStore copied;copied.open_readonly(copied_path.string());const auto result=copied.read();
-            require(result.total_receptions==restored.total_receptions&&result.authorized_messages==restored.authorized_messages&&
+            require(result.total_receptions==restored.total_receptions&&result.classified_receptions==restored.classified_receptions&&
                 result.session_id==restored.session_id&&!result.incomplete,"Save copy preserves complete session metadata");
-            content_equal(result.receptions[1],fixture(599));
+            metadata_equal(result.receptions[1],fixture(599));
             size_t count=0;copied.visit_receptions([&](const auto&){++count;});
             require(count==600,"Save copy contains full saved history beyond the 512-row UI limit");
         }
@@ -524,33 +464,25 @@ int main() {
         const auto redacted_rows=csv_records(redacted);size_t receptions=0,window_bins=0;bool unavailable=false;
         for(const auto& row:redacted_rows) {
             if(row.at("record_type")=="reception"){
-                ++receptions;require(row.at("text").empty() && row.at("receiver_latitude").empty() && row.at("origin").empty(),"Default redaction failed");
-                for(const char* field:{"request_id","reply_id","signature_present","routing_variant","route","route_back","snr_towards_db_x4","snr_back_db_x4"})
-                    require(row.at(field).empty(),"New authorized fields escaped default redaction");
+                ++receptions;assert_metadata_columns(row);require(row.at("receiver_latitude").empty(),"Default GPS redaction failed");
                 if(row.at("classification")=="likely Meshtastic")require(row.at("evidence_port")=="1" && row.at("evidence_signature_present")=="1","Approved envelope evidence redacted unexpectedly");
             }
             if(row.at("record_type")=="frequency" && row.at("observed_seconds")=="0")unavailable=row.at("occupancy_fraction").empty();
             if(row.at("record_type")=="survey_window_bin") {
-                ++window_bins;require(row.at("receiver_latitude").empty() && row.at("text").empty(),"Window export disclosed GPS/content by default");
+                ++window_bins;require(row.at("receiver_latitude").empty(),"Window export disclosed GPS/content by default");
                 require(row.at("classification")=="sampled RF activity" && row.at("position_association")=="window-end","Unknown RF/window association lost");
                 require(!row.at("window_utc_start_seconds").empty() && !row.at("window_elapsed_end_seconds").empty(),"Window timing absent");
             }
         }
         require(receptions==600,"Export used recent UI subset");require(window_bins==4,"Window RF bins missing");require(unavailable,"Zero observation became zero occupancy");
-        ovmesh::ExportOptions full;full.include_content=true;full.include_receiver_positions=true;full.coordinate_decimals=3;
+        ovmesh::ExportOptions full;full.include_receiver_positions=true;full.coordinate_decimals=3;
         const auto full_path=directory/"full.csv";store.export_csv(full_path.string(),full);const auto full_rows=csv_records(full_path);
-        bool full_content=false;
-        for(const auto& row:full_rows)if(row.at("record_type")=="reception" && !row.at("text").empty()) {
-            require(row.at("text").rfind("'=",0)==0 && row.at("long_name").rfind("'  =",0)==0,"CSV formula neutralization failed");
-            require(row.at("receiver_latitude")=="0.123" && row.at("receiver_longitude")=="-0.765","GPS precision failed");
-            require(row.at("sender_latitude")=="-0.235" && row.at("sender_longitude")=="0.877","Sender position export failed");
-            require(row.at("node_id")=="!11111111" && row.at("voltage")=="3.1415000000000002" && row.at("temperature")=="-5.5","Typed content export failed");
-            require(row.at("route")=="305419896;2271560481" && row.at("hardware_model")=="42" && row.at("routing_error")=="3","Route/enum export failed");
-            require(row.at("request_id")=="878082192" && row.at("reply_id")=="1164413185" && row.at("signature_present")=="1","Correlation/signature export failed");
-            require(row.at("route_back")=="4294967295;16909060;0" && row.at("snr_towards_db_x4")=="[-128]" &&
-                row.at("snr_back_db_x4")=="[-2147483648,0,7,2147483647]","Independent raw route/SNR arrays changed");full_content=true;break;
-        }
-        require(full_content,"No full content exported");
+        bool located_reception=false;
+        for(const auto& row:full_rows){assert_metadata_columns(row);if(row.at("record_type")=="reception") {
+            require(row.at("receiver_latitude")=="0.123"&&row.at("receiver_longitude")=="-0.765","GPS precision failed");located_reception=true;
+        }}
+        require(located_reception,"No reception metadata exported");
+        require(ovmesh::csv_text("  =SYNTHETIC()") == "\"'  =SYNTHETIC()\"","CSV formula neutralization failed");
         bool located_window=false,unlocated_window=false;
         for(const auto& row:full_rows)if(row.at("record_type")=="survey_window_bin") {
             if(row.at("window_id")=="1")located_window=row.at("receiver_latitude")=="0.123" && row.at("receiver_longitude")=="-0.765";

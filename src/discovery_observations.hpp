@@ -53,7 +53,7 @@ public:
         if (subband >= subbands_ || stride != rate_ / 2000000 ||
             first_input_sample > maximum_coordinate ||
             !std::isfinite(found.center_hz) || found.center_hz <= 0 ||
-            (found.bandwidth_hz != 125000 && found.bandwidth_hz != 250000 && found.bandwidth_hz != 500000) ||
+            (found.bandwidth_hz != 15625 && found.bandwidth_hz != 62500 && found.bandwidth_hz != 125000 && found.bandwidth_hz != 250000 && found.bandwidth_hz != 500000) ||
             found.spreading_factor < 7 || found.spreading_factor > 12 ||
             found.center_hz < found.bandwidth_hz / 2. ||
             !std::isfinite(found.first_observed_upchirp_sample) ||

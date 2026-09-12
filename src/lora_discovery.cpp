@@ -3,6 +3,7 @@
 #include "discovery_fft.hpp"
 #include "discovery_repeat.hpp"
 #include "discovery_chirp_screen.hpp"
+#include "discovery_iq_wipe.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -15,30 +16,38 @@ namespace ovmesh {
 namespace {
 using C = std::complex<float>;
 constexpr double rate = 2'000'000;
-constexpr size_t fft_capacity = 131072;
+constexpr size_t fft_capacity = 262144;
 // A candidate may need up to one more phase checkpoint before both complete
 // delimiter symbols are available. Retain four longest symbols for that check.
-constexpr size_t capacity = 262144;
+constexpr size_t capacity = 524288;
 constexpr size_t max_components = 8;
 struct Hypothesis {
     uint32_t bw;
     unsigned sf;
     size_t n;
     std::vector<C> up;
+    std::vector<std::complex<double>> continuity;
 };
 const std::vector<Hypothesis>& bank() {
     static const auto result = [] {
         std::vector<Hypothesis> v;
-        for (uint32_t bw : {125000u, 250000u, 500000u}) {
-            for (unsigned sf = 7; sf <= 12; ++sf) {
+        for (uint32_t bw : {15625u, 62500u, 125000u, 250000u, 500000u}) {
+            for (unsigned sf = 7; sf <= (bw == 15625u ? 10u : 12u); ++sf) {
                 const auto n = static_cast<size_t>(rate / bw) * (size_t{1} << sf);
-                Hypothesis h{bw, sf, n, std::vector<C>(n)};
+                const auto period = static_cast<size_t>(rate / bw);
+                Hypothesis h{bw, sf, n, std::vector<C>(n), std::vector<std::complex<double>>(4 * period)};
                 for (size_t i = 0; i < n; ++i) {
                     const double t = static_cast<double>(i) / rate;
                     const double cycles = -.5 * bw * t + .5 * bw * rate / static_cast<double>(n) * t * t;
                     const double a = 2 * std::numbers::pi * std::remainder(cycles, 1.);
                     h.up[i] = C(static_cast<float>(std::cos(a)), static_cast<float>(std::sin(a)));
                 }
+                // Quarter-sample reset continuity depends only on bandwidth,
+                // not the candidate or branch. Retain the original double
+                // coefficient formula once in the immutable hypothesis bank.
+                for (size_t k = 0; k < 4 * period; ++k)
+                    h.continuity[k] = std::polar(1., -2 * std::numbers::pi * static_cast<double>(k) /
+                                                   static_cast<double>(4 * period));
                 v.push_back(std::move(h));
             }
         }
@@ -57,6 +66,13 @@ const DiscoveryFftPlan& fft_plan(size_t length) {
     return plans.at(index);
 }
 struct Tone { double hz = 0, match = 0, power = 0, background = 0; };
+struct Tones {
+    std::array<Tone, max_components> values{};
+    size_t count = 0;
+    const Tone* begin() const { return values.data(); }
+    const Tone* end() const { return values.data() + count; }
+    std::span<const Tone> view() const { return {values.data(), count}; }
+};
 struct WrapFit { double center = 0, delta = 0, match = 0, component_power = 0; };
 struct WrapFits { std::array<WrapFit, max_components> values{}; size_t size = 0; };
 struct Chain {
@@ -81,13 +97,13 @@ struct Chain {
 struct LoRaPreambleDiscovery::Impl {
     double center;
     std::array<C, capacity> ring{};
-    DiscoveryRepeat repetition;
     DiscoveryChirpScreen screen;
     uint64_t end = 0, begin = 0;
     bool initialized = false;
     using Phase = std::array<Chain, max_components>;
     std::vector<std::array<Phase, 4>> chains{bank().size()};
     std::vector<C> work;
+    std::vector<float> powers;
     std::vector<double> spectral_prefix;
     std::vector<std::complex<double>> prefix_high, prefix_low;
     std::vector<LoRaDiscovery> recent;
@@ -95,17 +111,36 @@ struct LoRaPreambleDiscovery::Impl {
     explicit Impl(double frequency) : center(frequency) {
         if (!std::isfinite(center)) throw std::invalid_argument("Discovery center is not finite");
         work.reserve(fft_capacity);
+        powers.reserve(fft_capacity);
+        spectral_prefix.reserve(fft_capacity + 1);
+        // Prevent growth from releasing an older IQ-derived prefix allocation
+        // before clear_history() can erase it. Shrunk live tails are wiped below.
+        prefix_high.reserve(fft_capacity / 2 + 1);
+        prefix_low.reserve(fft_capacity / 2 + 1);
+    }
+    void clear_history() {
+        // Every discontinuity comes through here before replacing the bounds.
+        // Thus [begin,end) contains all ring slots written since the last wipe,
+        // including streams beginning at a nonzero or wrapped ring position.
+        if (initialized) discovery_detail::wipe_ring(ring, begin, end - begin);
+        screen.reset();
+        std::fill(work.begin(), work.end(), C{}); work.clear();
+        std::fill(prefix_high.begin(), prefix_high.end(), std::complex<double>{}); prefix_high.clear();
+        std::fill(prefix_low.begin(), prefix_low.end(), std::complex<double>{}); prefix_low.clear();
+        std::fill(powers.begin(), powers.end(), 0.f); powers.clear();
+        spectral_prefix.clear();
+        for (auto& phases : chains) phases = {};
+        recent.clear();
+        begin = end = 0;
+        initialized = false;
     }
     C sample(uint64_t index) const { return ring[index % capacity]; }
-    double coherence(size_t n) const {
-        return repetition.coherence(n);
-    }
     bool chirp_screen(const Hypothesis& h) const {
         return screen.passes(h.bw, h.sf);
     }
     double spectral_sum(size_t first, size_t count) const {
         const size_t n = work.size();
-        first %= n;
+        first &= n - 1;
         const size_t initial = std::min(count, n - first);
         return spectral_prefix[first + initial] - spectral_prefix[first] +
             (count > initial ? spectral_prefix[count - initial] : 0.);
@@ -116,18 +151,23 @@ struct LoRaPreambleDiscovery::Impl {
         // in their reference region, avoiding duplicate component tracks.
         constexpr size_t radius = 32, guard = 2;
         const size_t n = work.size();
-        const double reference = spectral_sum((index + n - radius) % n, radius - guard) +
-                                 spectral_sum((index + guard + 1) % n, radius - guard);
+        const double reference = spectral_sum((index + n - radius) & (n - 1), radius - guard) +
+                                 spectral_sum((index + guard + 1) & (n - 1), radius - guard);
         const double mean = reference / (2 * static_cast<double>(radius - guard));
         return std::max(mean, spectral_prefix.back() / static_cast<double>(n) * 1e-12);
     }
     double background_at(double hz) const {
-        const auto n = static_cast<long long>(work.size());
+        const auto n = work.size();
         const auto index = std::llround(hz * static_cast<double>(n) / rate);
-        return local_background(static_cast<size_t>((index % n + n) % n));
+        // FFT lengths are powers of two. Signed-to-unsigned conversion is
+        // defined modulo the unsigned range, including negative frequencies.
+        return local_background(static_cast<size_t>(index) & (n - 1));
     }
-    std::vector<Tone> tones(const Hypothesis& h, bool down) {
+    Tones tones(const Hypothesis& h, bool down) {
         ++counters.fft_searches;
+        // Erase an old larger transform before shrinking its live extent;
+        // otherwise reset() could no longer reach that IQ-derived tail.
+        if (2 * h.n < work.size()) std::fill(work.data() + 2 * h.n, work.data() + work.size(), C{});
         work.assign(2 * h.n, C{});
         double energy = 0;
         for (size_t i = 0; i < h.n; ++i) {
@@ -137,35 +177,40 @@ struct LoRaPreambleDiscovery::Impl {
         }
         if (energy < 1e-20) return {};
         fft_plan(work.size()).execute(work);
+        if (work.size() < powers.size()) std::fill(powers.data() + work.size(), powers.data() + powers.size(), 0.f);
+        powers.resize(work.size());
         spectral_prefix.resize(work.size() + 1); spectral_prefix[0] = 0;
-        for (size_t i = 0; i < work.size(); ++i)
-            spectral_prefix[i + 1] = spectral_prefix[i] + std::norm(work[i]);
-        std::vector<Tone> result;
-        result.reserve(max_components);
+        for (size_t i = 0; i < work.size(); ++i) {
+            powers[i] = std::norm(work[i]);
+            spectral_prefix[i + 1] = spectral_prefix[i] + powers[i];
+        }
+        Tones result;
+        const auto mask = work.size() - 1;
         size_t qualified = 0;
         for (size_t peak = 0; peak < work.size(); ++peak) {
-            const double p = std::norm(work[peak]);
-            if (p <= std::norm(work[(peak + work.size() - 1) % work.size()]) ||
-                p < std::norm(work[(peak + 1) % work.size()])) continue;
+            const double p = powers[peak];
+            if (p <= powers[(peak - 1) & mask] || p < powers[(peak + 1) & mask]) continue;
             const double background = local_background(peak);
             if (p < 20 * background || p < 1e-20) continue;
             ++qualified;
-            if (result.size() == max_components && p <= result.back().power) continue;
+            if (result.count == max_components && p <= result.values[result.count - 1].power) continue;
             // Log-quadratic interpolation of the local peak. Neither its power
             // nor its ability to dominate other transmitters is an identity test.
-            const auto power = [&](size_t i) { return std::log(std::max(1e-30, static_cast<double>(std::norm(work[i])))); };
-            const double l = power((peak + work.size() - 1) % work.size());
-            const double m = power(peak), r = power((peak + 1) % work.size());
+            const auto power = [&](size_t i) { return std::log(std::max(1e-30, static_cast<double>(powers[i]))); };
+            const double l = power((peak - 1) & mask);
+            const double m = power(peak), r = power((peak + 1) & mask);
             const double denominator = l - 2 * m + r;
             const double delta = std::abs(denominator) > 1e-12 ? std::clamp(.5 * (l - r) / denominator, -.5, .5) : 0;
             double k = static_cast<double>(peak) + delta;
             if (k >= static_cast<double>(h.n)) k -= static_cast<double>(work.size());
             Tone candidate{k * rate / static_cast<double>(work.size()),
                            p / (static_cast<double>(h.n) * energy), p, background};
-            const auto at = std::lower_bound(result.begin(), result.end(), p,
-                [](const Tone& value, double power) { return value.power > power; });
-            result.insert(at, candidate);
-            if (result.size() > max_components) result.pop_back();
+            const auto at = static_cast<size_t>(std::lower_bound(result.begin(), result.end(), p,
+                [](const Tone& value, double power) { return value.power > power; }) - result.begin());
+            for (size_t i = std::min(result.count, max_components - 1); i > at; --i)
+                result.values[i] = result.values[i - 1];
+            result.values[at] = candidate;
+            if (result.count < max_components) ++result.count;
         }
         if (qualified > max_components) ++counters.candidate_limit_hits;
         return result;
@@ -197,12 +242,17 @@ struct LoRaPreambleDiscovery::Impl {
         // A tone pair or up/down average alone leaves a CFO/timing ambiguity.
         // For reset a, high tone precedes a and low tone follows it; continuity
         // requires exp(-j*2*pi*BW*a/Fs) between their coherent partial sums.
+        if (h.n + 1 < prefix_high.size())
+            std::fill(prefix_high.data() + h.n + 1, prefix_high.data() + prefix_high.size(), std::complex<double>{});
+        if (h.n + 1 < prefix_low.size())
+            std::fill(prefix_low.data() + h.n + 1, prefix_low.data() + prefix_low.size(), std::complex<double>{});
         prefix_high.resize(h.n + 1); prefix_low.resize(h.n + 1);
         double energy = 0;
         for (size_t i = 0; i < h.n; ++i) energy += std::norm(sample(end - h.n + i));
         WrapFits best;
         bool saturated = false;
         if (energy < 1e-20) return best;
+        const std::span<const std::complex<double>> continuity(h.continuity);
         for (unsigned branch = 0; branch < 2; ++branch) {
             const double high_hz = dominant_hz + branch * h.bw;
             const double noise_variance = std::max(background_at(high_hz), background_at(high_hz - h.bw)) /
@@ -217,10 +267,6 @@ struct LoRaPreambleDiscovery::Impl {
                 prefix_low[i + 1] = prefix_low[i] + y * low_phase;
                 high_phase *= high_step; low_phase *= low_step;
             }
-            const size_t period = static_cast<size_t>(rate / h.bw);
-            std::array<std::complex<double>, 64> continuity{};
-            for (size_t k = 0; k < 4 * period; ++k)
-                continuity[k] = std::polar(1., -2 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(4 * period));
             // Quarter-symbol search phases ensure a complete repeated chirp has
             // windows with a supported interior reset. A boundary-only fit can
             // be a single tone or an equal-slope fragment, so cannot arm a lane.
@@ -229,13 +275,13 @@ struct LoRaPreambleDiscovery::Impl {
                 const size_t edge = (k + 3) / 4;
                 const auto high = prefix_high[edge];
                 const auto low = prefix_low[h.n] - prefix_low[edge];
-                const double high_magnitude = std::abs(high), low_magnitude = std::abs(low);
                 if (std::norm(high) < 20 * static_cast<double>(edge) * noise_variance ||
                     std::norm(low) < 20 * static_cast<double>(h.n - edge) * noise_variance) return {};
+                const double high_magnitude = std::abs(high), low_magnitude = std::abs(low);
                 const double high_amplitude = high_magnitude / static_cast<double>(edge);
                 const double low_amplitude = low_magnitude / static_cast<double>(h.n - edge);
                 if (high_amplitude > 2 * low_amplitude || low_amplitude > 2 * high_amplitude) return {};
-                const auto sum = high + continuity[k % (4 * period)] * low;
+                const auto sum = high + continuity[k % continuity.size()] * low;
                 const double component_sum = high_magnitude + low_magnitude;
                 if (std::norm(sum) < .8 * component_sum * component_sum) return {};
                 const double match = std::norm(sum) / (static_cast<double>(h.n) * energy);
@@ -325,7 +371,7 @@ struct LoRaPreambleDiscovery::Impl {
             recent.push_back(found); callback(found);
         }
     }
-    void check_delimiter(const Hypothesis& h, Chain& c, const std::vector<Tone>& downs,
+    void check_delimiter(const Hypothesis& h, Chain& c, std::span<const Tone> downs,
                          const Callback& callback) {
         if (!c.armed || c.pending || end - c.armed_end <= h.n) return;
         const double tolerance = 2. * rate / static_cast<double>(h.n);
@@ -375,7 +421,7 @@ struct LoRaPreambleDiscovery::Impl {
         retain_current();
         check_pending(h, c, callback);
     }
-    void evaluate(size_t index, double repeat, const Callback& callback) {
+    void evaluate(size_t index, double& repeat, bool& repeat_computed, const Callback& callback) {
         const auto& h = bank()[index];
         // Pending candidates already have their search evidence. Confirm each
         // as soon as both complete SFD symbols are available; waiting for its
@@ -418,6 +464,10 @@ struct LoRaPreambleDiscovery::Impl {
             if (c.streak < 4) { ++c.streak; c.sum_up_hz += up.hz; }
             else c.sum_up_hz += up.hz - c.sum_up_hz / 4.;
             c.up_match = std::max(c.up_match, up.match);
+            if (!repeat_computed) {
+                repeat = discovery_detail::repetition_coherence(ring, begin, end, h.n);
+                repeat_computed = true;
+            }
             c.up_coherence = std::max(c.up_coherence, repeat);
             c.last_up_hz = up.hz; c.last_up_end = end;
             if (c.streak >= 4) {
@@ -443,19 +493,18 @@ struct LoRaPreambleDiscovery::Impl {
         });
         if (!search_down) return;
         const auto downs = tones(h, true);
-        for (auto& c : phase) check_delimiter(h, c, downs, callback);
+        for (auto& c : phase) check_delimiter(h, c, downs.view(), callback);
     }
     void checkpoint(const Callback& callback) {
-        std::array<double, 8> repeats{};
-        std::array<bool, 8> computed{};
+        std::array<double, 9> repeats{};
+        std::array<bool, 9> computed{};
         for (size_t i = 0; i < bank().size(); ++i) {
             const auto n = bank()[i].n;
             if (end - begin < 2 * n || end % (n / 4)) continue;
             ++counters.windows;
             unsigned period = 0;
             for (size_t d = 512; d < n; d *= 2) ++period;
-            if (!computed[period]) { repeats[period] = coherence(n); computed[period] = true; }
-            evaluate(i, repeats[period], callback);
+            evaluate(i, repeats[period], computed[period], callback);
         }
     }
 };
@@ -469,23 +518,18 @@ void LoRaPreambleDiscovery::feed(std::span<const C> samples, uint64_t first, con
         throw std::invalid_argument("Discovery sample index exceeds exact timestamp domain");
     if (!p.initialized || first != p.end) {
         if (p.initialized) ++p.counters.resets;
+        p.clear_history();
         p.begin = p.end = first; p.initialized = true;
-        p.repetition.reset();
-        p.screen.reset();
-        for (auto& phases : p.chains) phases = {};
-        p.recent.clear();
     }
     for (const auto x : samples) {
         if (!std::isfinite(x.real()) || !std::isfinite(x.imag()) || std::abs(x.real()) > 16 || std::abs(x.imag()) > 16) {
-            ++p.end; ++p.counters.samples; ++p.counters.resets; p.begin = p.end;
-            p.repetition.reset();
-            p.screen.reset();
-            for (auto& phases : p.chains) phases = {};
-            p.recent.clear();
+            const auto next = p.end + 1;
+            ++p.counters.samples; ++p.counters.resets;
+            p.clear_history();
+            p.begin = p.end = next; p.initialized = true;
             continue;
         }
         p.ring[p.end % capacity] = x;
-        p.repetition.push(x);
         p.screen.push(x, p.end);
         ++p.end; ++p.counters.samples;
         if (p.end % 128 == 0) p.checkpoint(callback);
@@ -493,15 +537,8 @@ void LoRaPreambleDiscovery::feed(std::span<const C> samples, uint64_t first, con
 }
 void LoRaPreambleDiscovery::reset() {
     auto& p = *impl_;
-    p.initialized = false; ++p.counters.resets;
-    p.repetition.reset();
-    p.screen.reset();
-    std::fill(p.ring.begin(), p.ring.end(), C{});
-    std::fill(p.work.begin(), p.work.end(), C{});
-    std::fill(p.prefix_high.begin(), p.prefix_high.end(), std::complex<double>{});
-    std::fill(p.prefix_low.begin(), p.prefix_low.end(), std::complex<double>{});
-    for (auto& phases : p.chains) phases = {};
-    p.recent.clear();
+    ++p.counters.resets;
+    p.clear_history();
 }
 LoRaDiscoveryStats LoRaPreambleDiscovery::stats() const { return impl_->counters; }
 }

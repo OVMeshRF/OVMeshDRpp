@@ -12,6 +12,7 @@ import os
 from pathlib import Path, PurePosixPath
 import platform
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -62,6 +63,28 @@ def checked_output_path(repo, path):
 def verify_archive(path, entry):
     if path.stat().st_size != entry["bytes"] or sha256(path) != entry["sha256"]:
         raise ValueError("Archive does not match the reviewed size/SHA-256; nothing will be extracted or executed.")
+
+
+def snapshot_archive(source, destination, entry):
+    """Verify a private copy, never a supplier-mutable pathname used later."""
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    with os.fdopen(os.open(source, flags), "rb") as input_file:
+        info = os.fstat(input_file.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size != entry["bytes"]:
+            raise ValueError("Archive must be a regular file of the reviewed size.")
+        with destination.open("xb") as output:
+            os.fchmod(output.fileno(), 0o600)
+            count = 0
+            while True:
+                block = input_file.read(min(1024 * 1024, entry["bytes"] - count + 1))
+                if not block:
+                    break
+                count += len(block)
+                if count > entry["bytes"]:
+                    raise ValueError("Archive exceeds the reviewed size.")
+                output.write(block)
+    verify_archive(destination, entry)
+    return destination
 
 
 def validated_members(archive, prefix):
@@ -146,7 +169,26 @@ def write_probe(repo, probe):
         'target_link_libraries(intake PRIVATE OpenSSL::Crypto Threads::Threads)\n')
 
 
-def bootstrap(repo, archive, allow_download, prefix, jobs):
+def configure_arguments(manifest, target, prefix, relocatable=False):
+    # Configure embeds these defaults in libcrypto even when all automatic
+    # configuration/module loading is disabled. Staging below still uses the
+    # checked repository-local prefix; no install targets write this logical path.
+    compiled_prefix = PurePosixPath("/ovmesh/disabled") if relocatable else prefix
+    arguments = []
+    for arg in manifest["build_configuration"]["configure_arguments"]:
+        if arg.startswith("--prefix="):
+            arg = "--prefix=" + str(compiled_prefix)
+        elif arg.startswith("--openssldir="):
+            arg = "--openssldir=" + str(compiled_prefix / "ssl")
+        else:
+            arg = arg.replace("${OPENSSL_TARGET}", target)
+        if "${" in arg:
+            raise ValueError("Unsupported unresolved build-manifest variable.")
+        arguments.append(arg)
+    return arguments
+
+
+def bootstrap(repo, archive, allow_download, prefix, jobs, relocatable=False):
     target = native_target()
     prefix = checked_output_path(repo, prefix)
     if prefix.exists():
@@ -166,7 +208,6 @@ def bootstrap(repo, archive, allow_download, prefix, jobs):
         raise ValueError("Choose --archive PATH or explicitly permit --download.")
     if archive is not None:
         archive = archive.resolve(strict=True)
-        verify_archive(archive, entry)
     work_parent = checked_output_path(repo, repo / "build/deps")
     work_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="openssl-build-", dir=work_parent))
@@ -176,22 +217,14 @@ def bootstrap(repo, archive, allow_download, prefix, jobs):
         print("Downloading the pinned official release (SHA-256 verification required)...", flush=True)
         archive = work / entry["name"]
         download(entry, archive)
+    else:
+        archive = snapshot_archive(archive, work / entry["name"], entry)
     print("Verifying and extracting reviewed source...", flush=True)
     source = extract_verified(archive, work, "openssl-" + manifest["version"])
     for name, expected in manifest["source_file_hashes"].items():
         if sha256(source / name) != expected:
             raise ValueError("Reviewed build-source hash mismatch: " + name)
-    arguments = []
-    for arg in manifest["build_configuration"]["configure_arguments"]:
-        if arg.startswith("--prefix="):
-            arg = "--prefix=" + str(prefix)
-        elif arg.startswith("--openssldir="):
-            arg = "--openssldir=" + str(prefix / "ssl")
-        else:
-            arg = arg.replace("${OPENSSL_TARGET}", target)
-        if "${" in arg:
-            raise ValueError("Unsupported unresolved build-manifest variable.")
-        arguments.append(arg)
+    arguments = configure_arguments(manifest, target, prefix, relocatable)
     print("Configuring", target, "and building static libcrypto; details in", log, flush=True)
     run(["perl", "Configure", *arguments], source, log)
     for make_target in manifest["build_configuration"]["targets"]:
@@ -240,11 +273,13 @@ def main():
     parser.add_argument("--prefix", type=Path, default=REPO / "build/deps/openssl-3.5.8-local",
                         help="New destination inside this checkout's build directory")
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--relocatable", action="store_true",
+                        help="Use neutral compiled-in OpenSSL paths for packaging; staging stays under --prefix")
     args = parser.parse_args()
     if not 1 <= args.jobs <= 32:
         parser.error("--jobs must be between 1 and 32")
     try:
-        bootstrap(REPO, args.archive, args.download, args.prefix, args.jobs)
+        bootstrap(REPO, args.archive, args.download, args.prefix, args.jobs, args.relocatable)
     except (OSError, ValueError, tarfile.TarError, subprocess.CalledProcessError) as error:
         parser.exit(1, "OpenSSL setup failed: " + str(error) +
                     "\nExisting prefixes are unchanged. Build details, when created, remain under build/deps/openssl-build-*/build.log.\n")

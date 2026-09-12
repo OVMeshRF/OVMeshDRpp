@@ -37,8 +37,9 @@ struct LoRaDiscoveryStats {
     uint64_t candidate_limit_hits = 0, track_limit_hits = 0;
 };
 
-// Bounded, streaming 2 MS/s complex-IQ experiment. Searches all 18 hypotheses
-// (125/250/500 kHz, SF7..12); the caller supplies no candidate RF settings.
+// Bounded, streaming 2 MS/s complex-IQ experiment. Searches 28 hypotheses
+// (62.5/125/250/500 kHz, SF7..12 and 15.625 kHz SF7..10);
+// the caller supplies no candidate RF settings.
 // At most eight spectral candidates and eight independent component tracks
 // per hypothesis/search phase are considered; limits are exposed in stats().
 // Each track retains at most eight independently supported preamble reset fits.

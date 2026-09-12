@@ -18,11 +18,11 @@ namespace ovmesh {
 // Separate input spans may use the same immutable plan concurrently.
 class DiscoveryFftPlan {
 public:
-    static constexpr std::size_t maximum_size = 131072;
+    static constexpr std::size_t maximum_size = 262144;
 
     explicit DiscoveryFftPlan(std::size_t size) : size_(size) {
         if (size < 2 || size > maximum_size || !std::has_single_bit(size))
-            throw std::invalid_argument("Discovery FFT length must be a power of two from 2 through 131072");
+            throw std::invalid_argument("Discovery FFT length must be a power of two from 2 through 262144");
         permutation_.resize(size);
         for (std::size_t i = 1; i < size; ++i)
             permutation_[i] = (permutation_[i / 2] >> 1) |

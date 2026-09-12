@@ -2,6 +2,11 @@
 
 Nanopb provides the native bounded decoder with generated descriptors from official schemas. It does not add a device API, telemetry service, network listener, updater or application Python runtime.
 
+Under [ADR-0010](../decisions/0010-metadata-only-surveys.md), the application now
+uses only the outer Data descriptor for tentative classification. Generated
+semantic descriptors remain as pinned provenance and synthetic fixture assets;
+their presence does not enable message, node, position, telemetry or route parsing.
+
 The selected runtime is **Nanopb 0.4.9.2**, pinned at commit `160d4f09e5fabb2b66aa2dea32d4f38ace2c4b3f`. The official release
 archive hash was verified before source adoption. The zlib license is compatible
 with this GPL application. Exact source and license records are in
@@ -48,17 +53,18 @@ PB_MESSAGE_NESTING_MAX=8
 `PB_ENABLE_MALLOC` is **undefined**, not defined as zero, because Nanopb tests it
 with `#ifdef`. The decoder consumes bounded in-memory RF plaintext buffers. There
 are no generated callbacks/pointers, custom streams, recursive message schemas,
-runtime generator execution, or decoder error strings to log. Unsupported
-telemetry variants have bounded typed descriptors but do not automatically enter
-the authorized-content projection or storage allowlist. The application must
+runtime generator execution, or decoder error strings to log. Application payload
+bytes remain opaque within the bounded Data object; no inner semantic descriptor
+is invoked by the classifier. The application must
 cleanse plaintext and temporary generated objects on every exit path.
 
 Nanopb validates schema representation, not every application constraint. Its
 static bytes array padding can permit a byte beyond a nominal option bound on
 some architectures, so the application must retain exact byte-length checks.
-Duplicate known fields, canonical integer forms, boolean range, and embedded NUL
-handling remain deliberate application wire-validation rules. Unknown fields
-are skipped; they do not become retained opaque payloads.
+Duplicate known fields, canonical integer forms and boolean range remain
+deliberate outer-envelope wire-validation rules. UTF-8 and embedded-NUL checks
+apply to schema string fields, not the opaque bytes payload. Unknown fields
+are skipped; neither they nor the inner payload are retained.
 
 ## Generation tool chain
 
@@ -89,7 +95,11 @@ Intake checks recorded for this pinned source: official archive hashes matched; 
 schemas are byte-identical to their reviewed archives; generated output passes
 repeat-generation byte comparison; the C runtime and descriptor library compile
 in an isolated build with desktop and HackRF support disabled. All selected
-generated fields are static, and full `int32` SNR arrays are retained. The application test suite contains independent versioned schema fixtures and malformed-message tests. These establish software checks, not live RF interoperability.
+generated fields are static. Historical route descriptors preserve full `int32`
+SNR representation, but the current application does not interpret or retain
+those arrays. The application test suite contains independent versioned schema
+fixtures, opaque-payload checks and malformed-envelope tests. These establish
+software checks, not live RF interoperability or a measured false-positive rate.
 
 For an update, review upstream advisories/release notes and license changes,
 resolve immutable commits, verify release digests where provided, inspect the

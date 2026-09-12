@@ -16,9 +16,12 @@ struct DesktopPreferences {
     bool gps_enabled = true;
     bool recording_enabled = true;
     bool compact_recording = true;
-    bool discover_lora = true;
-    bool decode_enabled = true;
-    bool spectrum_only = false;
+    bool discover_lora = false;
+    bool decode_enabled = false;
+    // Preserve the key-free settings format for older profiles. Desktop survey
+    // mode disables discovery, packet reception and public-key activation.
+    bool public_meshtastic_key_enabled = false;
+    bool spectrum_only = true;
     // A preferred source is not a command to open it. The desktop must handle
     // unavailable backends and keep reception stopped on ordinary startup.
     DesktopReceiver receiver_source = DesktopReceiver::HackRf;
@@ -30,7 +33,12 @@ struct DesktopPreferences {
     bool amplifier = false;
     int rtl_gain_tenths_db = 280;
     bool rtl_auto_gain = false;
-    ConcentratorConfig concentrators;
+    ConcentratorConfig concentrators = [] {
+        ConcentratorConfig settings;
+        settings.decode_enabled = false;
+        for (auto& board : settings.boards) board.packets_enabled = false;
+        return settings;
+    }();
     bool mixed_fonts = true;
     bool mobile_position_display = false;
     std::string recording_directory;

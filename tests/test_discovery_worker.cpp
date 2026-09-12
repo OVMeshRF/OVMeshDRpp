@@ -5,13 +5,24 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <vector>
+
+#ifdef OVMESH_DISCOVERY_SCHEDULER_TEST
+namespace ovmesh {
+void discovery_scheduler_probe(size_t initial_head,
+    const std::function<void(size_t, bool, uint64_t)>& before_process,
+    const std::function<void(unsigned)>& checkpoint);
+}
+#endif
 
 namespace {
 using Worker = ovmesh::DiscoveryWorker;
@@ -19,6 +30,62 @@ using Complex = std::complex<float>;
 namespace f = lora_discovery_fixtures;
 constexpr double center = 907500000;
 void require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
+
+#ifdef OVMESH_DISCOVERY_SCHEDULER_TEST
+void busy_front_bypass() {
+    // Park one actual consumer inside band 0's first job. Its pending reset is
+    // then the queue front; another consumer must reach band 3 before release.
+    // The barriers establish the ordering, with deadlines only to report a
+    // broken scheduler instead of hanging the test process.
+    for (size_t initial_head : {size_t{0}, Worker::detector_queue_capacity - 2}) {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool first_entered = false, first_ready = false, other_entered = false;
+        bool bypassed = false, release = false, premature_same_band = false;
+        struct Visit { size_t band; bool reset; uint64_t first; };
+        std::vector<Visit> visits;
+        ovmesh::discovery_scheduler_probe(initial_head,
+            [&](size_t band, bool reset, uint64_t first) {
+                std::unique_lock lock(mutex);
+                visits.push_back({band, reset, first});
+                if (band == 0 && (reset || first != 0) && !release) premature_same_band = true;
+                if (band == 0 && !reset && first == 0) {
+                    first_entered = true;
+                    changed.notify_all();
+                    changed.wait(lock, [&] { return release; });
+                } else if (band == 3 && !reset && first == 0) {
+                    other_entered = true;
+                    changed.notify_all();
+                }
+            },
+            [&](unsigned step) {
+                std::unique_lock lock(mutex);
+                if (!step) {
+                    first_ready = changed.wait_for(lock, std::chrono::seconds(5), [&] { return first_entered; });
+                } else {
+                    bypassed = changed.wait_for(lock, std::chrono::seconds(5), [&] { return other_entered; });
+                    release = true;
+                    changed.notify_all();
+                }
+            });
+        require(first_ready && bypassed, "Idle worker could not bypass a busy band's pending queue front");
+        require(!premature_same_band, "A busy band's later job overlapped its held sample block");
+        require(visits.size() == Worker::detector_queue_capacity, "Bypass duplicated or omitted a reserved job");
+        std::vector<Visit> first_band, other_band;
+        for (const auto& visit : visits)
+            (visit.band == 0 ? first_band : other_band).push_back(visit);
+        require(first_band.size() == 14 && !first_band[0].reset && first_band[0].first == 0 &&
+            first_band[1].reset && first_band[1].first == 1,
+            "Busy band's reset overtook its active sample block");
+        for (size_t i = 2; i < first_band.size(); ++i)
+            require(!first_band[i].reset && first_band[i].first == i - 1,
+                "Bypass changed same-band sample order across a reset");
+        require(other_band.size() == 2 && other_band[0].band == 3 && !other_band[0].reset &&
+            other_band[0].first == 0 && other_band[1].band == 3 && other_band[1].reset && other_band[1].first == 1,
+            "Bypass changed the idle band's sample/reset order");
+    }
+}
+#endif
 
 void wait_channelized(Worker& worker, uint64_t expected) {
     // A full 64-slot source queue includes over half a second of wideband DSP.
@@ -35,8 +102,9 @@ void wait_channelized(Worker& worker, uint64_t expected) {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
 }
 
-std::vector<Worker::Result> direct(const std::vector<Complex>& input, uint64_t origin) {
-    ovmesh::DiscoveryChannelizer bank(8000000, center, center - 1000000, center + 1000000);
+std::vector<Worker::Result> direct(const std::vector<Complex>& input, uint64_t origin,
+                                  double half_span = 1000000) {
+    ovmesh::DiscoveryChannelizer bank(8000000, center, center - half_span, center + half_span);
     std::vector<std::unique_ptr<ovmesh::LoRaPreambleDiscovery>> detectors;
     std::vector<uint64_t> next(bank.subbands().size()), anchors(bank.subbands().size());
     for (const auto& band : bank.subbands())
@@ -155,6 +223,88 @@ void gaps_order_and_limits() {
     const auto limit = oversized.snapshot();
     require(limit.source_gap_input_samples == large.size() && limit.invalid_submissions == 2 &&
             limit.channelized_input_samples == input.size(), "Input limit accounting failed");
+}
+
+void skewed_bands_and_pending_reset() {
+    f::PreambleSpec first;
+    first.sample_rate_hz = 8000000;
+    first.bandwidth_hz = 250000;
+    first.spreading_factor = 8;
+    first.center_offset_hz = -2000000 + 123719;
+    first.noise_rms = .003;
+    auto second = first;
+    second.bandwidth_hz = 500000;
+    second.spreading_factor = 9;
+    second.center_offset_hz = 1000000 + 23119;
+    const auto a = f::make_preamble(first), b = f::make_preamble(second);
+    std::vector<Complex> input(std::max(a.samples.size(), b.samples.size()));
+    for (size_t i = 0; i < a.samples.size(); ++i) input[i] += a.samples[i] * .5f;
+    for (size_t i = 0; i < b.samples.size(); ++i) input[i] += b.samples[i] * .5f;
+    constexpr double half_span = 3200000;
+    constexpr uint64_t first_origin = 37, gap = 8191;
+    const auto second_origin = first_origin + input.size() + gap;
+    auto expected = direct(input, first_origin, half_span);
+    require(!expected.empty(), "Skewed multi-band fixture has no serial discovery baseline");
+    const bool first_band = std::any_of(expected.begin(), expected.end(), [](const auto& value) {
+        return value.subband_index == 1 && value.waveform.bandwidth_hz == 250000;
+    });
+    const bool second_band = std::any_of(expected.begin(), expected.end(), [](const auto& value) {
+        return value.subband_index == 4 && value.waveform.bandwidth_hz == 500000;
+    });
+    require(first_band && second_band && 1 % Worker::detector_workers == 4 % Worker::detector_workers,
+        "Both active waveform bands must share the original detector queue");
+    for (auto& result : expected) result.segment_id = 1;
+    auto next = direct(input, second_origin, half_span);
+    for (auto& result : next) result.segment_id = 2;
+    expected.insert(expected.end(), next.begin(), next.end());
+    sort_results(expected);
+
+    Worker worker(8000000, center, center - half_span, center + half_span);
+    // Submit both segments without waiting for detector drain. The fixed source
+    // capacity covers the complete fixture; no throughput assumption is needed.
+    constexpr size_t chunk = 15011;
+    require(2 * ((input.size() + chunk - 1) / chunk) <= Worker::source_capacity,
+        "Ordering fixture exceeds its non-lossy source budget");
+    for (const auto origin : {first_origin, second_origin})
+        for (size_t i = 0; i < input.size(); i += chunk)
+            require(worker.submit(std::span(input).subspan(i, std::min(chunk, input.size() - i)), origin + i),
+                "Bounded pending-reset fixture was rejected");
+    worker.finish();
+    const auto state = worker.snapshot();
+    require(state.finished && !state.failed && state.accepted_input_samples == 2 * input.size() &&
+        state.channelized_input_samples == 2 * input.size() && !state.rejected_input_samples &&
+        state.source_gap_input_samples == gap && state.stream_resets == 1,
+        "Shared scheduling changed accepted data, drain, or gap accounting");
+    require(state.subbands.size() == 7 && state.detector_queue_high_water.size() == Worker::detector_workers,
+        "Shared scheduling changed band or queue geometry");
+    for (const auto& band : state.subbands)
+        require(band.resets_after_gap == 1 && band.source_gap_input_samples == gap &&
+            band.processed_output_samples == state.subbands.front().processed_output_samples &&
+            !band.abandoned_output_samples,
+            "A reset or data job overtook, duplicated, or omitted a per-band interval");
+    for (const auto high_water : state.detector_queue_high_water)
+        require(high_water <= Worker::detector_queue_capacity,
+            "Queued plus active detector slots exceeded the unchanged bound");
+    auto actual = worker.take_results();
+    std::vector<uint64_t> last_segment(state.subbands.size());
+    for (const auto& result : actual) {
+        require(result.segment_id >= last_segment[result.subband_index],
+            "An earlier segment result followed a later reset on the same band");
+        last_segment[result.subband_index] = result.segment_id;
+    }
+    sort_results(actual);
+    require(actual.size() == expected.size(), "Shared scheduling changed the serial discovery count");
+    for (size_t i = 0; i < actual.size(); ++i) {
+        const auto& got = actual[i]; const auto& reference = expected[i];
+        require(got.subband_index == reference.subband_index && got.segment_id == reference.segment_id &&
+            got.waveform.center_hz == reference.waveform.center_hz &&
+            got.waveform.bandwidth_hz == reference.waveform.bandwidth_hz &&
+            got.waveform.spreading_factor == reference.waveform.spreading_factor &&
+            got.first_input_anchor == reference.first_input_anchor &&
+            got.first_observed_upchirp_input_sample == reference.first_observed_upchirp_input_sample &&
+            got.delimiter_input_sample == reference.delimiter_input_sample,
+            "Concurrent queue service changed a serial waveform, segment, or exact timestamp");
+    }
 }
 
 void saturation() {
@@ -297,8 +447,12 @@ void requested_range_edges() {
 
 int main() {
     try {
+#ifdef OVMESH_DISCOVERY_SCHEDULER_TEST
+        busy_front_bypass();
+#endif
         waveform_and_timing();
         gaps_order_and_limits();
+        skewed_bands_and_pending_reset();
         saturation();
         failures_and_shutdown();
         result_queue_bound();

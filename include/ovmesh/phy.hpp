@@ -10,6 +10,11 @@
 
 namespace ovmesh {
 
+constexpr bool supported_lora_bandwidth(std::uint32_t bandwidth) noexcept {
+    return bandwidth == 15625 || bandwidth == 62500 || bandwidth == 125000 ||
+           bandwidth == 250000 || bandwidth == 500000;
+}
+
 // Forward transform is unnormalized; inverse divides by N. N must be a power of two.
 void fft_inplace(std::span<std::complex<float>> values, bool inverse = false);
 

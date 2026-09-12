@@ -18,7 +18,7 @@ The host records UTC and session-elapsed start/end bounds for the scan transacti
 
 A valid receiver fix is associated at host scan completion. Original coordinate precision, UTC, monotonic time, source description, satellite count and optional HDOP/altitude are preserved. A missing fix stays missing. The fix locates the receiver at that endpoint; it is not a transmitter location, interpolated route or a claim that the receiver remained stationary through all scans.
 
-Packet records retain host reception time separately from the board's wrapping microsecond timestamp. Board clocks are not synchronized to each other or to GPS. Packet RSSI uses the vendor's nominal uncalibrated scale. Packet bandwidth is explicitly the **configured service-modem bandwidth**, not a measured signal width. Existing authorized-content retention controls still apply; no channel key, undecoded payload or ciphertext is added to saved data.
+Packet records retain host reception time separately from the board's wrapping microsecond timestamp. Board clocks are not synchronized to each other or to GPS. Packet RSSI uses the vendor's nominal uncalibrated scale. Packet bandwidth is explicitly the **configured service-modem bandwidth**, not a measured signal width. Only RF/GPS metadata and optional envelope classification evidence are retained; semantic message contents, node identities, packet IDs and routes are excluded. No channel key, undecoded payload or ciphertext is saved.
 
 ## Schema and privacy boundary
 
@@ -46,7 +46,7 @@ Reads validate the extension's exact table definitions, configuration bounds, hi
 - **Time and geographic CSV:** one row per selected completed scan, preserving its histogram and actual host interval. This initial pathway does not interpolate scan time buckets or spatial cells. GPS inclusion is required for geographic reports.
 - **Analysis HTML:** a local standalone frequency summary with configured packet profiles, sample counts, host intervals, optional last receiver fixes, and explicit measurement limits. No external map, scripts or network resources are loaded.
 - **Detailed CSV / GeoJSON:** fixed method/configuration, health and complete scan histograms; packet records include receiver RSSI, configured-bandwidth and hardware-clock provenance. Unlocated scans are retained as GeoJSON features with null geometry.
-- **Receiver track and authorized-content CSV:** the shared export privacy controls apply. Software waveform-discovery reports are unavailable for this source.
+- **Receiver track CSV:** the shared export privacy controls apply. Software waveform-discovery reports are unavailable for this source.
 
 Time/frequency selections that intersect only part of a scan retain the **whole** histogram and mark it as a boundary scan. No fraction of a histogram is invented for a narrower frequency or time interval. Geographic selection uses the associated receiver endpoint. Reports with no matching scans describe absence of measurements, not proven quiet airwaves. Notes and receiver coordinates are exported only when their respective controls are enabled.
 
