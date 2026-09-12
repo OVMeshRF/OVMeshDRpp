@@ -43,7 +43,7 @@ The worker supports auxiliary scanning on one connection (its retained packet-po
 
 | Platform | Status |
 |---|---|
-| macOS / Apple Silicon | Earlier HackRF/RTL local USB checks and RAK one/two-board scan, packet, recording and export checks. A macOS 13.0+ arm64 app/DMG candidate has offline tests and packaged synthetic launches on macOS 26.3; signing/notarization, minimum-OS and packaged hardware acceptance remain pending |
+| macOS / Apple Silicon | Earlier HackRF/RTL local USB checks and RAK one/two-board scan, packet, recording and export checks. A macOS 13.0+ arm64 app/DMG candidate has offline tests and packaged synthetic launches on macOS 26.3; the 0.4.1 app is Developer ID signed and notarized, and packaged HackRF reception has an operator-confirmed check. Minimum-OS, clean-machine and full packaged hardware qualification remain outstanding |
 | Ubuntu 24.04 / amd64 and arm64 | Independent application builds, offline test checks and Xvfb GUI launches passed, including the RAK worker build. Both architectures passed package installation, synthetic CLI/demo and removal checks. USB permissions, GPS, physical-desktop and live receiver acceptance remain unqualified; other distributions are not implied |
 | Windows / x64 | HackRF/RTL build preparation underway; no validated application or portable ZIP yet. Driver binding, GPS and live receiver acceptance remain qualification work. RAK worker is disabled; no Windows RAK support is claimed |
 

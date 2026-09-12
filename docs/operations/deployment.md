@@ -1,6 +1,6 @@
 # Local build and packaging
 
-Status: experimental source with platform packaging candidates in preparation; no binary release is published by these instructions. Builds and validation outputs stay in the repository's ignored `build/` directory. Ordinary operator launches use local application-data storage as described below. The source is hosted on [GitHub](https://github.com/OVMeshRF/OVMeshDRpp); the application has no cloud deployment or system service.
+Experimental 0.4.1 packages are distributed through [GitHub Releases](https://github.com/OVMeshRF/OVMeshDRpp/releases), alongside checksums and matching source materials. The application runs locally without a cloud deployment or system service. Build artifacts remain under ignored `build/`; operator recordings use the private application-data locations below.
 
 ## Build
 
@@ -58,7 +58,7 @@ The desktop disables and hides LoRa waveform discovery, automatic/manual packet 
 
 Existing decoder source and explicit CLI/backend diagnostic flags remain solely for internal development and regression work. They are not an alternate supported user feature, and desktop launch flags cannot enable the hidden paths. Their earlier synthetic results do not establish reliable live decoding.
 
-New SDR surveys default to Compact schema 6; Detailed schema 5 preserves finer power history. Both retain fine joint activity, receiver settings, acquisition gaps and optional GPS associations. RAK schema 7 retains sampled RSSI histograms with its separate observation semantics. Existing survey files remain unchanged, including earlier diagnostic metadata. Spectrum event counts are not packet counts; energy envelopes do not identify LoRa bandwidth/SF. See [validation scope](../engineering/quality-and-validation.md) for current limits. The desktop scope change still requires its own acceptance checks.
+New SDR surveys default to Compact schema 6; Detailed schema 5 preserves finer power history. Both retain fine joint activity, receiver settings, acquisition gaps and optional GPS associations. RAK schema 7 retains sampled RSSI histograms with its separate observation semantics. Existing survey files remain unchanged, including earlier diagnostic metadata. Spectrum event counts are not packet counts; energy envelopes do not identify LoRa bandwidth/SF. See [validation scope](../engineering/quality-and-validation.md) for current limits. Desktop scope/defaults and visibility are covered by the 0.4.1 UI regression checks; field reliability remains a separate validation task.
 
 ### Desktop preferences and default survey storage
 
@@ -106,14 +106,22 @@ Keep operational recordings in private local storage outside the source checkout
 
 ## Platform and distribution limits
 
-| Candidate | Verified scope | Remaining release limits |
+| Package | Verified scope | Remaining limits |
 |---|---|---|
-| macOS arm64 app and drag-to-Applications DMG | Built for macOS 13.0+, tested on macOS 26.3; native offline tests and passive/synthetic launches from staged and relocated app copies passed. Mach-O dependencies, notices and included source materials checked | Ad-hoc review signatures only; Developer ID signing, notarization and installation acceptance pending. macOS 13 runtime, clean-machine and packaged hardware acceptance are not established. No Intel/Universal build |
-| Ubuntu 24.04 amd64 `.deb` | Independently compiled with offline test checks; minimal-runtime and builder-container installation, CLI/synthetic demo, shared-libusb replacement and removal passed; builder Xvfb GUI launch passed | Container results do not qualify a physical desktop, USB permissions, GPS or live receivers. No compatibility claim for other distributions or older Ubuntu versions |
-| Ubuntu 24.04 arm64 `.deb` | Independently compiled; full offline test suite, Xvfb GUI launch, minimal-runtime installation, non-root CLI/synthetic demo, shared-libusb replacement and removal passed | Final package/source review remains in progress; the same physical-desktop and hardware limits apply |
-| Windows x64 portable ZIP | Dedicated build/dependency preparation underway; intended HackRF/RTL-SDR adapters, with RAK disabled | No successful application build, test suite or ZIP acceptance yet. Driver binding, GPS and live receiver validation remain pending |
+| macOS arm64 app / DMG | Targets macOS 13.0+, tested on macOS 26.3. Developer ID signed app, Apple notarization accepted, ticket stapled and Gatekeeper verified. Staged signed app synthetic launch passed; operator confirmed HackRF reception from the packaged build | See release notes for final DMG verification. macOS 13 runtime, clean-machine installation and long-duration hardware qualification remain outstanding. No Intel/Universal build |
+| Ubuntu 24.04 amd64 `.deb` | 55/55 tests; package payload/dependency checks; runtime and builder-container installation, non-root CLI/demo, shared-libusb override and removal; Xvfb GUI smoke test | Container results do not qualify a physical desktop, USB permissions, GPS or live receivers. Other distributions and older Ubuntu releases are unqualified |
+| Ubuntu 24.04 arm64 `.deb` | Same complete 55-test suite and package/install/GUI checks as amd64 | Same physical-desktop and hardware limits |
+| Windows x64 | Build/dependency preparation only | No release download yet; application build, drivers, GPS and live receiver validation remain pending |
 
-The macOS candidate passed 51/51 native CTests. On Ubuntu amd64, the initial run passed 47/51 tests; four storage tests affected by the macOS-hosted bind filesystem passed with the same binaries on native Linux tmpfs. The final crypto relink passed eight focused checks. Ubuntu arm64 passed 51/51 tests on native Linux tmpfs. These are build/fixture results, not RF capture or field-performance evidence.
+The macOS full run passed 54/55 tests; the remaining UI test contained expectations for controls intentionally hidden in this release. After updating those expectations, its targeted rerun passed. Linux passed 55/55 on each architecture using native Linux temporary storage. These results are not RF calibration or field-performance evidence. See [Linux validation](../../packaging/linux/VALIDATION.md).
+
+### Install a download
+
+- **Mac:** Open the `.dmg`, drag the app to Applications, and launch it. Keep only one application connected to an SDR at a time. If access is denied, quit any other app using that receiver and retry; do not run the app as administrator.
+- **Ubuntu 24.04:** Download the `.deb` for your architecture (`amd64` for Intel/AMD x64; `arm64` for ARM64), then run `sudo apt install ./ovmeshdrpp_0.4.1-1_amd64.deb`, substituting the ARM64 filename when appropriate. Launch OVMeshDRpp from the applications menu or run `OVMeshDRpp`. Follow the [Linux guide](linux-build.md) for USB permissions; do not run the desktop as root.
+- Verify downloads against the release's `SHA256SUMS`. Preserve the matching source companion when redistributing binaries. A default browser is needed for HTML report Preview; Linux uses `xdg-utils`.
+
+Keep existing recordings. Ordinary startup opens a fresh workspace; use Open to load saved history. Older versions may not understand recordings or preferences written by newer versions.
 
 Follow the [Apple Silicon package recipe](../../packaging/macos/README.md) or [Ubuntu package recipe](../../packaging/linux/README.md). They stage the replaceable shared libusb, required worker, notices and corresponding source/build materials, and check final library paths. Distributable builds use the OpenSSL helper's `--relocatable` option with fresh prefixes to avoid embedding local OpenSSL directory strings; this retains the hardened crypto configuration and does not replace final binary inspection. Ordinary development `.app` output can still reference its build-specific USB prefix and must not be distributed as a finished package.
 
