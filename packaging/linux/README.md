@@ -1,6 +1,6 @@
 # Experimental Ubuntu packages
 
-OVMeshDRpp 0.4.1 packages target Ubuntu 24.04, separately for amd64 and arm64.
+OVMeshDRpp 0.4.2 packages target Ubuntu 24.04, separately for amd64 and arm64.
 They contain the native desktop application, CLI and experimental separate
 RAK5146 worker. HackRF and RTL-SDR adapters are enabled. Linux hardware operation,
 native desktop integration, GPS and sustained RF performance remain unvalidated.
@@ -13,7 +13,7 @@ No semantic message, node, route or content display/retention is provided.
 From the directory containing the package for your architecture:
 
 ```sh
-sudo apt install ./ovmeshdrpp_0.4.1-1_amd64.deb
+sudo apt install ./ovmeshdrpp_0.4.2-1_amd64.deb
 OVMeshDRpp
 # Or: ovmesh-cli --help
 sudo apt remove ovmeshdrpp

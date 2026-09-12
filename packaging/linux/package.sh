@@ -4,7 +4,7 @@ set -eu
 umask 022
 arch=$(dpkg --print-architecture)
 case "$arch" in amd64|arm64) ;; *) exit 1 ;; esac
-version=0.4.1-1
+version=0.4.2-1
 stage=$(mktemp -d "$PWD/build/stage.XXXXXX")
 meta=$(mktemp -d "$PWD/build/deb-metadata.XXXXXX")
 chmod 755 "$stage"

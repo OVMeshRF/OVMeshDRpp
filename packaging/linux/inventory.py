@@ -19,7 +19,7 @@ packaging_files = ("Dockerfile", "README.md", "build-local.py", "build.sh", "ins
 packaging_hashes = {name: hashlib.sha256((Path("/packaging") / name).read_bytes()).hexdigest()
                     for name in packaging_files}
 inventory = {
-    "product": "OVMeshDRpp", "version": "0.4.1", "package_revision": 1,
+    "product": "OVMeshDRpp", "version": "0.4.2", "package_revision": 1,
     "exported_source_commit": identity["commit"],
     "exported_source_tree": identity["tree"],
     "packaging_material_sha256": packaging_hashes,

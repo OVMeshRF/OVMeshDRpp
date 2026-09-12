@@ -421,8 +421,10 @@ void narrative_analysis(const SessionStore& reader,const SessionStore& simultane
             "Coordinates and geographic cells were excluded","not antenna-port dBm","transmitter watts"}) {
         require(page.find(expected)!=std::string::npos,std::string("analysis contains ")+expected);
     }
-    require(page.find("default-src 'none'")!=std::string::npos&&page.find("<script")==std::string::npos&&
-        page.find("src=\"")==std::string::npos,"standalone report has restrictive CSP and no scripts/resources");
+    require(page.find("default-src &#39;none&#39;")!=std::string::npos && page.find("script-src &#39;sha256-")!=std::string::npos &&
+        page.find("src=\"")==std::string::npos,"standalone report permits only its hash-authorized local print script");
+    for(const auto* expected:{"Export to PDF","beforeprint","afterprint","expandReport","window.print()","Active frequency ranges","Active bins","Mean bin occupancy","Include frequencies with no detected activity","highest occupancy outside the center guard"})
+        require(page.find(expected)!=std::string::npos,std::string("report includes usable frequency/PDF control: ")+expected);
     for(const auto* private_value:{"PRIVATE_TEST","SYNTHETIC_GPS","LEGACY_PRIVATE_","10.1234567","0.5555555"})
         require(page.find(private_value)==std::string::npos,"default narrative excludes notes, coordinates and message contents");
     require(page.size()<50000,"small fixture generates a manageable narrative report");
@@ -453,7 +455,7 @@ void narrative_analysis(const SessionStore& reader,const SessionStore& simultane
     const auto before=contents(hostile_path);SessionStore hostile;hostile.open_readonly(hostile_path.string());
     o.privacy.include_provenance=true;
     const auto escaped=directory/"analysis-escaped.html";export_survey_report(hostile,escaped.string(),o);
-    require(contents(escaped).find("&lt;script&gt;")!=std::string::npos&&contents(escaped).find("<script>")==std::string::npos&&
+    require(contents(escaped).find("&lt;script&gt;")!=std::string::npos&&contents(escaped).find("<script>alert")==std::string::npos && contents(escaped).find("<script>",contents(escaped).find("<script>")+1)==std::string::npos&&
         contents(escaped).find("<iframe")==std::string::npos,"all opt-in untrusted narrative fields are HTML escaped");
     require(contents(hostile_path)==before,"report creation does not modify source recording");
     o.query.time_bucket_seconds=0;

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.2
+
+- Add an active-frequency range summary and hide measured zero-activity rows by default, with an option to include them. Preserve unobserved rows and all recorded measurements.
+- Add Export to PDF in HTML previews using the browser save dialog; automatically expand report sections for print/PDF.
+- Rank busiest time groups outside the receiver-center guard and clarify missing GPS and unavailable protocol evidence.
+
 ## 0.4.1
 
 - Focus the desktop on spectrum surveying. Experimental LoRa discovery, packet decoding and classification controls are disabled and hidden while development continues. Frequency, time and location measurements remain available; energy-event counts are not packet counts.

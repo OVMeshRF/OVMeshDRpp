@@ -1,6 +1,6 @@
 # Apple Silicon package preparation
 
-This workflow produces an experimental OVMeshDRpp 0.4.1 app and a
+This workflow produces an experimental OVMeshDRpp 0.4.2 app and a
 drag-to-Applications disk image. It targets **macOS 13.0 and later, arm64 only**.
 The candidate was built and tested on macOS 26.3 (25D125), Apple clang 16.0.0,
 macOS 15.2 SDK, CMake 4.1.1. macOS 13 runtime acceptance, a clean-machine test,
@@ -31,8 +31,8 @@ cmake -S . -B build/native-release -DCMAKE_BUILD_TYPE=Release \
 cmake --build build/native-release --parallel 4
 ctest --test-dir build/native-release --output-on-failure
 python3 packaging/macos/prepare.py
-hdiutil create -volname 'OVMeshDRpp 0.4.1 arm64' -srcfolder build/macos-package/image \
-  -format UDZO -ov build/macos-package/OVMeshDRpp-0.4.1-macos-arm64-review.dmg
+hdiutil create -volname 'OVMeshDRpp 0.4.2 arm64' -srcfolder build/macos-package/image \
+  -format UDZO -ov build/macos-package/OVMeshDRpp-0.4.2-macos-arm64-review.dmg
 ```
 
 Use a fresh output directory for each candidate; `prepare.py` refuses existing
@@ -52,7 +52,7 @@ git commit -m "Initialize supplied OVMeshDRpp source"
 ```
 
 Do not copy parent/private Git history. Run these commands before creating
-build inputs, and verify the staged file list before the initial commit. The default output is `build/macos-package`. No system installation,
+build inputs, and verify the staged file list before the initial commit. The default output is `build/macos-package`; use `--output build/macos-package-VERSION` to preserve earlier candidates. No system installation,
 Developer ID signing, notarization, or device access is performed by the script.
 The temporary ad-hoc signatures permit ordinary local build validation on arm64;
 they provide no Developer ID trust or notarization.

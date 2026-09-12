@@ -30,6 +30,7 @@ def digest(path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--output', type=Path, default=ROOT / 'build/macos-package')
     parser.add_argument('--inputs', type=Path, default=ROOT / 'build/inputs')
     parser.add_argument('--usb-prefix', type=Path, default=ROOT / 'build/deps/usb-1.0.30-local')
     args = parser.parse_args()
@@ -41,7 +42,7 @@ def main():
         raise ValueError('Source must be the root of its own isolated Git repository; enclosing repositories are refused.')
     if run('git', 'status', '--porcelain').strip():
         raise ValueError('Commit reviewed changes before creating matching source.')
-    output = ROOT / 'build/macos-package'
+    output = args.output.resolve()
     if output.exists():
         raise ValueError('Output already exists; preserve it and use a fresh checkout/build.')
     native = ROOT / 'build/native-release'
@@ -69,7 +70,7 @@ def main():
     shutil.copytree(output / 'install/share/OVMeshDRpp', resources / 'Licenses')
     plist_path = app / 'Contents/Info.plist'
     plist = plistlib.loads(plist_path.read_bytes())
-    plist.update(CFBundleVersion='0.4.1', LSMinimumSystemVersion='13.0',
+    plist.update(CFBundleVersion='0.4.2', LSMinimumSystemVersion='13.0',
                  NSHighResolutionCapable=True,
                  NSHumanReadableCopyright='Copyright 2026 OVMeshDRpp contributors; GPL-3.0-or-later')
     plist_path.write_bytes(plistlib.dumps(plist, sort_keys=True))
@@ -109,14 +110,14 @@ def main():
     sources = image / 'Sources'
     sources.mkdir()
     commit = run('git', 'rev-parse', 'HEAD').strip()
-    run('git', 'archive', '--format=tar.gz', '--prefix=OVMeshDRpp-0.4.1/',
-        '--output=' + str(sources / 'OVMeshDRpp-0.4.1-source.tar.gz'), commit)
+    run('git', 'archive', '--format=tar.gz', '--prefix=OVMeshDRpp-0.4.2/',
+        '--output=' + str(sources / 'OVMeshDRpp-0.4.2-source.tar.gz'), commit)
     for entry in entries:
         shutil.copyfile(inputs / entry['name'], sources / entry['name'])
     shutil.copyfile(ROOT / 'packaging/macos/README.md', sources / 'MACOS-BUILD.md')
     (image / 'Applications').symlink_to('/Applications')
     (image / 'Read Me.txt').write_text(
-        'OVMeshDRpp 0.4.1 — Apple Silicon / macOS 13.0 or later\n\n'
+        'OVMeshDRpp 0.4.2 — Apple Silicon / macOS 13.0 or later\n\n'
         'Drag OVMeshDRpp.app to Applications when using an approved signed release.\n'
         'This review candidate is ad-hoc signed, not Developer-ID signed or notarized.\n'
         'Tested on macOS 26.3 only; older macOS and packaged hardware remain unqualified.\n'
@@ -130,7 +131,7 @@ def main():
     # Record hashes after the final ad-hoc seal; never include private build logs.
     for item in inventory:
         item['sha256'] = digest(image / item['path'])
-    manifest = {'version': '0.4.1', 'source_commit': commit,
+    manifest = {'version': '0.4.2', 'source_commit': commit,
                 'signing': 'ad-hoc review only', 'binaries': inventory,
                 'sources': {p.name: digest(p) for p in sorted(sources.iterdir())}}
     (image / 'PACKAGE-MANIFEST.json').write_text(json.dumps(manifest, indent=2) + '\n')

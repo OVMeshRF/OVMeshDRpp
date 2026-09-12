@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Internal report.cpp implementation; reuses the same validated streaming
-// aggregates as CSV. No network, scripts, source-file links or decoder payloads.
+// aggregates as CSV. Only a hash-authorized local print/filter script; no network or decoder payloads.
 std::string html_escape(std::string_view value) {
     std::string out;
     for (const char c : value) {
@@ -46,14 +46,24 @@ struct HtmlReport {
     }
     void paragraph(const std::string& s) { raw("<p>" + html_escape(s) + "</p>\n"); }
     void heading(const std::string& s) { raw("<h2>" + html_escape(s) + "</h2>\n"); }
-    void row(const std::vector<std::string>& values, bool header = false) {
-        raw("<tr>"); for (const auto& v : values)
+    void row(const std::vector<std::string>& values, bool header = false, bool zero = false) {
+        raw(zero ? "<tr class=\"zero-frequency\">" : "<tr>"); for (const auto& v : values)
             raw(std::string(header ? "<th>" : "<td>") + html_escape(v) + (header ? "</th>" : "</td>"));
         raw("</tr>\n");
     }
     void table(const std::vector<std::string>& headings) { raw("<table><thead>"); row(headings, true); raw("</thead><tbody>"); }
     void end_table() { raw("</tbody></table>\n"); }
 };
+
+// The CSP authorizes only this constant UI script, never survey strings.
+constexpr const char* report_script = R"JS(const folds=[];function expandReport(){document.querySelectorAll('details').forEach(d=>{if(!d.open){folds.push(d);d.open=true;}});}window.addEventListener('beforeprint',expandReport);window.addEventListener('afterprint',()=>{folds.splice(0).forEach(d=>d.open=false);});document.getElementById('save-pdf').addEventListener('click',()=>{expandReport();window.print();});const zeros=document.getElementById('show-zero');if(zeros)zeros.addEventListener('change',()=>document.body.classList.toggle('show-zero',zeros.checked));)JS";
+constexpr const char* report_csp = "default-src 'none'; script-src 'sha256-kpv63AIpOOjQFqCAmpf540wnhrbdkLIqmQcIOWhg1To='; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
+std::string report_controls(bool frequency_filter) {
+    return std::string("<div class=\"report-controls\"><button id=\"save-pdf\" type=\"button\">Export to PDF</button><p>Choose Save as PDF in your browser's print dialog, then choose a folder and filename. All report sections expand for printing. Turn off browser headers and footers to omit the local preview path.</p>") +
+        (frequency_filter ? "<label><input id=\"show-zero\" type=\"checkbox\"> Include frequencies with no detected activity</label>" : "") +
+        "</div><script>" + report_script + "</script>";
+}
+constexpr const char* report_print_css = R"CSS(.report-controls{padding:14px;background:#eaf2f5;margin:16px 0}.report-controls button{font:inherit;background:#007d79;color:white;border:0;border-radius:5px;padding:10px 18px;cursor:pointer}.zero-frequency{display:none}.show-zero .zero-frequency{display:table-row}@media print{.report-controls{display:none}body{margin:0!important;padding:0!important;max-width:none!important;font-size:10pt;line-height:1.4}details table{font-size:8.5pt}details td{white-space:nowrap}th,td{padding:4px 6px}h2,h3{break-after:avoid}tr,svg{break-inside:avoid}thead{display:table-header-group}summary{font-weight:bold}details> *{visibility:visible}}@page{margin:12mm})CSS";
 
 void analysis_report(const SessionStore& store, const Context& c,
                      const std::function<void(std::string_view)>& emit,bool document_start=true,bool document_end=true) {
@@ -121,9 +131,9 @@ void analysis_report(const SessionStore& store, const Context& c,
     });
 
     HtmlReport h{emit};
-    if(document_start)h.raw(R"HTML(<!doctype html><html lang="en"><head><meta charset="utf-8">
+    if(document_start){h.raw(R"HTML(<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content=")HTML" + html_escape(report_csp) + R"HTML(">
 <title>RF survey analysis — OVMeshDR++</title><style>
 :root{font-family:system-ui,-apple-system,sans-serif;color:#172c3c;background:#eaf0f3;line-height:1.55}
 body{max-width:1120px;margin:36px auto;padding:38px;background:white;border-top:8px solid #008b87}
@@ -135,14 +145,14 @@ th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #d6e1e7}th{backgr
 @media(max-width:700px){body{margin:0;padding:16px}table{font-size:.73rem}th,td{padding:5px}}
 @media print{:root{background:white}body{max-width:none;margin:0;padding:0;border:0}h2{break-after:avoid}tr,svg{break-inside:avoid}thead{display:table-header-group}}
 </style></head><body><div class="eyebrow">OVMeshDR++ / RF SURVEY</div><h1>Measured activity &amp; survey findings</h1>
-)HTML");
+)HTML"); h.raw(std::string("<style>")+report_print_css+"</style>"+report_controls(true));}
     if(!document_start)h.raw("<hr>");
     if(c.summary.acquisitions.size()==1) {
         const auto& segment=c.summary.acquisitions.front();
         h.heading("Acquisition " + std::to_string(segment.id));
         h.paragraph("This section covers one receiver setup, elapsed " + human_number(segment.elapsed_start_seconds,6) + "–" + human_number(segment.elapsed_end_seconds,6) + " seconds. Pauses are unobserved. Other acquisition sections retain their own frequency grid, gain and threshold; they are not directly comparable when settings differ.");
     }
-    h.paragraph("Generated " + human_utc(double(std::time(nullptr))) + "; application " + Engine::version() + "; report method 1; recording schema " + std::to_string(c.schema) + ".");
+    h.paragraph("Generated " + human_utc(double(std::time(nullptr))) + "; application " + Engine::version() + "; report method 2; recording schema " + std::to_string(c.schema) + ".");
     h.paragraph("Source session ID: " + c.summary.session_id);
     if (c.options.privacy.include_provenance) {
         h.paragraph("Survey: " + c.summary.config.session_title);
@@ -185,7 +195,31 @@ th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #d6e1e7}th{backgr
         h.paragraph("The requested frequency interval extends beyond the recorded bin coverage. The uncovered edges have no measured occupancy.");
     if(observed+1e-6<duration) h.paragraph("Some selected elapsed time lacks included RF observations. Gaps, geographic exclusions and time outside the recorded data are not quiet time. Percentages use only measured exposure; unreported upstream loss may still exist.");
 
+    if(observed>0 && busy/observed>0.95 && outside_busy/observed<0.5) {
+        h.raw("<div class=\"note\">");
+        h.paragraph("The full-range busy-time result is dominated by receiver-center activity. Outside the center guard, detected activity occupied " + human_percent(outside_busy,observed) + " of observed time. The center can contain an internal artifact or a real signal; this survey does not distinguish them.");
+        h.raw("</div>");
+    }
     h.heading("2. Activity by frequency");
+    h.raw("<h3>Active frequency ranges</h3>");
+    h.paragraph("Adjacent bins with detected activity at any point in this acquisition are grouped below. These are frequency envelopes across the survey, not identified channels, transmitters or simultaneous signal bandwidths. Center-guard activity is kept separate. No packet counts are inferred.");
+    h.table({"Lower MHz","Upper MHz","Span kHz","Active bins","Observed s (minimum)","Mean bin occupancy","Highest bin occupancy","Region"});
+    size_t ranges=0;
+    for(size_t i=0;i<frequency.bins.size();) {
+        if(frequency.bins[i].observed<=0 || frequency.bins[i].busy<=0){++i;continue;}
+        const auto center_at=[&](size_t n){return frequency.grid_first+double(frequency.first+n)*frequency.width;};
+        const auto guarded=[&](size_t n){return std::abs(center_at(n)-double(c.summary.config.center_hz))<=2*frequency.width+1e-5;};
+        const size_t begin=i;const bool guard=guarded(i);
+        double sum_busy=0,sum_observed=0,max_ratio=0,min_observed=std::numeric_limits<double>::infinity();
+        do {const auto& a=frequency.bins[i];sum_busy+=a.busy;sum_observed+=a.observed;max_ratio=std::max(max_ratio,a.busy/a.observed);min_observed=std::min(min_observed,a.observed);++i;}
+        while(i<frequency.bins.size() && frequency.bins[i].observed>0 && frequency.bins[i].busy>0 && guarded(i)==guard);
+        ++ranges;
+        h.row({human_number((center_at(begin)-frequency.width/2)/1e6,6),human_number((center_at(i-1)+frequency.width/2)/1e6,6),human_number(double(i-begin)*frequency.width/1000,3),std::to_string(i-begin),human_number(min_observed,3),human_number(100*sum_busy/sum_observed,6)+"%",human_number(100*max_ratio,6)+"%",guard?"Receiver-center guard":"Outside center guard"});
+    }
+    h.end_table();
+    if(!ranges)h.paragraph("No above-threshold activity was measured in this selection. Unobserved frequencies remain unassessed.");
+    h.paragraph("Bin occupancy is the fraction of observed time above threshold in each small frequency interval. Mean bin occupancy is weighted by observed bin-time; it is not the fraction of time any signal occupied the whole listed range. Active bins count measurement intervals, not RF bursts or packets. The detailed table and all original measurements remain available below.");
+
     // Peak-preserving display columns. All bin values are retained below.
     const size_t columns=std::min<size_t>(320,frequency.bins.size());
     h.paragraph("Reveal low activity (log scale). This uses the same zero-preserving logarithmic display as the app. Tick labels and tooltips show the original occupancy percentages.");
@@ -222,13 +256,13 @@ th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #d6e1e7}th{backgr
     }
     h.raw("</svg>");
     h.paragraph("Each plotted column preserves the highest bin occupancy within its frequency span. Positive values have a one-pixel minimum for visibility; zero stays zero and unobserved bins have no bar. The table retains the original percentages. The amber outlined band marks the receiver-center guard, where an internal artifact is possible; no measurements are removed. All summaries retain the acquisition detection threshold.");
-    h.raw("<details><summary>Complete selected frequency table ("+std::to_string(frequency.bins.size())+" bins)</summary>");
-    h.table({"Lower MHz","Upper MHz","Observed s","Busy s","Occupancy","Mean dBFS","Peak dBFS"});
+    h.raw("<details><summary>Frequency detail ("+std::to_string(active_bins)+" active / "+std::to_string(frequency.bins.size())+" total bins)</summary>");
+    h.table({"Lower MHz","Upper MHz","Observed s","Busy s","Occupancy","Mean dBFS","Peak dBFS","Measurement"});
     for(size_t i=0;i<frequency.bins.size();++i) {
         const auto& a=frequency.bins[i]; const double center=frequency.grid_first+double(frequency.first+i)*frequency.width;
         h.row({human_number((center-frequency.width/2)/1e6,6),human_number((center+frequency.width/2)/1e6,6),human_number(a.observed,6),
-            human_number(a.busy,6),human_percent(a.busy,a.observed),a.observed>0?human_number(10*std::log10(a.mean_power/a.observed),2):"Unavailable",
-            a.peak_power>0?human_number(10*std::log10(a.peak_power),2):"Unavailable"});
+            human_number(a.busy,6),a.observed>0?human_number(100*a.busy/a.observed,6)+"%":"Unavailable",a.observed>0?human_number(10*std::log10(a.mean_power/a.observed),2):"Unavailable",
+            a.peak_power>0?human_number(10*std::log10(a.peak_power),2):"Unavailable",a.observed<=0?"Not measured":a.busy>0?"Activity detected":"No activity above threshold"},false,a.observed>0 && a.busy==0);
     }
     h.end_table(); h.raw("</details>");
     h.paragraph("A lower occupancy value identifies less detected activity under these measurement conditions, not a recommended or interference-free channel. Use the app's range controls to examine any desired channel-width interval; this report does not assume preset frequencies or snap observations to channel slots.");
@@ -236,8 +270,8 @@ th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #d6e1e7}th{backgr
     h.heading("3. When activity occurred");
     std::vector<std::pair<uint64_t,const Accumulator*>> time_rows;
     for(const auto& [index,a]:time.times)if(a.observed>0)time_rows.emplace_back(index,&a);
-    std::stable_sort(time_rows.begin(),time_rows.end(),[](const auto& a,const auto& b){return a.second->busy/a.second->observed>b.second->busy/b.second->observed;});
-    h.paragraph(std::to_string(time_rows.size())+" time groups contained observations. Showing up to ten groups with the highest any-bin occupancy; requested grouping is "+
+    std::stable_sort(time_rows.begin(),time_rows.end(),[](const auto& a,const auto& b){return a.second->outside_busy/a.second->observed>b.second->outside_busy/b.second->observed;});
+    h.paragraph(std::to_string(time_rows.size())+" time groups contained observations. Showing up to ten groups with the highest occupancy outside the center guard; raw any-bin values are retained for comparison. Requested grouping is "+
         human_number(c.options.query.time_bucket_seconds)+" s. Partial groups use their actual measured exposure. This is not a rolling busy-hour estimate. Export Time summary CSV for all groups, including unobserved intervals.");
     h.table({"Elapsed start–end s","Observed s","Busy s","Any-bin occupancy","Outside guard"});
     for(size_t i=0;i<std::min<size_t>(10,time_rows.size());++i) {
@@ -248,7 +282,8 @@ th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #d6e1e7}th{backgr
     h.end_table();
 
     h.heading("4. Receiver locations");
-    if(!geography) h.paragraph("Coordinates and geographic cells were excluded by the report's privacy selection. Missing-position exposure is still reported above. Enable receiver GPS coordinates to include grouped location findings; no GPS fix is fabricated.");
+    if(observed>0 && missing>=observed-1e-6) h.paragraph("No valid receiver GPS was associated with the measured exposure in this selection. This report cannot locate the RF activity or compare geographic areas. Enabling coordinate export cannot recover missing fixes; a geographically attributed survey requires valid GPS during reception.");
+    if(!geography) h.paragraph("Coordinates and geographic cells were excluded by the report's privacy selection. Missing-position exposure is still reported above. Enable receiver GPS coordinates to include grouped location findings only when valid fixes were recorded; no GPS fix is fabricated.");
     else {
         if(c.options.query.geographic_filter) h.paragraph("Selected rectangle: south "+human_number(rounded(c.options.query.south,c.options.privacy.coordinate_decimals),c.options.privacy.coordinate_decimals)+
             ", north "+human_number(rounded(c.options.query.north,c.options.privacy.coordinate_decimals),c.options.privacy.coordinate_decimals)+
@@ -278,6 +313,7 @@ th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #d6e1e7}th{backgr
     h.heading("5. LoRa waveform and protocol evidence");
     h.paragraph(c.schema<5?"Waveform discovery records are unavailable in this legacy schema. This does not mean no LoRa was present.":
         std::to_string(wave_count)+" waveform observations intersect the frequency/time/area selection. Counts are observations, not guaranteed unique packets or device identities.");
+    if(wave_count==0 && receptions==0) h.paragraph("Protocol identification is unavailable for this selection. In the spectrum-only desktop, LoRa discovery and packet decoding are disabled. Zero records do not establish that no Meshtastic, MeshCore or other LoRa traffic was present.");
     h.table({"Inferred BW kHz","SF","Observations","Observed center range MHz","Partial-range observations","Ambiguous associations"});
     for(const auto& [key,g]:waves) h.row({human_number(double(key.first)/1000,1),std::to_string(key.second),std::to_string(g.count),
         human_number(g.low/1e6,6)+" – "+human_number(g.high/1e6,6),std::to_string(g.partial),std::to_string(g.ambiguous)});
@@ -321,5 +357,5 @@ th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #d6e1e7}th{backgr
     h.paragraph("Use this report to compare measured activity across the supplied range and revisit busy areas. Before proposing a regional channel, repeat visits at different times and days, use consistent receiver/antenna settings, examine the entire intended channel width and adjacent activity, and compare several representative locations. A short route samples places at different times; it cannot separate time variation from geographic variation by itself.");
     h.paragraph("Not established by this report: exhaustive emitter/protocol inventory; packet collision rate; calibrated occupied/emission bandwidth; transmitter output power or model; an uncertainty budget or statistical confidence interval; rolling busy-hour/channel-access statistics; cross-session regional coverage; interference-free operation or FCC compliance. Low observed occupancy is evidence for further investigation, not a channel recommendation.");
     h.paragraph("Method reference: ITU-R SM.2256-2 (June 2026), spectrum occupancy measurements and evaluation. This report records its own detector and coverage definitions; it does not claim conformance to that recommendation family.");
-    if(document_end)h.raw("<footer>Local, deterministic analysis of retained measurements. No cloud or AI service was contacted. Print from your browser to save a PDF. Expand the frequency table first if you want it included in the printout.</footer></body></html>\n");
+    if(document_end)h.raw("<footer>Local, deterministic analysis of retained measurements. No cloud or AI service was contacted. Use Export to PDF to choose a save location. All sections expand for printing; the zero-activity filter is preserved.</footer></body></html>\n");
 }
